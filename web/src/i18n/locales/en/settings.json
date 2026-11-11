@@ -322,7 +322,8 @@
               "patchright": "Patchright",
               "camoufox": "Camoufox",
               "bsk": "BrowserSkill",
-              "solver": "Solver"
+              "solver": "Solver",
+              "cdp": "Remote browser (CDP)"
             }
           },
           "cookie": {
@@ -515,7 +516,8 @@
             "patchright": "Patchright",
             "camoufox": "Camoufox",
             "bsk": "BrowserSkill",
-            "solver": "Solver"
+            "solver": "Solver",
+            "cdp": "Remote browser (CDP)"
           }
         },
         "timeout": {
@@ -525,6 +527,10 @@
         "solver_url": {
           "label": "Solver URL",
           "description": "FlareSolverr-compatible service URL; used by the solver backend only"
+        },
+        "cdp_endpoint": {
+          "label": "CDP URL",
+          "description": "Address of a browser with CDP debugging enabled, used by the cdp backend only"
         }
       },
       "chunked_threshold": {

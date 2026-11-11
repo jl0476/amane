@@ -748,7 +748,7 @@ export type BrowserBackendItemResponse = {
 /**
  * BrowserBackendName
  */
-export type BrowserBackendName = 'off' | 'patchright' | 'camoufox' | 'bsk' | 'solver';
+export type BrowserBackendName = 'off' | 'patchright' | 'camoufox' | 'bsk' | 'solver' | 'cdp';
 
 /**
  * BrowserBackendReportResponse
@@ -780,6 +780,10 @@ export type BrowserConfig = {
      * Solver Url
      */
     solver_url?: string;
+    /**
+     * Cdp Endpoint
+     */
+    cdp_endpoint?: string;
 };
 
 /**

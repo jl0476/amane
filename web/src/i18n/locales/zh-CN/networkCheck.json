@@ -62,7 +62,8 @@
       "camoufox": "当前分发包不含该引擎; 源码安装后可启用.",
       "bsk": "安装 bsk CLI, 并在 Chrome 或 Edge 中连接 BrowserSkill 扩展.",
       "bskLink": "查看安装说明",
-      "solver": "部署 FlareSolverr 兼容服务, 并在设置中填写地址."
+      "solver": "部署 FlareSolverr 兼容服务, 并在设置中填写地址.",
+      "cdp": "当前分发包不含 patchright; 源码安装后可启用, 并填写 CDP 地址."
     }
   }
 }

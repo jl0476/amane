@@ -26,6 +26,8 @@ function backendLabel(backend: BrowserBackendName): string {
       return "BrowserSkill";
     case "solver":
       return "Solver";
+    case "cdp":
+      return "CDP";
     case "off":
       return "";
   }
@@ -40,6 +42,7 @@ function BackendHint({ backend }: { backend: string }) {
       {backend === "patchright" && t("backend.hint.patchright")}
       {backend === "camoufox" && t("backend.hint.camoufox")}
       {backend === "solver" && t("backend.hint.solver")}
+      {backend === "cdp" && t("backend.hint.cdp")}
       {backend === "bsk" && (
         <>
           {t("backend.hint.bsk")}{" "}

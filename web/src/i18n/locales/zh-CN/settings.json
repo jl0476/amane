@@ -322,7 +322,8 @@
               "patchright": "Patchright",
               "camoufox": "Camoufox",
               "bsk": "BrowserSkill",
-              "solver": "Solver 服务"
+              "solver": "Solver 服务",
+              "cdp": "远程浏览器 (CDP)"
             }
           },
           "cookie": {
@@ -515,7 +516,8 @@
             "patchright": "Patchright",
             "camoufox": "Camoufox",
             "bsk": "BrowserSkill",
-            "solver": "Solver 服务"
+            "solver": "Solver 服务",
+            "cdp": "远程浏览器 (CDP)"
           }
         },
         "timeout": {
@@ -525,6 +527,10 @@
         "solver_url": {
           "label": "Solver 地址",
           "description": "FlareSolverr 兼容服务地址, 仅 solver 后端使用"
+        },
+        "cdp_endpoint": {
+          "label": "CDP 地址",
+          "description": "已开启 CDP 调试端口的浏览器地址, 仅 cdp 后端使用"
         }
       },
       "chunked_threshold": {

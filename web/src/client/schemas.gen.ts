@@ -1325,7 +1325,8 @@ export const BrowserBackendNameSchema = {
         'patchright',
         'camoufox',
         'bsk',
-        'solver'
+        'solver',
+        'cdp'
     ],
     title: 'BrowserBackendName'
 } as const;
@@ -1383,6 +1384,12 @@ export const BrowserConfigSchema = {
             pattern: '^https?://.+',
             title: 'Solver Url',
             default: 'http://127.0.0.1:8191'
+        },
+        cdp_endpoint: {
+            type: 'string',
+            pattern: '^https?://.+',
+            title: 'Cdp Endpoint',
+            default: 'http://127.0.0.1:9222'
         }
     },
     type: 'object',
@@ -3577,6 +3584,7 @@ export const HotSettingsSchema = {
                 max_clients: 50,
                 browser: {
                     backend: 'off',
+                    cdp_endpoint: 'http://127.0.0.1:9222',
                     solver_url: 'http://127.0.0.1:8191',
                     timeout: 30000
                 },
