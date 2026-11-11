@@ -130,8 +130,13 @@ async def test_browser_backend_report(client: HttpxClient, app: FastAPI, monkeyp
     """形状与来源: 每行一个后端, ``selected`` 取热配置, 探测参数取热配置."""
     seen: dict[str, object] = {}
 
-    async def fake_probe(*, solver_url: str, bsk_path: str | None = None) -> tuple[BackendProbe, ...]:
-        seen["args"] = (solver_url, bsk_path)
+    async def fake_probe(
+        *,
+        solver_url: str,
+        bsk_path: str | None = None,
+        cdp_endpoint: str | None = None,
+    ) -> tuple[BackendProbe, ...]:
+        seen["args"] = (solver_url, bsk_path, cdp_endpoint)
         return (
             BackendProbe(
                 backend=BrowserBackendName.BSK,
@@ -151,7 +156,7 @@ async def test_browser_backend_report(client: HttpxClient, app: FastAPI, monkeyp
     body = resp.json()
     browser = app.state.runtime.config.hot.network.browser
     assert body["selected"] == browser.backend.value
-    assert seen["args"] == (browser.solver_url, browser.bsk_path)
+    assert seen["args"] == (browser.solver_url, browser.bsk_path, browser.cdp_endpoint)
     assert [item["backend"] for item in body["items"]] == ["bsk", "solver"]
     bsk, solver = body["items"]
     assert (bsk["available"], bsk["version"], bsk["detail"]) == (True, "0.3.3", "ok")

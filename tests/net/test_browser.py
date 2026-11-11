@@ -10,7 +10,15 @@ from typing import Any
 import pytest
 
 from amane.enums import BrowserBackendName
-from amane.net.browser import BrowserPageResult, BrowserPool, SolverBackend, _Cookie, _is_timeout, _LocalBackend
+from amane.net.browser import (
+    BrowserPageResult,
+    BrowserPool,
+    CdpBackend,
+    SolverBackend,
+    _Cookie,
+    _is_timeout,
+    _LocalBackend,
+)
 from amane.net.errors import FailureKind, FailureReason, RequestError, RequestFailure, classify_request_error
 
 
@@ -734,3 +742,165 @@ async def test_solver_releases_scope_lock_on_session_failure():
     assert failed[1].message == "boom"
     assert recovered == ("<html>ok</html>", None)
     assert [call["cmd"] for call in web.calls] == ["sessions.create", "sessions.create", "request.get"]
+
+
+# CDP 后端: 连接已在运行的远程浏览器, 借用其默认上下文 (登录态所在).
+
+
+class _CdpPage(_FakePage):
+    """记录页面级请求头注入; CDP 后端不写 cookie, 请求头落在页面上."""
+
+    def __init__(self, contents: list[str]) -> None:
+        super().__init__(contents)
+        self.page_headers: dict[str, str] = {}
+
+    async def set_extra_http_headers(self, headers: dict[str, str]) -> None:
+        self.page_headers = dict(headers)
+
+
+class _CdpContext(_FakeContext):
+    def __init__(self, page: _CdpPage) -> None:
+        super().__init__(page)
+        self.page = page
+
+    async def new_page(self) -> _CdpPage:
+        self.pages += 1
+        return self.page
+
+
+class _CdpBrowser:
+    """CDP 连接拿到的浏览器: 只有默认上下文, 没有 ``new_context`` 的隔离上下文."""
+
+    def __init__(self, page: _CdpPage) -> None:
+        self.default_context = _CdpContext(page)
+        self.connected = True
+        self.closed = False
+
+    @property
+    def contexts(self) -> list[_CdpContext]:
+        return [self.default_context]
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def close(self) -> None:
+        self.closed = True
+        self.connected = False
+
+
+class _FakeCdpBackend(CdpBackend):
+    """替代实现: 跳过真实 CDP 连接, 记录远端浏览器状态."""
+
+    def __init__(self, page: _CdpPage, *, endpoint: str = "http://remote.test:9222") -> None:
+        super().__init__(endpoint=endpoint, default_timeout=1000, idle_timeout=0)
+        self.browser = _CdpBrowser(page)
+
+    async def _launch(self, stack: AsyncExitStack) -> _CdpBrowser:
+        stack.push_async_callback(self._mark_closed)
+        return self.browser
+
+    async def _mark_closed(self) -> None:
+        await self.browser.close()
+
+
+@pytest.mark.asyncio
+async def test_cdp_backend_uses_remote_default_context(monkeypatch: pytest.MonkeyPatch):
+    """用远端默认上下文取正文, 不新建隔离上下文 (隔离上下文拿不到登录态)."""
+    monkeypatch.setattr("amane.net.browser._CHALLENGE_POLL_S", 0.0)
+    page = _CdpPage(["<html>ok</html>"])
+    backend = _FakeCdpBackend(page)
+
+    html, failure = await backend.get_page("https://a.example/", scope="site-a")
+
+    assert (html, failure) == ("<html>ok</html>", None)
+    assert backend.browser.default_context.pages == 1
+    assert page.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cdp_backend_ignores_cookies_and_injects_headers_on_page(monkeypatch: pytest.MonkeyPatch):
+    """cookie 不注入 (会覆盖远端 profile 的登录态), 请求头落在页面上."""
+    monkeypatch.setattr("amane.net.browser._CHALLENGE_POLL_S", 0.0)
+    page = _CdpPage(["<html>ok</html>"])
+    backend = _FakeCdpBackend(page)
+
+    await backend.get_page("https://a.example/", scope="site-a", cookies={"session": "v"}, headers={"X-Probe": "1"})
+
+    assert backend.browser.default_context.cookies == []
+    assert page.page_headers == {"X-Probe": "1"}
+
+
+@pytest.mark.asyncio
+async def test_cdp_backend_closes_our_page_but_keeps_browser(monkeypatch: pytest.MonkeyPatch):
+    """关闭只断开连接: 远端浏览器进程与其原有标签页不受影响."""
+    monkeypatch.setattr("amane.net.browser._CHALLENGE_POLL_S", 0.0)
+    page = _CdpPage(["<html>ok</html>"])
+    backend = _FakeCdpBackend(page)
+
+    await backend.get_page("https://a.example/", scope="site-a")
+    await backend.close()
+
+    assert page.closed is True
+    assert backend.browser.closed is True
+    assert backend.browser.is_connected() is False
+
+
+@pytest.mark.asyncio
+async def test_cdp_backend_reuses_connection_across_scopes(monkeypatch: pytest.MonkeyPatch):
+    """不同来源共用同一条 CDP 连接, 但各用各的标签页."""
+    monkeypatch.setattr("amane.net.browser._CHALLENGE_POLL_S", 0.0)
+    page = _CdpPage(["<html>ok</html>"])
+    backend = _FakeCdpBackend(page)
+
+    await backend.get_page("https://a.example/1", scope="site-a")
+    await backend.get_page("https://b.example/1", scope="site-b")
+
+    assert backend.browser.default_context.pages == 2
+
+
+@pytest.mark.asyncio
+async def test_cdp_backend_fails_when_remote_has_no_context(monkeypatch: pytest.MonkeyPatch):
+    """远端浏览器没有可用上下文时报失败, 而不是静默返回空页."""
+    monkeypatch.setattr("amane.net.browser._CHALLENGE_POLL_S", 0.0)
+    page = _CdpPage(["<html>ok</html>"])
+    backend = _FakeCdpBackend(page)
+
+    def _no_contexts(self: _CdpBrowser) -> list[_CdpContext]:
+        return []
+
+    monkeypatch.setattr(type(backend.browser), "contexts", property(_no_contexts))
+
+    html, failure = await backend.get_page("https://a.example/", scope="site-a")
+
+    assert html is None
+    assert failure is not None
+    assert "no context" in (failure.message or "")
+
+
+def test_pool_creates_cdp_backend_with_endpoint() -> None:
+    pool = BrowserPool(
+        default_backend=BrowserBackendName.CDP,
+        solver_url="http://solver.test:8191",
+        proxy=None,
+        web_client=_FakeWeb([]),  # type: ignore[arg-type]
+        timeout_ms=1000,
+        cdp_endpoint="http://remote.test:9222",
+    )
+
+    backend = pool._create(BrowserBackendName.CDP)
+
+    assert isinstance(backend, CdpBackend)
+    assert backend._endpoint == "http://remote.test:9222"
+
+
+def test_pool_rejects_cdp_backend_without_endpoint() -> None:
+    pool = BrowserPool(
+        default_backend=BrowserBackendName.CDP,
+        solver_url="http://solver.test:8191",
+        proxy=None,
+        web_client=_FakeWeb([]),  # type: ignore[arg-type]
+        timeout_ms=1000,
+    )
+
+    with pytest.raises(ValueError, match="endpoint"):
+        pool._create(BrowserBackendName.CDP)

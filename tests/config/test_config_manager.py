@@ -272,6 +272,17 @@ class TestBrowserConfigValidation:
     def test_solver_url_accepts_https(self):
         assert BrowserConfig(solver_url="https://solver.local:8191").solver_url == "https://solver.local:8191"
 
+    @pytest.mark.parametrize("url", ["127.0.0.1:9222", "ftp://remote.local", "ws://remote.local:9222"])
+    def test_cdp_endpoint_requires_http_scheme(self, url: str):
+        with pytest.raises(ValidationError):
+            BrowserConfig(cdp_endpoint=url)
+
+    def test_cdp_endpoint_accepts_remote_http(self):
+        assert BrowserConfig(cdp_endpoint="http://10.0.0.5:9222").cdp_endpoint == "http://10.0.0.5:9222"
+
+    def test_cdp_endpoint_default_is_local(self):
+        assert BrowserConfig().cdp_endpoint == "http://127.0.0.1:9222"
+
 
 class TestBrowserBackendAvailability:
     def test_default_is_off(self):
@@ -296,6 +307,22 @@ class TestBrowserBackendAvailability:
             BrowserConfig(backend=BrowserBackendName.CAMOUFOX)
         with pytest.raises(ValidationError, match="请改用 solver"):
             SiteConfig(browser_backend=BrowserBackendName.PATCHRIGHT)
+
+    def test_cdp_backend_requires_patchright(self, monkeypatch: pytest.MonkeyPatch):
+        """CDP 后端只用 patchright 当遥控器, 但仍要求模块在分发里."""
+
+        def _raise(name: str) -> None:
+            raise ImportError(name)
+
+        monkeypatch.setattr("amane.config.manager.importlib.import_module", _raise)
+
+        with pytest.raises(ValidationError, match="请改用 solver"):
+            BrowserConfig(backend=BrowserBackendName.CDP)
+
+    def test_cdp_backend_accepted_when_patchright_present(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr("amane.config.manager.importlib.import_module", lambda name: object())
+
+        assert BrowserConfig(backend=BrowserBackendName.CDP).backend is BrowserBackendName.CDP
 
 
 class TestSiteBrowserMode:
