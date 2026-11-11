@@ -94,6 +94,7 @@ class BrowserPool:
         web_client: WebClient,
         timeout_ms: float,
         bsk_path: str | None = None,
+        cdp_endpoint: str | None = None,
     ) -> None:
         self._default = default_backend
         self._solver_url = solver_url
@@ -101,6 +102,7 @@ class BrowserPool:
         self._web = web_client
         self._timeout_ms = timeout_ms
         self._bsk_path = bsk_path
+        self._cdp_endpoint = cdp_endpoint
         self._instances: dict[BrowserBackendName, BrowserBackend] = {}
         self._closed = False
 
@@ -161,6 +163,12 @@ class BrowserPool:
                     url=self._solver_url,
                     default_timeout=self._timeout_ms,
                 )
+            case BrowserBackendName.CDP:
+                if self._proxy:
+                    logger.warning("cdp backend ignores global proxy", proxy=self._proxy)
+                if not self._cdp_endpoint:
+                    raise ValueError("cdp backend requires an endpoint")
+                return CdpBackend(endpoint=self._cdp_endpoint, default_timeout=self._timeout_ms)
             case _:
                 raise ValueError(f"unsupported browser backend: {name}")
 
@@ -222,6 +230,8 @@ class _PageLike(Protocol):
 
     async def wait_for_selector(self, selector: str, *, timeout: float) -> object: ...
 
+    async def set_extra_http_headers(self, headers: dict[str, str]) -> object: ...
+
     async def close(self) -> None: ...
 
 
@@ -239,6 +249,9 @@ class _BrowserLike(Protocol):
     """``_LocalBackend`` 使用的浏览器能力: 按来源创建独立 context."""
 
     async def new_context(self) -> _ContextLike: ...
+
+    @property
+    def contexts(self) -> Sequence[_ContextLike]: ...
 
 
 class _LocalBackend(ABC):
@@ -265,6 +278,24 @@ class _LocalBackend(ABC):
     @abstractmethod
     async def _launch(self, stack: AsyncExitStack) -> _BrowserLike:
         """启动浏览器, 并把退出清理压入 ``stack``."""
+
+    async def _prepare_request(
+        self,
+        context: _ContextLike,
+        page: _PageLike,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None,
+        headers: Mapping[str, str] | None,
+    ) -> None:
+        """在导航前注入 cookie 与请求头; 后端可覆盖注入位置."""
+        if cookies:
+            context_cookies: list[_Cookie] = [
+                {"name": name, "value": value, "url": url} for name, value in cookies.items()
+            ]
+            await context.add_cookies(context_cookies)
+        if headers:
+            await context.set_extra_http_headers(dict(headers))
 
     async def get_page(
         self,
@@ -310,14 +341,8 @@ class _LocalBackend(ABC):
             context = await self._context(scope)
             # 引擎启动 (含 camoufox 首次下载) 不计入单次渲染时限.
             deadline = time.monotonic() + timeout / 1000
-            if cookies:
-                context_cookies: list[_Cookie] = [
-                    {"name": name, "value": value, "url": url} for name, value in cookies.items()
-                ]
-                await context.add_cookies(context_cookies)
-            if headers:
-                await context.set_extra_http_headers(dict(headers))
             page = await context.new_page()
+            await self._prepare_request(context, page, url, cookies=cookies, headers=headers)
             await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
             content = await self._settle_challenge(page, deadline)
             if network_idle_timeout is not None:
@@ -488,6 +513,55 @@ class _CamoufoxOptions(TypedDict):
     humanize: bool
     locale: str
     proxy: NotRequired[dict[str, str]]
+
+
+class CdpBackend(_LocalBackend):
+    """连接已在运行的远程浏览器 (CDP): 借用它的登录态与 clearance 过 Cloudflare.
+
+    与本地引擎的差别: 用远端浏览器的默认上下文, 因此拿得到既有 cookie;
+    代价是不注入 cookie (会写进用户的真实 profile) 与代理 (远端浏览器自有出口).
+
+    关闭只断开连接, 远端浏览器与其已有标签页不受影响.
+    """
+
+    def __init__(self, *, endpoint: str, default_timeout: float, idle_timeout: float = _IDLE_TIMEOUT_S) -> None:
+        super().__init__(proxy=None, default_timeout=default_timeout, idle_timeout=idle_timeout)
+        self._endpoint = endpoint
+
+    async def _launch(self, stack: AsyncExitStack) -> _BrowserLike:
+        from patchright.async_api import async_playwright
+
+        playwright = await stack.enter_async_context(async_playwright())
+        browser = await playwright.chromium.connect_over_cdp(self._endpoint)
+        stack.push_async_callback(browser.close)
+        return browser
+
+    async def _context(self, scope: str) -> _ContextLike:
+        """复用远端浏览器的默认上下文: 隔离 context 拿不到登录态."""
+        context = self._contexts.get(scope)
+        if context is None:
+            browser = await self._ensure_browser()
+            contexts = browser.contexts
+            if not contexts:
+                raise _PageUnreadable(RuntimeError("remote browser exposes no context"))
+            context = contexts[0]
+            self._contexts[scope] = context
+        return context
+
+    async def _prepare_request(
+        self,
+        context: _ContextLike,
+        page: _PageLike,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None,
+        headers: Mapping[str, str] | None,
+    ) -> None:
+        """不注入 cookie (会覆盖远端 profile 的登录态); 请求头落在页面上, 不波及远端其它标签页."""
+        if cookies:
+            logger.debug("cdp backend ignores cookies", url=url)
+        if headers:
+            await page.set_extra_http_headers(dict(headers))
 
 
 class CamoufoxBackend(_LocalBackend):

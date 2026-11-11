@@ -60,7 +60,11 @@ async def browser_backends(runtime: RuntimeDep) -> BrowserBackendReportResponse:
     结论就是响应体, 端点始终 200; ``selected`` 由当前热配置给出, 界面据此标出「已选但不可用」.
     """
     browser = runtime.config.hot.network.browser
-    probes = await probe_backends(solver_url=browser.solver_url, bsk_path=browser.bsk_path)
+    probes = await probe_backends(
+        solver_url=browser.solver_url,
+        bsk_path=browser.bsk_path,
+        cdp_endpoint=browser.cdp_endpoint,
+    )
     return BrowserBackendReportResponse(
         selected=browser.backend,
         items=[_backend_item(probe) for probe in probes],

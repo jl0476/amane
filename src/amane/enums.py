@@ -48,6 +48,7 @@ class BrowserBackendName(StrEnum):
     CAMOUFOX = "camoufox"
     BSK = "bsk"
     SOLVER = "solver"
+    CDP = "cdp"
 
 
 # 来源的浏览器使用策略: ALWAYS 一律渲染, OFF 一律直连, AUTO 直连遇挑战后切换.

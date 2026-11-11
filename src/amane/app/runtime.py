@@ -149,6 +149,7 @@ def build_network_stack(
             web_client=web_client,
             timeout_ms=hot.network.browser.timeout,
             bsk_path=hot.network.browser.bsk_path,
+            cdp_endpoint=hot.network.browser.cdp_endpoint,
         )
     else:
         browser.rebind_web_client(web_client)

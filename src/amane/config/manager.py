@@ -543,7 +543,11 @@ def _require_browser_engine(
                 "浏览器后端 bsk 不可用: 未找到 bsk CLI, 请安装 BrowserSkill 并连接浏览器扩展, 或改用 solver"
             )
         return backend
-    module = {BrowserBackendName.PATCHRIGHT: "patchright", BrowserBackendName.CAMOUFOX: "camoufox"}.get(backend)
+    module = {
+        BrowserBackendName.PATCHRIGHT: "patchright",
+        BrowserBackendName.CAMOUFOX: "camoufox",
+        BrowserBackendName.CDP: "patchright",
+    }.get(backend)
     if module is None:
         return backend
     try:
@@ -564,6 +568,8 @@ class BrowserConfig(BaseModel):
     """页面导航默认超时 (毫秒); 单次渲染可覆盖."""
     solver_url: str = Field(default="http://127.0.0.1:8191", pattern=r"^https?://.+")
     """FlareSolverr 兼容服务地址; 仅 ``solver`` 后端使用. 服务不允许暴露到公网."""
+    cdp_endpoint: str = Field(default="http://127.0.0.1:9222", pattern=r"^https?://.+")
+    """远程浏览器的 CDP 端点; 仅 ``cdp`` 后端使用. 端点无鉴权, 不允许暴露到公网."""
 
     @model_validator(mode="after")
     def _engine_available(self) -> BrowserConfig:
