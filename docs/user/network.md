@@ -105,6 +105,7 @@ Cloudflare 人机验证页只能通过执行 JavaScript 越过. 启用浏览器�
 | Camoufox | 基于 Firefox 的浏览器, 首次启动时下载 | | | :material-check: |
 | BrowserSkill | 经 `bsk` CLI 驱动自己已登录的 Chrome / Edge | :material-check: | | :material-check: |
 | Solver 服务 | 外部 FlareSolverr 兼容服务 | :material-check: | :material-check: | :material-check: |
+| 远程浏览器 (CDP) | 连接另一台机器上已开启调试端口的浏览器 | | | :material-check: |
 
 桌面版与 Docker 镜像不包含本地浏览器引擎; 桌面版可以安装 [BrowserSkill](https://github.com/Tencent/BrowserSkill) 的 CLI 与浏览器扩展后使用它, 其余情况使用 Solver 服务. 本地引擎不在当前分发内 (或找不到 bsk CLI) 时保存会被拒绝, 并提示改用 solver. 源码安装经 `just setup` 或 `just sync` 安装全部可选依赖后可以使用 Patchright 与 Camoufox. 各后端当前是否可用在「网络检测」页顶部列出.
 
@@ -113,6 +114,7 @@ Cloudflare 人机验证页只能通过执行 JavaScript 越过. 启用浏览器�
 | 浏览器后端 | 关闭 | 见上表 |
 | 页面请求超时 | 30000 毫秒 | 单个页面的加载超时, 范围 5000–120000 |
 | Solver 地址 | `http://127.0.0.1:8191` | FlareSolverr 兼容服务的地址, 仅 Solver 服务后端使用 |
+| CDP 地址 | `http://127.0.0.1:9222` | 远程浏览器的调试端口地址, 仅远程浏览器 (CDP) 后端使用 |
 
 === "Solver 服务"
 
@@ -128,6 +130,16 @@ Cloudflare 人机验证页只能通过执行 JavaScript 越过. 启用浏览器�
     2. 「浏览器后端」选择对应后端.
     3. 浏览器在首次需要时启动, 使用全局代理; 空闲 10 分钟后关闭.
 
+=== "远程浏览器 (CDP)"
+
+    1. 在目标机器上启动浏览器并开启调试端口, 例如 Chrome 的 `--remote-debugging-port=9222`.
+    2. 「浏览器后端」选择「远程浏览器 (CDP)」, 「CDP 地址」填写该浏览器地址 (如 `http://192.168.1.10:9222`).
+    3. 打开「网络检测」页, 确认「远程浏览器 (CDP)」显示为可用.
+
+    该后端借用远程浏览器已登录的状态与已有验证结果, 因此不需要在 Amane 里配置 Cookie. 它不注入 Cookie (避免覆盖远程浏览器里的登录状态), 也不使用 Amane 的代理设置 — 出站走远程浏览器自身的网络.
+
+    Chrome 默认只把调试端口绑定到本机回环地址; 从别的机器连需要显式绑定地址, 或用端口转发 / SSH 隧道.
+
 === "BrowserSkill"
 
     1. 安装 [bsk CLI](https://github.com/Tencent/BrowserSkill) 0.4.0 及以上, 并在 Chrome 或 Edge 中连接 BrowserSkill 扩展; 更旧的版本会被「网络检测」页判为不可用.
@@ -140,6 +152,9 @@ Cloudflare 人机验证页只能通过执行 JavaScript 越过. 启用浏览器�
 
 !!! danger "Solver 服务不能暴露到公网"
     Solver 服务可以代替调用方访问任意地址, 暴露到公网会被滥用. 只监听本机或内网地址.
+
+!!! danger "CDP 端口没有鉴权"
+    打开调试端口的浏览器可被任何能连到该端口的人完全控制, 含读取其登录状态与查看页面. 只监听本机或内网地址, 并确保该端口有防火墙或隧道保护.
 
 ### 站点浏览器策略
 
