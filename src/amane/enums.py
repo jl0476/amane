@@ -118,7 +118,9 @@ class DownloadableResource(StrEnum):
 
 class MetadataField(StrEnum):
     TITLE = "title"
+    ORIGINAL_TITLE = "original_title"
     PLOT = "plot"
+    ORIGINAL_PLOT = "original_plot"
     ACTORS = "actors"
     DIRECTORS = "directors"
     TAGS = "tags"

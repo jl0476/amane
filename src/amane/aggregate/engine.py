@@ -29,6 +29,7 @@ type ProgressCallback = Callable[[int, int, str], Coroutine[Any, Any, None]]
 
 SCALAR_FIELDS: list[MetadataField] = [
     MetadataField.TITLE,
+    MetadataField.ORIGINAL_TITLE,
     MetadataField.ACTORS,
     MetadataField.TAGS,
     MetadataField.RELEASE,
@@ -38,7 +39,13 @@ SCALAR_FIELDS: list[MetadataField] = [
     MetadataField.STUDIO,
     MetadataField.PUBLISHER,
     MetadataField.PLOT,
+    MetadataField.ORIGINAL_PLOT,
 ]
+
+# 原文字段: 来源必须逐字段声明语言才参与聚合, 未声明则该源不提供 (宁可留空, 不可猜).
+_ORIGINAL_TEXT_FIELDS: frozenset[MetadataField] = frozenset(
+    {MetadataField.ORIGINAL_TITLE, MetadataField.ORIGINAL_PLOT}
+)
 
 RAW_TO_DB_FIELD: dict[str, str] = {
     "extrafanart": "extrafanart_urls",
@@ -263,8 +270,8 @@ def _resolve_scalars(graph: FetchGraph, state: ExecutionState) -> None:
             if data is None:
                 continue
             if getattr(data, field, None):
-                _fill_scalar(state.result, field, data, cache_key)
-                break
+                if _fill_scalar(state.result, field, data, cache_key):
+                    break
 
 
 def _resolve_lang(
@@ -412,12 +419,23 @@ def _fill_scalar(
     field: MetadataField,
     data: MediaMetadata,
     source_key: SourceKey,
-) -> None:
+) -> bool:
+    """填充单源标量并记录来源, 返回是否定值.
+
+    来源声明了字段语言时随 ``field_sources`` 一并记入 ``field_languages``;
+    原文字段未声明 (或声明为空) 时不定值, 由链上后续来源补位.
+    """
+    language = (data.field_languages or {}).get(field)
+    if field in _ORIGINAL_TEXT_FIELDS and not language:
+        return False
     if field == MetadataField.ACTORS:
         result.actors = [item.model_copy() for item in data.actors]
     else:
         setattr(result, field, getattr(data, field))
     result.field_sources[field] = source_key
+    if language:
+        result.field_languages[field] = language
+    return True
 
 
 def _assemble_url_fields(
@@ -482,6 +500,7 @@ def _normalize_source_text(meta: MediaMetadata) -> MediaMetadata:
     函数幂等, 与落库钩子重复调用安全.
     """
     meta.plot = normalize_long_text(meta.plot)
+    meta.original_plot = normalize_long_text(meta.original_plot)
     return meta
 
 
