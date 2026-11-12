@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from ...enums import Language, SiteName
 from ...net.errors import FailureReason, SourceError, parse_detail
+from ...plugins.models import SourceTrait
 from ..base import Crawler, CrawlerProfile
 from ..models import FetchOptions, MediaMetadata, ResponseModel, SearchQuery, film_actors
 from ..parsing import fold_number
@@ -50,6 +51,17 @@ def _named(entity: AvsoxNamed | None, prefix: str) -> str | None:
         return None
     payload = entity.model_dump()
     return _first(*(payload.get(f"{prefix}Name{suffix}") for suffix in _NAME_SUFFIXES))
+
+
+def _plot(movie: AvsoxMovie, lang: str) -> str | None:
+    """简介按请求语言取值: 页面正文在前, 请求语言轨补缺; 轨为空时不借用其它语言."""
+    tracks: dict[str, str | None] = {
+        "cn": movie.description_cn,
+        "ja": movie.description_ja,
+        "en": movie.description_en,
+        "tw": movie.description_tw,
+    }
+    return _first(movie.description, tracks.get(lang))
 
 
 class AvsoxNamed(ResponseModel):
@@ -98,7 +110,11 @@ class AvsoxMovie(ResponseModel):
 class AvsoxCrawler(Crawler):
     @classmethod
     def profile(cls) -> CrawlerProfile:
-        return CrawlerProfile(name=SiteName.AVSOX, base_url="https://avsox.click")
+        return CrawlerProfile(
+            name=SiteName.AVSOX,
+            base_url="https://avsox.click",
+            traits=frozenset({SourceTrait.MULTI_LANGUAGE}),
+        )
 
     def _lang(self, options: FetchOptions | None) -> str:
         language = options.language if options else None
@@ -158,13 +174,7 @@ class AvsoxCrawler(Crawler):
             release=movie.releaseDate or None,
             runtime=movie.length or None,
             tags=[name for genre in movie.genre if (name := _named(genre, "genre"))],
-            plot=_first(
-                movie.description,
-                movie.description_cn,
-                movie.description_ja,
-                movie.description_en,
-                movie.description_tw,
-            ),
+            plot=_plot(movie, lang),
             poster_urls=[movie.posterSmall] if movie.posterSmall else [],
             thumb_urls=[movie.posterLarge] if movie.posterLarge else [],
             extrafanart=[item for item in movie.sampleLarge if item],
