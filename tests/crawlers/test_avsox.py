@@ -124,6 +124,13 @@ async def test_avsox_scrape_emits_original_fields(
             "繁體",
             id="cn_missing_takes_tw",
         ),
+        # 各轨同时有值: 次序任一交换 (含中文提到日文前) 都会让期望落空, 与逐级回退参数合起来钉死整条顺序.
+        pytest.param(
+            {"title": "", "title_ja": "日本語", "title_en": "English", "title_cn": "中文", "title_tw": "繁體"},
+            "日本語",
+            id="all_tracks_takes_ja",
+        ),
+        pytest.param({"title": "站内标题", "title_ja": "日本語"}, "站内标题", id="base_title_beats_tracks"),
         pytest.param({"title": "", "title_ja": ""}, None, id="all_blank_is_none"),
     ],
 )
