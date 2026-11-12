@@ -209,3 +209,6 @@ androidapp/*.keystore
 
 # parley discussion workspaces created by tooling — never track
 .parley/
+
+# 本地逆向调研材料（私人媒体数据与大体积符号表，不入库）
+.research/
