@@ -26,9 +26,9 @@ def test_media_metadata_original_fields_default_none():
                 "number": "ABP-123",
                 "original_title": "日本語タイトル",
                 "original_plot": "日本語あらすじ",
-                "field_languages": {"original_title": "ja", "original_plot": "ja"},
+                "field_languages": {"original_title": "jp", "original_plot": "jp"},
             },
-            ("日本語タイトル", "日本語あらすじ", {"original_title": "ja", "original_plot": "ja"}),
+            ("日本語タイトル", "日本語あらすじ", {"original_title": "jp", "original_plot": "jp"}),
             id="with_original_fields",
         ),
         pytest.param(
