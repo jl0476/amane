@@ -36,6 +36,7 @@ dependencies = [
     "tokenizers>=0.23.0",
     "pyobjc-framework-CoreML>=12.2.0; sys_platform == 'darwin'",
     "jinja2>=3.1.6",
+    "google-re2>=1.1.20251105",
 ]
 
 [project.optional-dependencies]
