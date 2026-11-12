@@ -580,6 +580,72 @@ def _nodes_use_placeholder(nodes: Sequence[_Node], name: str) -> bool:
     return False
 
 
+# 占位符白名单: schema 占位符加运行时别名 dir. 保存路径用它拒绝拼写错误, 渲染不受约束.
+_VALID_NAMES = frozenset(PLACEHOLDERS) | {"dir"}
+
+
+def validate_template(source: str) -> None:
+    """保存与切换路径的白名单校验: 占位符名、filter 名、参数形状与 filter 链类型.
+
+    校验错误指出名称与在模板源里的位置. 渲染不做这些检查, 未知占位符仍输出 `Unknown`.
+    """
+    _validate_nodes(Parser(source).parse())
+
+
+def _validate_nodes(nodes: Sequence[_Node]) -> None:
+    for node in nodes:
+        if isinstance(node, _Placeholder):
+            _validate_expr(node.expr)
+        elif isinstance(node, _Group):
+            _validate_nodes(node.children)
+        elif isinstance(node, _IfBlock):
+            for item in node.condition:
+                if item not in _VALID_NAMES:
+                    raise ValueError(f"路径模板在位置 {node.pos} 使用未知占位符: {{{item}}}")
+            _validate_nodes(node.body)
+            if node.orelse is not None:
+                _validate_nodes(node.orelse)
+
+
+def _validate_expr(expr: _Expr) -> None:
+    if expr.name not in _VALID_NAMES:
+        raise ValueError(f"路径模板在位置 {expr.pos} 使用未知占位符: {{{expr.name}}}")
+    after_split = False
+    for call in expr.filters:
+        _validate_filter(call, after_split)
+        after_split = call.name == "split"
+    if after_split:
+        raise ValueError(f"路径模板在位置 {expr.pos} 的 filter 链以 split 结尾, 链尾必须是 first 或 last")
+
+
+def _validate_filter(call: _FilterCall, after_split: bool) -> None:
+    if call.name not in _FILTER_NAMES:
+        raise ValueError(f"路径模板在位置 {call.pos} 使用未知 filter: {call.name!r}")
+    expected = _FILTER_ARITY[call.name]
+    if len(call.args) != expected:
+        if expected == 0:
+            raise ValueError(f"路径模板在位置 {call.pos} 的 filter {call.name!r} 不接受参数")
+        raise ValueError(f"路径模板在位置 {call.pos} 的 filter {call.name!r} 需要 {expected} 个参数")
+    if after_split and call.name not in ("first", "last"):
+        raise ValueError(
+            f"路径模板在位置 {call.pos} 的 filter {call.name!r} 不能作用于 split 的结果: split 之后只能使用 first 或 last"
+        )
+    if call.name in ("first", "last") and not after_split:
+        raise ValueError(f"路径模板在位置 {call.pos} 的 filter {call.name!r} 只能作用于 split 的结果")
+    if call.name == "truncate":
+        if not isinstance(call.args[0], int):
+            raise ValueError(f"路径模板在位置 {call.pos} 的 filter truncate 的参数必须是整数字面量")
+    else:
+        for arg in call.args:
+            if isinstance(arg, int):
+                raise ValueError(f"路径模板在位置 {call.pos} 的 filter {call.name!r} 不接受整数字面量")
+    if call.name == "split" and isinstance(call.args[0], str) and not call.args[0]:
+        raise ValueError(f"路径模板在位置 {call.pos} 的 filter split 的分隔符不能为空")
+    for arg in call.args:
+        if isinstance(arg, _Expr):
+            _validate_expr(arg)
+
+
 def _clip_field(value: str) -> str:
     """按 UTF-8 字节截断并追加省略号, 不得切开多字节字符. 省略号计入上限."""
     data = value.encode("utf-8")

@@ -2,7 +2,7 @@
 
 import pytest
 
-from amane.organize.template import TemplateContext, TemplateEngine
+from amane.organize.template import TemplateContext, TemplateEngine, validate_template
 
 
 def _render(template: str, variables: dict[str, str]) -> str:
@@ -83,9 +83,9 @@ _INVALID_RENDER_CASES = [
     ('{t:split(",")}', {"t": "a,b"}),  # 链尾是 split, 渲染结果不是字符串
     ("{actors:first}", {"actors": "A,B"}),  # first 只能作用于 split 的结果
     ('{t:split(","):upper}', {"t": "a,b"}),  # split 之后只能使用 first / last
-    ("{t:truncate(x)}", {"t": "abcdef"}),  # truncate 参数不是整数字面量
-    ('{t:truncate("4")}', {"t": "abcdef"}),
-    ("{t:default(20)}", {"t": ""}),  # default 不接受整数字面量
+    ("{title:truncate(x)}", {"t": "abcdef"}),  # truncate 参数不是整数字面量
+    ('{title:truncate("4")}', {"t": "abcdef"}),
+    ("{title:default(20)}", {"t": ""}),  # default 不接受整数字面量
     ('{t:split("")}', {"t": "a"}),  # 空分隔符
 ]
 
@@ -167,3 +167,61 @@ def test_if_block_truthiness(template: str, variables: dict[str, str], expected:
 def test_if_block_rejects_invalid(template: str) -> None:
     with pytest.raises(ValueError, match="路径模板"):
         _render(template, {})
+
+
+# 保存路径的白名单校验: 未知占位符与未知 filter 必须指出名称与位置.
+_VALIDATE_REJECT_CASES = [
+    "{typo}",
+    "a{typo}b",
+    "{ typo }",
+    "{title:unknownf}",
+    "{studio:default(publisher:unknownf)}",
+    "{studio:default(typo2)}",
+    "{% if condx %}X{% endif %}",
+    '{actors:split(","):upper}',
+    '{actors:split(",")}',
+    "{actors:first}",
+    "{title:default(20)}",
+    "{title:truncate(x)}",
+    '{title:truncate("4")}',
+    '{title:replace("a")}',
+    "{title:upper(1)}",
+    "{index:02}",
+]
+
+_VALIDATE_ACCEPT_CASES = [
+    "{dir}",
+    "{dir:upper}",
+    "{% if dir %}X{% endif %}",
+    "{studio}/{number}/{number}[-CD{cd?}][-{sub?}].{ext}",
+    '{actors:split(","):first:upper}',
+    '{studio:default(publisher:default("x"))}',
+    "{title|truncate=10}",
+    "{title:trim:truncate(10)}",
+    "{video_relpath}",
+    "{index_padded}",
+]
+
+
+@pytest.mark.parametrize("template", _VALIDATE_REJECT_CASES)
+def test_validate_rejects_unknown_placeholder_and_filter(template: str) -> None:
+    with pytest.raises(ValueError, match="路径模板"):
+        validate_template(template)
+
+
+@pytest.mark.parametrize("template", _VALIDATE_ACCEPT_CASES)
+def test_validate_accepts_dir_alias(template: str) -> None:
+    validate_template(template)
+
+
+def test_validate_error_names_position() -> None:
+    with pytest.raises(ValueError) as exc:
+        validate_template("ab{typo}cd")
+    message = str(exc.value)
+    assert "typo" in message
+    assert "位置 3" in message
+    with pytest.raises(ValueError) as exc:
+        validate_template("{title:unknownf}")
+    message = str(exc.value)
+    assert "unknownf" in message
+    assert "位置" in message
