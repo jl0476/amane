@@ -17,7 +17,7 @@ from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from ...net.errors import FailureReason, SourceError, parse_detail
 from ..base import Crawler
-from ..models import FetchOptions, MediaMetadata, ResponseModel, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, ResponseModel, SearchQuery, film_actors, japanese_originals
 
 _ACTORS = re.compile(r"[/、\s]+")
 _SLUG_CHARS = re.compile(r"[^0-9a-z]")
@@ -164,16 +164,22 @@ class WordPressWorksCrawler(Crawler):
         acf = post.acf
         actors = split_actors(acf.actors)
         raw_title = acf.title or (post.title.rendered if post.title else None) or ""
+        title = strip_actor_suffix(raw_title, actors) or None
+        plot = (acf.plot or "").strip() or None
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         return MediaMetadata(
             number=number_from_slug(post.slug),
-            title=strip_actor_suffix(raw_title, actors) or None,
+            title=title,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=self.studio or None,
             publisher=self._publisher(post.slug),
             release=acf.release,
             runtime=parse_minutes(acf.runtime),
-            plot=(acf.plot or "").strip() or None,
+            plot=plot,
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[post.images.sub] if post.images.sub else [],
             thumb_urls=[post.images.main] if post.images.main else [],
             extrafanart=post.images.gallery,

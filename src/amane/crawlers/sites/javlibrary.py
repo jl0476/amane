@@ -5,7 +5,7 @@ from parsel import Selector
 
 from ...enums import SiteName
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text, is_same_number
 
 
@@ -67,16 +67,21 @@ class JavLibraryCrawler(Crawler):
         score = self._parse_score(extract_text(html, '//span[@class="score"]/text()'))
 
         directors = [director] if director else []
+        # 站点无简介栏, 原文只有标题; 简介与语言声明留空, 由链上其它来源补位.
+        original_title, original_plot, field_languages = japanese_originals(title, None)
 
         return MediaMetadata(
             number=number,
             title=title or None,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             publisher=publisher or None,
             release=release or None,
             runtime=runtime,
             tags=tags,
+            original_plot=original_plot,
+            field_languages=field_languages,
             directors=directors,
             thumb_urls=[cover] if cover else [],
             score=score,

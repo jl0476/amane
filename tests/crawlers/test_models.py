@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from amane.crawlers.models import MediaMetadata
+from amane.crawlers.models import MediaMetadata, japanese_originals
 
 
 def test_media_metadata_original_fields_default_none():
@@ -66,3 +66,26 @@ def test_stale_snapshot_constructs_from_kwargs():
 def test_invalid_original_field_types_rejected(payload: dict):
     with pytest.raises(ValidationError):
         MediaMetadata.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("title", "plot", "expected"),
+    [
+        pytest.param(
+            "タイトル",
+            "あらすじ",
+            ("タイトル", "あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="both_given",
+        ),
+        pytest.param("タイトル", None, ("タイトル", None, {"original_title": "jp"}), id="title_only"),
+        pytest.param(None, "あらすじ", (None, "あらすじ", {"original_plot": "jp"}), id="plot_only"),
+        pytest.param(None, None, (None, None, None), id="neither_given"),
+        pytest.param("", "", (None, None, None), id="blank_strings"),
+        pytest.param(" タイトル ", "  ", ("タイトル", None, {"original_title": "jp"}), id="stripped"),
+    ],
+)
+def test_japanese_originals_declares_only_given_fields(
+    title: str | None, plot: str | None, expected: tuple[str | None, str | None, dict[str, str] | None]
+):
+    """未给出的原文字段不声明语言, 宁缺勿猜."""
+    assert japanese_originals(title, plot) == expected

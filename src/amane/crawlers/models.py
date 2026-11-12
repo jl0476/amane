@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ..enums import ActorGender
+from ..enums import ActorGender, Language, MetadataField
 from ..utils.dates import normalize_calendar_date
 
 if TYPE_CHECKING:
@@ -54,6 +54,22 @@ class FilmActor(BaseModel):
 def film_actors(names: Iterable[str], *, gender: ActorGender = ActorGender.FEMALE) -> list[FilmActor]:
     """按同一性别构造出演者列表; 空名丢弃. 缺省女优, 与多数 JAV 出演栏语义一致."""
     return [FilmActor(name=name, gender=gender) for name in names if name]
+
+
+def japanese_originals(title: str | None, plot: str | None) -> tuple[str | None, str | None, dict[str, str] | None]:
+    """日文源原文字段的三元组 (original_title, original_plot, field_languages).
+
+    原文采用传入值的净形 (去首尾空白, 空白视为缺省); 仅对给出的字段声明 ``jp``,
+    未给出的字段不声明, 聚合层让后续来源补位 (宁缺勿猜).
+    """
+    original_title = (title or "").strip() or None
+    original_plot = (plot or "").strip() or None
+    languages: dict[str, str] = {}
+    if original_title:
+        languages[MetadataField.ORIGINAL_TITLE] = Language.JP
+    if original_plot:
+        languages[MetadataField.ORIGINAL_PLOT] = Language.JP
+    return original_title, original_plot, languages or None
 
 
 class MediaMetadata(BaseModel):

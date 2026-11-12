@@ -6,7 +6,7 @@ from parsel import Selector
 from ...enums import SiteName
 from ...net.connectivity import ConnectivityOutcome, probe_get
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text, is_same_number
 
 #: 检索与详情都要求站内 Referer; 缺它时站点把查询词换成默认专题再回 200, 表现为检索未命中.
@@ -62,6 +62,7 @@ class XCityCrawler(Crawler):
             extract_text(html, '//li[span[normalize-space()="収録時間"]]/text()[normalize-space()]')
         )
         plot = "\n".join(extract_all_texts(html, '//p[contains(@class,"lead")]//text()'))
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         # 封面是 package-b 的横版大图 (锚点 href), 面板里的 img 是竖版缩略.
         cover = _absolute(extract_text(html, '//div[@class="photo"]//a[contains(@href,"/package-b/")]/@href'))
@@ -75,6 +76,7 @@ class XCityCrawler(Crawler):
         return MediaMetadata(
             number=number,
             title=title,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             publisher=publisher or None,
@@ -83,6 +85,8 @@ class XCityCrawler(Crawler):
             tags=tags,
             series=series or None,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             thumb_urls=[cover] if cover else [],
             poster_urls=[poster] if poster else [],
             extrafanart=stills,

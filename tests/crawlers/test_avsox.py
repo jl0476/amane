@@ -65,3 +65,73 @@ async def test_plot_keeps_page_description(monkeypatch: pytest.MonkeyPatch):
     meta = await crawler._scrape("https://avsox.click/ja/movies/1", FetchOptions(language=Language.JP))
     assert meta is not None
     assert meta.plot == "页面简介"
+
+
+# ------------------------------------------------------------------
+# 原文双轨: 原文取日文轨, 未给出的轨道不声明语言
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("movie", "expected"),
+    [
+        pytest.param(
+            dict(_MOVIE, title_ja="日本語タイトル"),
+            ("日本語タイトル", "日本語", {"original_title": "jp", "original_plot": "jp"}),
+            id="both_tracks",
+        ),
+        pytest.param(
+            dict(_MOVIE, title_ja=""),
+            (None, "日本語", {"original_plot": "jp"}),
+            id="title_ja_missing",
+        ),
+        pytest.param(
+            dict(_MOVIE, title_ja="日本語タイトル", description_ja=None),
+            ("日本語タイトル", None, {"original_title": "jp"}),
+            id="description_ja_missing",
+        ),
+        pytest.param(
+            dict(_MOVIE, title_ja="", description_ja=None),
+            (None, None, None),
+            id="ja_tracks_all_missing",
+        ),
+    ],
+)
+async def test_avsox_scrape_emits_original_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    movie: dict[str, Any],
+    expected: tuple[str | None, str | None, dict[str, str] | None],
+):
+    """原文只取日文轨; 该轨为空时不声明对应字段的语言."""
+    crawler = _crawler_with_movie(monkeypatch, movie)
+    meta = await crawler._scrape("https://avsox.click/movies/1", FetchOptions(language=Language.JP))
+    assert meta is not None
+    assert (meta.original_title, meta.original_plot, meta.field_languages) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("movie", "expected_title"),
+    [
+        pytest.param({"title": "", "title_ja": "日本語タイトル"}, "日本語タイトル", id="blank_base_takes_ja"),
+        pytest.param({"title": "", "title_ja": "", "title_en": "English"}, "English", id="ja_missing_takes_en"),
+        pytest.param(
+            {"title": "", "title_ja": "", "title_en": "", "title_cn": "中文"}, "中文", id="en_missing_takes_cn"
+        ),
+        pytest.param(
+            {"title": "", "title_ja": "", "title_en": "", "title_cn": "", "title_tw": "繁體"},
+            "繁體",
+            id="cn_missing_takes_tw",
+        ),
+        pytest.param({"title": "", "title_ja": ""}, None, id="all_blank_is_none"),
+    ],
+)
+async def test_title_falls_back_by_japanese_first_order(
+    monkeypatch: pytest.MonkeyPatch, movie: dict[str, Any], expected_title: str | None
+):
+    """标题链按 title, title_ja, title_en, title_cn, title_tw 的顺序回退; base title 为空时日文轨是首个候选."""
+    crawler = _crawler_with_movie(monkeypatch, dict(_MOVIE, **movie))
+    meta = await crawler._scrape("https://avsox.click/movies/1")
+    assert meta is not None
+    assert meta.title == expected_title

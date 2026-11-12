@@ -13,7 +13,7 @@ from ...enums import Language, SiteName
 from ...net.errors import FailureReason, SourceError, parse_detail
 from ...plugins.models import SourceTrait
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, ResponseModel, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, ResponseModel, SearchQuery, film_actors, japanese_originals
 from ..parsing import fold_number
 
 _LANG: dict[Language, str] = {
@@ -163,9 +163,11 @@ class AvsoxCrawler(Crawler):
         if not movie.movieFanHao:
             return None
         director = _named(movie.director, "director")
+        original_title, original_plot, field_languages = japanese_originals(movie.title_ja, movie.description_ja)
         return MediaMetadata(
             number=movie.movieFanHao,
             title=_first(movie.title, movie.title_ja, movie.title_en, movie.title_cn, movie.title_tw),
+            original_title=original_title,
             actors=film_actors(name for star in movie.star if (name := _named(star, "star"))),
             studio=_named(movie.studio, "studio"),
             publisher=_named(movie.label, "label"),
@@ -175,6 +177,8 @@ class AvsoxCrawler(Crawler):
             runtime=movie.length or None,
             tags=[name for genre in movie.genre if (name := _named(genre, "genre"))],
             plot=_plot(movie, lang),
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[movie.posterSmall] if movie.posterSmall else [],
             thumb_urls=[movie.posterLarge] if movie.posterLarge else [],
             extrafanart=[item for item in movie.sampleLarge if item],

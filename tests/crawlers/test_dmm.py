@@ -3,9 +3,12 @@
 分类目录改写、候选顺序与 cid 形态是 DMM 详情页与 r18 dump 共用的契约; 页面解析走 TOML 数据驱动.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 from parsel import Selector
 
+from amane.crawlers.http import HttpClient
 from amane.crawlers.sites.dmm import DmmCrawler, _extrafanart_urls
 from amane.crawlers.sites.dmm_cdn import image_candidates, poster_candidates
 
@@ -182,3 +185,80 @@ def test_extrafanart_urls(html: str, expected: list[str]) -> None:
 )
 def test_cid_to_number(cid: str, retail: bool, expected: str) -> None:
     assert DmmCrawler._cid_to_number(cid, retail=retail) == expected
+
+
+# ------------------------------------------------------------------
+# 原文双轨: 各柜台同时给出原文字段与逐字段语言声明
+# ------------------------------------------------------------------
+
+_MONO_HTML = (
+    "<html><body><h1>通販タイトル</h1>"
+    '<div class="wrapper-detailContents"></div><div><p class="mg-b20">通販あらすじ</p></div>'
+    "</body></html>"
+)
+_RENTAL_HTML = (
+    '<html><head><meta property="og:image" content="https://pics.dmm.co.jp/mono/movie/adult/abf355/abf355ps.jpg">'
+    '</head><body><h1 id="title">レンタルタイトル</h1>'
+    '<div class="clear"><p>レンタルあらすじ</p></div></body></html>'
+)
+
+
+def _web_with_response(response: str | dict[str, object]) -> AsyncMock:
+    web = AsyncMock()
+    if isinstance(response, dict):
+        web.post_json.return_value = response
+    else:
+        web.get_text.return_value = response
+    return web
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "response", "expected"),
+    [
+        pytest.param(
+            "https://video.dmm.co.jp/?cid=ssis00497",
+            {"data": {"ppvContent": {"title": "配信タイトル", "description": "配信あらすじ"}}},
+            ("配信タイトル", "配信あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="digital",
+        ),
+        pytest.param(
+            "https://video.dmm.co.jp/?cid=ssis00497",
+            {"data": {"ppvContent": {"title": "配信タイトル"}}},
+            ("配信タイトル", None, {"original_title": "jp"}),
+            id="digital_plot_missing",
+        ),
+        pytest.param(
+            "https://www.dmm.co.jp/mono/movie/-/detail/=/cid=abf355/",
+            _MONO_HTML,
+            ("通販タイトル", "通販あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="mono",
+        ),
+        pytest.param(
+            "https://www.dmm.co.jp/rental/ppr/-/detail=/cid=abf355/",
+            _RENTAL_HTML,
+            ("レンタルタイトル", "レンタルあらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="rental",
+        ),
+        pytest.param(
+            "https://tv.dmm.co.jp/list/?content=ssis00497",
+            {"data": {"fanzaTvPlus": {"content": {"title": "Fanzaタイトル", "description": "Fanzaあらすじ"}}}},
+            ("Fanzaタイトル", "Fanzaあらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="fanza_tv",
+        ),
+        pytest.param(
+            "https://tv.dmm.com/vod/detail/?seasonId=991",
+            {"data": {"video": {"titleName": "DmmTvタイトル", "description": "DmmTvあらすじ"}}},
+            ("DmmTvタイトル", "DmmTvあらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="dmm_tv",
+        ),
+    ],
+)
+async def test_dmm_scrape_emits_original_fields(
+    url: str, response: str | dict[str, object], expected: tuple[str | None, str | None, dict[str, str] | None]
+) -> None:
+    """原文与标题 / 简介同源 (日文), 简介缺省时只声明标题."""
+    crawler = DmmCrawler(client=HttpClient(web=_web_with_response(response)))
+    meta = await crawler._scrape(url)
+    assert meta is not None
+    assert (meta.original_title, meta.original_plot, meta.field_languages) == expected

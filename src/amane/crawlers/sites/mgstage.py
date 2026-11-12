@@ -5,7 +5,7 @@ from parsel import Selector
 from ...enums import SiteName
 from ..base import Crawler, CrawlerProfile
 from ..http import RequestError
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text, number_variants, select_number_index
 
 #: 竖版海报与横版放大图同目录同名, 只差文件名前缀; 详情页只引用后者, 海报地址由封面推导.
@@ -120,10 +120,12 @@ class MGStageCrawler(Crawler):
         plot = "\n".join(
             extract_all_texts(html, '//dl[@id="introduction"]/dd/p[not(contains(@class, "more"))]//text()')
         )
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         return MediaMetadata(
             number=number,
             title=title,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             publisher=publisher or None,
@@ -132,6 +134,8 @@ class MGStageCrawler(Crawler):
             tags=tags,
             series=series or None,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[poster_url] if poster_url else [],
             thumb_urls=[thumb_url] if thumb_url else [],
             extrafanart=extrafanart,

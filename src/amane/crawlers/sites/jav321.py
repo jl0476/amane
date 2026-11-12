@@ -5,7 +5,7 @@ from parsel import Selector
 
 from ...enums import SiteName
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text, is_same_number
 
 
@@ -51,10 +51,12 @@ class Jav321Crawler(Crawler):
         # 没有快照区的条目退回面板图, 与本层补齐前的取值一致.
         cover = samples[0] if samples else panel_image
         plot = extract_text(html, '//div[@class="panel-body"]/div[@class="row"]/div[@class="col-md-12"]/text()')
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         return MediaMetadata(
             number=number,
             title=title,
+            original_title=original_title,
             actors=film_actors(_field_links(html, "出演者")),
             studio=studio[0] if studio else None,
             release=_field_text(html, "配信開始日") or None,
@@ -65,6 +67,8 @@ class Jav321Crawler(Crawler):
             poster_urls=[panel_image] if panel_image else [],
             extrafanart=samples[1:],
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             source_url=url,
         )
 

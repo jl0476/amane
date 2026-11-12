@@ -14,7 +14,7 @@ from ...enums import SiteName
 from ...net.connectivity import ConnectivityOutcome, probe_get
 from ...plugins.models import SourceTrait
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text
 
 if TYPE_CHECKING:
@@ -385,10 +385,12 @@ class OfficialCrawler(Crawler):
         )
 
         studio = self._extract_studio(html)
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         return MediaMetadata(
             number=number,
             title=title or None,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             release=release or None,
@@ -396,6 +398,8 @@ class OfficialCrawler(Crawler):
             tags=tags,
             series=series or None,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             directors=directors,
             poster_urls=_poster_urls(thumb_url),
             thumb_urls=[thumb_url] if thumb_url else [],

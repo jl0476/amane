@@ -1,4 +1,4 @@
-"""giga 的年龄确认会话: 领取时机, 站内 Referer, 会话失效后的重领与重试, 并发取页的串行, 零结果页的区分.
+"""giga 的年龄确认会话: 领取时机, 站内 Referer, 会话失效后的重领与重试, 并发取页的串行, 零结果页的区分; 原文双轨的声明口径.
 
 顺序用例的假出站通道按序回放两个通道 (低层 request 领会话, get_text 取页), 夹具是真实响应, 不打网络;
 并发用例的假出站通道另按线上实测的年龄墙状态机应答.
@@ -23,7 +23,7 @@ from amane.crawlers.sites.giga import GigaCrawler, _is_age_gate, _issued_session
 from amane.net.errors import FailureReason, RequestError, SourceError
 from amane.observability.replay import _ReplayResponse
 
-from .driven import load_response_file
+from .driven import bare_response, load_response_file
 
 CASES = Path(__file__).parent / "cases" / "giga"
 ENTRY = "https://www.giga-web.jp/cookie_set.php"
@@ -321,3 +321,44 @@ async def test_claim_failure_is_not_recorded_as_claimed() -> None:
     pages, entries = _calls(web)
     assert pages == [SEARCH, SEARCH, SEARCH]
     assert entries == [ENTRY] * 5
+
+
+# ------------------------------------------------------------------
+# 原文双轨
+# ------------------------------------------------------------------
+
+_PRODUCT_ORIGINAL_HTML = (
+    '<html><body><div id="works_pic"><h5>タイトル</h5></div>'
+    '<div id="works_txt"><dl><dt>作品番号</dt><dd>THPA-17</dd></dl></div>'
+    '<div id="story_list2"><ul><li class="story_window">あらすじ</li></ul></div></body></html>'
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param(
+            _PRODUCT_ORIGINAL_HTML,
+            ("タイトル", "あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="title_and_plot",
+        ),
+        pytest.param(
+            '<html><body><div id="works_pic"><h5>タイトル</h5></div>'
+            '<div id="works_txt"><dl><dt>作品番号</dt><dd>THPA-17</dd></dl></div></body></html>',
+            ("タイトル", None, {"original_title": "jp"}),
+            id="plot_missing",
+        ),
+    ],
+)
+async def test_giga_scrape_emits_original_fields(
+    html: str, expected: tuple[str | None, str | None, dict[str, str] | None]
+) -> None:
+    """原文与标题 / 简介同源 (日文), 简介缺省时只声明标题."""
+    web = AsyncMock()
+    web.request.return_value = bare_response(ISSUED)
+    web.get_text.return_value = html
+    crawler = GigaCrawler(client=HttpClient(web=web))
+    meta = await crawler._scrape(PRODUCT)
+    assert meta is not None
+    assert (meta.original_title, meta.original_plot, meta.field_languages) == expected

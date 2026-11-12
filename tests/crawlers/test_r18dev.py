@@ -4,9 +4,12 @@
 因 r18dev 是无 HTTP 的 SQL 爬虫, 不使用 TOML 数据驱动, 直接测试映射层.
 """
 
+import pytest
+
 from amane.crawlers.r18dev.mapper import _generate_gallery, to_metadata
 from amane.crawlers.r18dev.models import R18Video, R18VideoDetail
 from amane.crawlers.r18dev.repository import content_id_candidates
+from amane.enums import Language
 
 # --- 封面与海报 ---
 
@@ -130,3 +133,52 @@ class TestContentIdCandidates:
     def test_no_zero_padding_when_not_needed(self):
         result = content_id_candidates("ABC-456")
         assert len(result) == 2
+
+
+# --- 原文双轨 ---
+
+
+@pytest.mark.parametrize(
+    ("video_kwargs", "language", "expected"),
+    [
+        pytest.param(
+            {"title_ja": "日本語タイトル", "comment_ja": "日本語あらすじ"},
+            None,
+            ("日本語タイトル", "日本語あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="default_prefers_ja",
+        ),
+        pytest.param(
+            {"title_ja": "日本語タイトル", "comment_ja": "日本語あらすじ"},
+            Language.JP,
+            ("日本語タイトル", "日本語あらすじ", {"original_title": "jp", "original_plot": "jp"}),
+            id="jp_request",
+        ),
+        pytest.param(
+            {"title_ja": "日本語タイトル", "title_en": "English", "comment_en": "English plot"},
+            Language.EN,
+            ("日本語タイトル", None, {"original_title": "jp"}),
+            id="en_request_keeps_ja_original",
+        ),
+        pytest.param(
+            {"title_ja": "日本語タイトル", "title_en": "English"},
+            None,
+            ("日本語タイトル", None, {"original_title": "jp"}),
+            id="comment_ja_missing",
+        ),
+        pytest.param(
+            {"title_en": "English", "comment_en": "English plot"},
+            Language.EN,
+            (None, None, None),
+            id="ja_tracks_all_missing",
+        ),
+    ],
+)
+def test_mapper_emits_original_fields(
+    video_kwargs: dict[str, str],
+    language: Language | None,
+    expected: tuple[str | None, str | None, dict[str, str] | None],
+):
+    """原文固定取日文轨, 与请求语言无关; 该轨为空时不声明对应字段的语言."""
+    video = R18Video.model_validate({"content_id": "ssis00497", **video_kwargs})
+    meta = to_metadata(R18VideoDetail(video=video), "SSIS-497", language=language)
+    assert (meta.original_title, meta.original_plot, meta.field_languages) == expected
