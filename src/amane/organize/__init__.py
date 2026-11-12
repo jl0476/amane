@@ -2,16 +2,19 @@ from ..enums import MoveMode
 from .file import OrganizeResult, PlaceOutcome, TargetCheck, TargetState, execute_organize, target_state, video_dest
 from .link import create_video_link
 from .path_templates import (
+    ALL_SIDECARS,
     EXTRAFANART_NAME_TEMPLATE_DEFAULT,
     NAMING_TEMPLATE_FIELDS,
     VIDEO_TEMPLATE_DEFAULT,
     ExtrafanartNameTemplate,
     PathTemplate,
     ResolvedPaths,
+    ResolvedSidecars,
     normalize_link_template,
     render_extrafanart_names,
     render_path_template,
     resolve_paths,
+    resolve_sidecar_paths,
     resolve_subtitle_path,
     sidecar_template,
     validate_extrafanart_name_template,
@@ -27,6 +30,7 @@ from .strm_content import (
 from .subtitles import SubtitleConflict, discover_subtitles, place_subtitles
 
 __all__ = [
+    "ALL_SIDECARS",
     "EXTRAFANART_NAME_TEMPLATE_DEFAULT",
     "NAMING_TEMPLATE_FIELDS",
     "VIDEO_TEMPLATE_DEFAULT",
@@ -36,6 +40,7 @@ __all__ = [
     "PathTemplate",
     "PlaceOutcome",
     "ResolvedPaths",
+    "ResolvedSidecars",
     "StrmContentTemplate",
     "SubtitleConflict",
     "TargetCheck",

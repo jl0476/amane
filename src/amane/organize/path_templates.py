@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import AfterValidator
 
@@ -34,6 +34,26 @@ class ResolvedPaths:
     link: Path | None = None
     context: TemplateContext | None = None
     """渲染剧照文件名需要的同一份取值 (含 ``{video_*}`` / ``{link_*}``); 手工构造时可为 None."""
+
+
+type SidecarKind = Literal["thumb", "poster", "fanart", "extrafanart", "nfo", "trailer", "subtitle"]
+"""附属产物种类; subtitle 需要字幕源文件提供 `{ext}` / `{raw_srt_name}`, 由 resolve_subtitle_path 承载."""
+
+ALL_SIDECARS: frozenset[SidecarKind] = frozenset(("thumb", "poster", "fanart", "extrafanart", "nfo", "trailer"))
+"""resolve_paths 渲染的附属全集; subtitle 不在此渲染 (无字幕源可取)."""
+
+
+@dataclass
+class ResolvedSidecars:
+    """按需渲染的附属产物; 未列入 artifacts 的字段为 None."""
+
+    thumb: Path | None = None
+    poster: Path | None = None
+    fanart: Path | None = None
+    extrafanart_dir: Path | None = None
+    nfo: Path | None = None
+    trailer: Path | None = None
+    subtitle: Path | None = None
 
 
 VIDEO_TEMPLATE_DEFAULT = NATIVE_VIDEO_TEMPLATE_DEFAULT
@@ -191,17 +211,17 @@ def resolve_paths(
     「视频模板解析为库根目录」守卫 (规格 3.4.1); 附属产物按模板落在视频所在目录.
     """
     base_path = Path(library.path)
-    syntax = _syntax_of(naming)
-    backend = template_backend(syntax)
-    ctx = TemplateContext.from_metadata(
+    ctx = _video_context(
+        library,
         metadata,
-        ext=ext,
+        video_path=None,
         source_path=source_path,
+        ext=ext,
         file_info=file_info,
         cd=cd,
         actor_genders=actor_genders,
-        library_root=base_path,
     )
+    backend = template_backend(_syntax_of(naming))
 
     # 先渲染视频, 注入 `{video_*}` 后再渲染链接与刮削产物.
     if move_mode is MoveMode.INPLACE:
@@ -218,32 +238,121 @@ def resolve_paths(
     link = _resolve_link_path(library, ctx, base_path, safe_dirs, naming=naming)
     ctx.apply_link(link)
 
-    thumb_template = naming.thumb_template if naming is not None else library.thumb_template
-    poster_template = naming.poster_template if naming is not None else library.poster_template
-    fanart_template = naming.fanart_template if naming is not None else library.fanart_template
-    extrafanart_template = naming.extrafanart_template if naming is not None else library.extrafanart_template
-    nfo_template = naming.nfo_template if naming is not None else library.nfo_template
-    trailer_template = naming.trailer_template if naming is not None else library.trailer_template
-
-    thumb = backend.resolve(sidecar_template(thumb_template, "thumb_template", syntax), ctx, base_path, safe_dirs)
-    poster = backend.resolve(sidecar_template(poster_template, "poster_template", syntax), ctx, base_path, safe_dirs)
-    fanart = backend.resolve(sidecar_template(fanart_template, "fanart_template", syntax), ctx, base_path, safe_dirs)
-    extrafanart_dir = backend.resolve(
-        sidecar_template(extrafanart_template, "extrafanart_template", syntax), ctx, base_path, safe_dirs
+    sidecars = resolve_sidecar_paths(
+        library,
+        metadata,
+        consume_path=link if link is not None else video,
+        video_path=video,
+        source_path=source_path,
+        ext=ext,
+        cd=cd,
+        file_info=file_info,
+        safe_dirs=safe_dirs,
+        actor_genders=actor_genders,
+        artifacts=ALL_SIDECARS,
+        naming=naming,
     )
-    nfo = backend.resolve(sidecar_template(nfo_template, "nfo_template", syntax), ctx, base_path, safe_dirs)
-    trailer = backend.resolve(sidecar_template(trailer_template, "trailer_template", syntax), ctx, base_path, safe_dirs)
 
+    # 全集传入: 六个附属产物必然都有值.
+    assert sidecars.thumb is not None and sidecars.poster is not None and sidecars.fanart is not None
+    assert sidecars.extrafanart_dir is not None and sidecars.nfo is not None and sidecars.trailer is not None
     return ResolvedPaths(
         video=video,
-        thumb=thumb,
-        poster=poster,
-        fanart=fanart,
-        extrafanart_dir=extrafanart_dir,
-        nfo=nfo,
-        trailer=trailer,
+        thumb=sidecars.thumb,
+        poster=sidecars.poster,
+        fanart=sidecars.fanart,
+        extrafanart_dir=sidecars.extrafanart_dir,
+        nfo=sidecars.nfo,
+        trailer=sidecars.trailer,
         link=link,
         context=ctx,
+    )
+
+
+def _video_context(
+    library: Library,
+    metadata: Metadata,
+    *,
+    video_path: Path | None,
+    source_path: Path | None,
+    ext: str,
+    file_info: FileInfo | None,
+    cd: int | None,
+    actor_genders: Mapping[str, ActorGender] | None,
+) -> TemplateContext:
+    """上下文构造的唯一入口 (规格 3.4.4): resolve_paths 与 resolve_sidecar_paths 共用, 不得各写一份.
+
+    ``video_path`` 非 None 时注入 ``{video_*}``; resolve_paths 传 None (视频尚未渲染, 链接模板
+    不能先看到 ``{link_*}``), 渲染后自行 apply_video.
+    """
+    base_path = Path(library.path)
+    ctx = TemplateContext.from_metadata(
+        metadata,
+        ext=ext,
+        source_path=source_path,
+        file_info=file_info,
+        cd=cd,
+        actor_genders=actor_genders,
+        library_root=base_path,
+    )
+    if video_path is not None:
+        ctx.apply_video(video_path, base_path)
+    return ctx
+
+
+def resolve_sidecar_paths(
+    library: Library,
+    metadata: Metadata,
+    *,
+    consume_path: Path,
+    video_path: Path,
+    source_path: Path | None = None,
+    ext: str = "",
+    cd: int | None = None,
+    file_info: FileInfo | None = None,
+    safe_dirs: Sequence[Path] | None = (),
+    actor_genders: Mapping[str, ActorGender] | None = None,
+    artifacts: Collection[SidecarKind] = ALL_SIDECARS,
+    naming: NamingConfig | None = None,
+) -> ResolvedSidecars:
+    """渲染 ``artifacts`` 指定的附属产物, 不渲染视频与链接模板 (规格 3.4.4).
+
+    ``video_path`` 用于注入 ``{video_*}``; ``consume_path`` 用于注入 ``{link_dir}`` / ``{link_name}``
+    (有链接), 无链接时传 ``video_path`` 即退化为视频侧. ``source_path`` 是原始文件路径,
+    ``{raw_dir}`` / ``{raw_name}`` / ``{raw_relpath}`` 由它派生 (template.py::_build_variables),
+    必须传入, 否则含 raw_* 的附属模板渲染结果与整理时不同. artifacts 之外的产物不参与求值:
+    不解析模板、不执行 resolve、不触发任何校验, 返回值对应字段为 None.
+    subtitle 需要字幕源文件提供 ``{ext}`` / ``{raw_srt_name}``, 由 resolve_subtitle_path 承载.
+    ``naming`` 与 ``artifacts`` 正交: naming 决定用哪套模板 (含语法), artifacts 决定渲染哪些产物.
+    """
+    syntax = _syntax_of(naming)
+    backend = template_backend(syntax)
+    ctx = _video_context(
+        library,
+        metadata,
+        video_path=video_path,
+        source_path=source_path,
+        ext=ext,
+        file_info=file_info,
+        cd=cd,
+        actor_genders=actor_genders,
+    )
+    ctx.apply_link(consume_path)
+    base_path = Path(library.path)
+
+    def _render(kind: str, field: str) -> Path | None:
+        if kind not in artifacts:
+            return None
+        value = getattr(naming, field) if naming is not None else getattr(library, field)
+        return backend.resolve(sidecar_template(value, field, syntax), ctx, base_path, safe_dirs)
+
+    return ResolvedSidecars(
+        thumb=_render("thumb", "thumb_template"),
+        poster=_render("poster", "poster_template"),
+        fanart=_render("fanart", "fanart_template"),
+        extrafanart_dir=_render("extrafanart", "extrafanart_template"),
+        nfo=_render("nfo", "nfo_template"),
+        trailer=_render("trailer", "trailer_template"),
     )
 
 
