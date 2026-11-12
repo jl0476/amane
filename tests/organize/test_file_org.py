@@ -1,18 +1,28 @@
 """测试文件整理 - 文件操作"""
 
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from amane.config import HotSettings
+from amane.db.models import Library, MediaFile, Metadata
 from amane.enums import LinkMode
+from amane.handlers.file import execute_file_operations
 from amane.organize import (
     MoveMode,
     PlaceOutcome,
     TargetState,
     create_video_link,
     execute_organize,
+    resolve_paths,
     target_state,
 )
+from amane.parsing import parse_file_info
+
+if TYPE_CHECKING:
+    from amane.media import ResourceStore
+    from amane.net.http import WebClient
 
 
 class TestTargetState:
@@ -410,3 +420,78 @@ class TestCreateVideoLink:
         result = create_video_link.sync(target, occupied, LinkMode.SYMLINK)
         assert result.outcome is PlaceOutcome.FAILED
         assert occupied.read_text() == "other"
+
+
+# --- 任务 23: MoveMode.INPLACE ---
+
+
+def test_inplace_is_not_silent_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """inplace 不移动视频也不静默落空: 未调用 move / copy, 仍返回 PLACED."""
+    src = tmp_path / "MIDV-123.mp4"
+    src.write_bytes(b"video")
+    calls: list[str] = []
+
+    def _reject(name: str):
+        def _call(self: Path, *args: object, **kwargs: object) -> object:
+            calls.append(name)
+            raise AssertionError(f"inplace 模式不应调用 {name}")
+
+        return _call
+
+    for name in ("move", "copy", "hardlink_to", "symlink_to"):
+        monkeypatch.setattr(Path, name, _reject(name))
+
+    result = execute_organize.sync(source=src, target_dir=src.parent, target_stem=src.stem, mode=MoveMode.INPLACE)
+
+    assert result.outcome is PlaceOutcome.PLACED
+    assert result.dest == src
+    assert calls == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_inplace_keeps_video_and_writes_sidecars_in_source_dir(
+    resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """原地整理: 视频不动 (inode 不变), 图片与 NFO 按模板落在源目录, video_template 被忽略."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    src = src_dir / "MIDV-123.mp4"
+    src.write_bytes(b"movie")
+    before = (src.stat().st_ino, src.stat().st_mtime_ns)
+
+    lib = Library(name="t", path=str(tmp_path), video_template="{studio}/{number}/{number}.{ext}")
+    meta = Metadata(number="MIDV-123", studio="StudioX", thumb_urls=["https://s/t.jpg"])
+    paths = resolve_paths(lib, meta, ext="mp4", source_path=src, move_mode=MoveMode.INPLACE)
+    assert paths.video == src
+
+    class _FakeClient:
+        async def download(self, url: str, dest: Path, **kwargs: object) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"image")
+            return True
+
+        async def resolve_final_url(self, url: str, **kwargs: object) -> str:
+            return url
+
+    result = await execute_file_operations(
+        media_file=MediaFile(path=str(src), library_id=1),
+        metadata=meta,
+        paths=paths,
+        move_mode=MoveMode.INPLACE,
+        resource_store=resource_store,
+        file_info=parse_file_info(src),
+        web_client=cast("WebClient", _FakeClient()),
+        config=HotSettings(),
+        library=lib,
+    )
+
+    assert result.outcome is PlaceOutcome.PLACED
+    assert result.dest == src
+    assert (src.stat().st_ino, src.stat().st_mtime_ns) == before
+    assert paths.nfo == src_dir / "MIDV-123.nfo"
+    assert paths.nfo.exists()
+    assert paths.thumb == src_dir / "thumb.jpg"
+    assert paths.thumb.exists()
+    assert paths.fanart.exists()
+    # video_template 指向的位置没有产物
+    assert not (tmp_path / "StudioX").exists()

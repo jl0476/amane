@@ -282,6 +282,7 @@ async def apply_file_operations(
         safe_dirs=safe_dirs,
         actor_genders=actor_genders,
         naming=naming,
+        move_mode=library.move_mode,
     )
     return await execute_file_operations(
         media_file,

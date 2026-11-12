@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from pydantic import AfterValidator
 
-from ..enums import ActorGender, LinkMode
+from ..enums import ActorGender, LinkMode, MoveMode
 from ..parsing.file_info import FileInfo
 from ..utils.path import is_descendant, path_key
 from .template import PLACEHOLDER_MAP_KEYS as PLACEHOLDER_MAP_KEYS
@@ -147,11 +147,14 @@ def resolve_paths(
     actor_genders: Mapping[str, ActorGender] | None = None,
     *,
     naming: NamingConfig | None = None,
+    move_mode: MoveMode = MoveMode.MOVE,
 ) -> ResolvedPaths:
     """``safe_dirs is None`` 时不限制绝对模板写出的路径; 相对模板仍须在 base_path 下.
 
     ``naming`` 非 None 时全部模板字段取自该生效配置, 库行不再参与 (规格 3.1.3);
     None 时维持按库行取值.
+    ``move_mode`` 为 inplace 时视频目标即源路径, video_template 被忽略, 也跳过
+    「视频模板解析为库根目录」守卫 (规格 3.4.1); 附属产物按模板落在视频所在目录.
     """
     base_path = Path(library.path)
     ctx = TemplateContext.from_metadata(
@@ -165,11 +168,16 @@ def resolve_paths(
     )
 
     # 先渲染视频, 注入 `{video_*}` 后再渲染链接与刮削产物.
-    video_template = naming.video_template if naming is not None else library.video_template
-    video = PathEngine(video_template).resolve(ctx, base_path, safe_dirs)
-    if path_key(video) == path_key(base_path):
-        # 空模板或唯一占位符取值落空时, 视频路径退化为库根目录; 后续会以与原因无关的错误失败, 或按库根名在库外落盘.
-        raise ValueError(f"视频模板解析为库根目录: {video_template!r}")
+    if move_mode is MoveMode.INPLACE:
+        if source_path is None:
+            raise ValueError("原地整理需要 source_path: 视频目标即源路径")
+        video = source_path
+    else:
+        video_template = naming.video_template if naming is not None else library.video_template
+        video = PathEngine(video_template).resolve(ctx, base_path, safe_dirs)
+        if path_key(video) == path_key(base_path):
+            # 空模板或唯一占位符取值落空时, 视频路径退化为库根目录; 后续会以与原因无关的错误失败, 或按库根名在库外落盘.
+            raise ValueError(f"视频模板解析为库根目录: {video_template!r}")
     ctx.apply_video(video, base_path)
     link = _resolve_link_path(library, ctx, base_path, safe_dirs, naming=naming)
     ctx.apply_link(link)

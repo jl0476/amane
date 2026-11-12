@@ -80,6 +80,8 @@ class MoveMode(StrEnum):
     COPY = "copy"
     HARDLINK = "hardlink"
     SYMLINK = "symlink"
+    INPLACE = "inplace"
+    """源文件不动, 在源文件所在目录内生成整理结果 (图片 / NFO / 字幕); 视频模板被忽略."""
 
 
 class LinkMode(StrEnum):

@@ -120,6 +120,11 @@ def execute_organize(
                 dest.hardlink_to(disk_source)
             case MoveMode.SYMLINK:
                 dest.symlink_to(disk_source)
+            case MoveMode.INPLACE:
+                # 源文件不动: 视频的目标即源自身 (SAME 分支已就位返回).
+                # 字幕等以源文件为底改名落盘的产物在此退化为复制, 源保留.
+                if dest != disk_source:
+                    disk_source.copy(dest)
 
         logger.debug("file organized", source=source.name, dest=str(dest), mode=mode)
         return OrganizeResult(outcome=PlaceOutcome.PLACED, dest=dest)
