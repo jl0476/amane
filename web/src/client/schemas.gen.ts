@@ -2055,6 +2055,28 @@ export const DownloadableResourceSchema = {
     description: '影片附属资源类型: 刮削写入 Resource, 整理时按库配置复制到库路径.'
 } as const;
 
+export const EffectiveConfigResponseSchema = {
+    properties: {
+        common: {
+            $ref: '#/components/schemas/OrganizeCommonConfig'
+        },
+        naming: {
+            $ref: '#/components/schemas/NamingConfig'
+        },
+        nfo: {
+            $ref: '#/components/schemas/NfoConfig'
+        }
+    },
+    type: 'object',
+    required: [
+        'common',
+        'naming',
+        'nfo'
+    ],
+    title: 'EffectiveConfigResponse',
+    description: 'GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层).'
+} as const;
+
 export const EmbeddingKindSchema = {
     type: 'string',
     enum: [
@@ -3535,6 +3557,81 @@ export const HotSettingsSchema = {
                 }
             }
         },
+        common: {
+            $ref: '#/components/schemas/OrganizeCommonConfig',
+            default: {
+                overwrite_video: false,
+                overwrite_image: true
+            }
+        },
+        naming: {
+            $ref: '#/components/schemas/NamingConfig',
+            default: {
+                syntax: 'native',
+                video_template: '{studio}/{number}/{number}[-CD{cd?}][-{sub?}].{ext}',
+                link_mode: 'strm',
+                subtitle_extensions: [
+                    '.srt',
+                    '.ass',
+                    '.ssa',
+                    '.vtt',
+                    '.sub'
+                ],
+                write_nfo: true,
+                copy_resources: [
+                    'thumb',
+                    'poster',
+                    'extrafanart',
+                    'trailer'
+                ]
+            }
+        },
+        nfo: {
+            $ref: '#/components/schemas/NfoConfig',
+            default: {
+                title: true,
+                originaltitle: true,
+                originaltitle_source: 'title',
+                sorttitle: true,
+                plot: true,
+                outline: true,
+                outline_summary: false,
+                originalplot: false,
+                actor: true,
+                director: true,
+                premiered: true,
+                releasedate: true,
+                year: true,
+                num: true,
+                runtime: true,
+                votes: false,
+                score: true,
+                criticrating: true,
+                country: false,
+                mpaa: true,
+                mpaa_value: 'JP-18+',
+                customrating: false,
+                series: true,
+                set: true,
+                tag: true,
+                genre: true,
+                studio: true,
+                maker: true,
+                publisher: true,
+                label: true,
+                poster: true,
+                cover: true,
+                trailer: true,
+                website: false,
+                external_ids: true,
+                add_part_to_title: false,
+                add_translated_by: false,
+                set_by_actress: false,
+                set_by_serial_name: false,
+                set_by_series: false,
+                additional_tags: []
+            }
+        },
         media_server: {
             $ref: '#/components/schemas/MediaServerConfig',
             default: {
@@ -4392,6 +4489,44 @@ export const LibraryListResponseSchema = {
     title: 'LibraryListResponse'
 } as const;
 
+export const LibraryOverrideResponseSchema = {
+    properties: {
+        section: {
+            type: 'string',
+            title: 'Section'
+        },
+        payload: {
+            additionalProperties: true,
+            type: 'object',
+            title: 'Payload',
+            default: {}
+        }
+    },
+    type: 'object',
+    required: [
+        'section'
+    ],
+    title: 'LibraryOverrideResponse',
+    description: '单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现.'
+} as const;
+
+export const LibraryOverridesResponseSchema = {
+    properties: {
+        overrides: {
+            additionalProperties: {
+                additionalProperties: true,
+                type: 'object'
+            },
+            type: 'object',
+            title: 'Overrides',
+            default: {}
+        }
+    },
+    type: 'object',
+    title: 'LibraryOverridesResponse',
+    description: '该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现.'
+} as const;
+
 export const LibraryResponseSchema = {
     properties: {
         id: {
@@ -4577,6 +4712,13 @@ export const LibraryResponseSchema = {
             type: 'array',
             title: 'Copy Resources'
         },
+        template_overrides: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Template Overrides'
+        },
         trailer_pattern: {
             type: 'string',
             title: 'Trailer Pattern'
@@ -4608,6 +4750,7 @@ export const LibraryResponseSchema = {
         'subtitle_extensions',
         'write_nfo',
         'copy_resources',
+        'template_overrides',
         'trailer_pattern',
         'blacklist_patterns',
         'min_file_size'
@@ -5570,7 +5713,9 @@ export const MetadataFieldSchema = {
     type: 'string',
     enum: [
         'title',
+        'original_title',
         'plot',
+        'original_plot',
         'actors',
         'directors',
         'tags',
@@ -5775,6 +5920,28 @@ export const MetadataPartialSchema = {
             ],
             title: 'Plot'
         },
+        original_title: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Original Title'
+        },
+        original_plot: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Original Plot'
+        },
         directors: {
             anyOf: [
                 {
@@ -5920,6 +6087,17 @@ export const MetadataResponseSchema = {
             ],
             title: 'Title'
         },
+        original_title: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Original Title'
+        },
         actors: {
             items: {
                 type: 'string'
@@ -6001,6 +6179,17 @@ export const MetadataResponseSchema = {
                 }
             ],
             title: 'Plot'
+        },
+        original_plot: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Original Plot'
         },
         directors: {
             items: {
@@ -6122,6 +6311,23 @@ export const MetadataResponseSchema = {
             type: 'object',
             title: 'Field Sources',
             default: {}
+        },
+        field_languages: {
+            additionalProperties: true,
+            type: 'object',
+            title: 'Field Languages',
+            default: {}
+        },
+        website: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Website'
         },
         raw: {
             additionalProperties: true,
@@ -6256,6 +6462,162 @@ export const MoveModeSchema = {
     description: '整理时将源文件写入模板路径的方式.'
 } as const;
 
+export const NamingConfigSchema = {
+    properties: {
+        syntax: {
+            type: 'string',
+            enum: [
+                'native',
+                'jinja'
+            ],
+            title: 'Syntax',
+            default: 'native'
+        },
+        video_template: {
+            type: 'string',
+            title: 'Video Template',
+            default: '{studio}/{number}/{number}[-CD{cd?}][-{sub?}].{ext}'
+        },
+        link_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Link Template'
+        },
+        link_mode: {
+            $ref: '#/components/schemas/LinkMode',
+            default: 'strm'
+        },
+        strm_content_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Strm Content Template'
+        },
+        thumb_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Thumb Template'
+        },
+        poster_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Poster Template'
+        },
+        fanart_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Fanart Template'
+        },
+        extrafanart_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Extrafanart Template'
+        },
+        extrafanart_name_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Extrafanart Name Template'
+        },
+        nfo_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Nfo Template'
+        },
+        trailer_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Trailer Template'
+        },
+        subtitle_template: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Subtitle Template'
+        },
+        subtitle_extensions: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Subtitle Extensions'
+        },
+        write_nfo: {
+            type: 'boolean',
+            title: 'Write Nfo',
+            default: true
+        },
+        copy_resources: {
+            items: {
+                $ref: '#/components/schemas/DownloadableResource'
+            },
+            type: 'array',
+            title: 'Copy Resources'
+        }
+    },
+    additionalProperties: false,
+    type: 'object',
+    title: 'NamingConfig',
+    description: '命名模板与语法. 字段与 Library 行的模板类字段一一对应.'
+} as const;
+
 export const NetworkConfigSchema = {
     properties: {
         proxy: {
@@ -6334,6 +6696,238 @@ export const NetworkConfigSchema = {
     title: 'NetworkConfig'
 } as const;
 
+export const NfoConfigSchema = {
+    properties: {
+        title: {
+            type: 'boolean',
+            title: 'Title',
+            default: true
+        },
+        originaltitle: {
+            type: 'boolean',
+            title: 'Originaltitle',
+            default: true
+        },
+        originaltitle_source: {
+            type: 'string',
+            enum: [
+                'title',
+                'original'
+            ],
+            title: 'Originaltitle Source',
+            default: 'title'
+        },
+        sorttitle: {
+            type: 'boolean',
+            title: 'Sorttitle',
+            default: true
+        },
+        plot: {
+            type: 'boolean',
+            title: 'Plot',
+            default: true
+        },
+        outline: {
+            type: 'boolean',
+            title: 'Outline',
+            default: true
+        },
+        outline_summary: {
+            type: 'boolean',
+            title: 'Outline Summary',
+            default: false
+        },
+        originalplot: {
+            type: 'boolean',
+            title: 'Originalplot',
+            default: false
+        },
+        actor: {
+            type: 'boolean',
+            title: 'Actor',
+            default: true
+        },
+        director: {
+            type: 'boolean',
+            title: 'Director',
+            default: true
+        },
+        premiered: {
+            type: 'boolean',
+            title: 'Premiered',
+            default: true
+        },
+        releasedate: {
+            type: 'boolean',
+            title: 'Releasedate',
+            default: true
+        },
+        year: {
+            type: 'boolean',
+            title: 'Year',
+            default: true
+        },
+        num: {
+            type: 'boolean',
+            title: 'Num',
+            default: true
+        },
+        runtime: {
+            type: 'boolean',
+            title: 'Runtime',
+            default: true
+        },
+        votes: {
+            type: 'boolean',
+            title: 'Votes',
+            default: false
+        },
+        score: {
+            type: 'boolean',
+            title: 'Score',
+            default: true
+        },
+        criticrating: {
+            type: 'boolean',
+            title: 'Criticrating',
+            default: true
+        },
+        country: {
+            type: 'boolean',
+            title: 'Country',
+            default: false
+        },
+        mpaa: {
+            type: 'boolean',
+            title: 'Mpaa',
+            default: true
+        },
+        mpaa_value: {
+            type: 'string',
+            title: 'Mpaa Value',
+            default: 'JP-18+'
+        },
+        customrating: {
+            type: 'boolean',
+            title: 'Customrating',
+            default: false
+        },
+        series: {
+            type: 'boolean',
+            title: 'Series',
+            default: true
+        },
+        set: {
+            type: 'boolean',
+            title: 'Set',
+            default: true
+        },
+        tag: {
+            type: 'boolean',
+            title: 'Tag',
+            default: true
+        },
+        genre: {
+            type: 'boolean',
+            title: 'Genre',
+            default: true
+        },
+        studio: {
+            type: 'boolean',
+            title: 'Studio',
+            default: true
+        },
+        maker: {
+            type: 'boolean',
+            title: 'Maker',
+            default: true
+        },
+        publisher: {
+            type: 'boolean',
+            title: 'Publisher',
+            default: true
+        },
+        label: {
+            type: 'boolean',
+            title: 'Label',
+            default: true
+        },
+        poster: {
+            type: 'boolean',
+            title: 'Poster',
+            default: true
+        },
+        cover: {
+            type: 'boolean',
+            title: 'Cover',
+            default: true
+        },
+        trailer: {
+            type: 'boolean',
+            title: 'Trailer',
+            default: true
+        },
+        website: {
+            type: 'boolean',
+            title: 'Website',
+            default: false
+        },
+        external_ids: {
+            type: 'boolean',
+            title: 'External Ids',
+            default: true
+        },
+        add_part_to_title: {
+            type: 'boolean',
+            title: 'Add Part To Title',
+            default: false
+        },
+        add_translated_by: {
+            type: 'boolean',
+            title: 'Add Translated By',
+            default: false
+        },
+        tagline_format: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Tagline Format'
+        },
+        set_by_actress: {
+            type: 'boolean',
+            title: 'Set By Actress',
+            default: false
+        },
+        set_by_serial_name: {
+            type: 'boolean',
+            title: 'Set By Serial Name',
+            default: false
+        },
+        set_by_series: {
+            type: 'boolean',
+            title: 'Set By Series',
+            default: false
+        },
+        additional_tags: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Additional Tags',
+            default: []
+        }
+    },
+    additionalProperties: false,
+    type: 'object',
+    title: 'NfoConfig',
+    description: 'NFO 字段开关. 字段清单与默认值见 3.4.3.'
+} as const;
+
 export const OptionalPathTemplateDefaultsSchema = {
     properties: {
         thumb_template: {
@@ -6382,6 +6976,25 @@ export const OptionalPathTemplateDefaultsSchema = {
     ],
     title: 'OptionalPathTemplateDefaults',
     description: '附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).'
+} as const;
+
+export const OrganizeCommonConfigSchema = {
+    properties: {
+        overwrite_video: {
+            type: 'boolean',
+            title: 'Overwrite Video',
+            default: false
+        },
+        overwrite_image: {
+            type: 'boolean',
+            title: 'Overwrite Image',
+            default: true
+        }
+    },
+    additionalProperties: false,
+    type: 'object',
+    title: 'OrganizeCommonConfig',
+    description: '整理时的覆写策略. 只放本阶段实现的字段.'
 } as const;
 
 export const OrganizeConflictSchema = {

@@ -1223,6 +1223,17 @@ export type DesktopResponse = {
 export type DownloadableResource = 'thumb' | 'poster' | 'extrafanart' | 'trailer';
 
 /**
+ * EffectiveConfigResponse
+ *
+ * GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层).
+ */
+export type EffectiveConfigResponse = {
+    common: OrganizeCommonConfig;
+    naming: NamingConfig;
+    nfo: NfoConfig;
+};
+
+/**
  * EmbeddingKind
  */
 export type EmbeddingKind = 'cover' | 'still';
@@ -1843,6 +1854,9 @@ export type HealthResponse = {
  */
 export type HotSettings = {
     scraping?: ScrapingConfig;
+    common?: OrganizeCommonConfig;
+    naming?: NamingConfig;
+    nfo?: NfoConfig;
     media_server?: MediaServerConfig;
     actor_scraping?: ActorScrapingConfig;
     agent?: AgentConfig;
@@ -2239,6 +2253,40 @@ export type LibraryListResponse = {
 };
 
 /**
+ * LibraryOverrideResponse
+ *
+ * 单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现.
+ */
+export type LibraryOverrideResponse = {
+    /**
+     * Section
+     */
+    section: string;
+    /**
+     * Payload
+     */
+    payload?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * LibraryOverridesResponse
+ *
+ * 该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现.
+ */
+export type LibraryOverridesResponse = {
+    /**
+     * Overrides
+     */
+    overrides?: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+};
+
+/**
  * LibraryResponse
  */
 export type LibraryResponse = {
@@ -2330,6 +2378,10 @@ export type LibraryResponse = {
      * Copy Resources
      */
     copy_resources: Array<DownloadableResource>;
+    /**
+     * Template Overrides
+     */
+    template_overrides: Array<string>;
     /**
      * Trailer Pattern
      */
@@ -2795,7 +2847,7 @@ export type MetadataDetailResponse = {
 /**
  * MetadataField
  */
-export type MetadataField = 'title' | 'plot' | 'actors' | 'directors' | 'tags' | 'series' | 'release' | 'runtime' | 'publisher' | 'studio' | 'poster_urls' | 'thumb_urls' | 'trailer_urls' | 'extrafanart' | 'score';
+export type MetadataField = 'title' | 'original_title' | 'plot' | 'original_plot' | 'actors' | 'directors' | 'tags' | 'series' | 'release' | 'runtime' | 'publisher' | 'studio' | 'poster_urls' | 'thumb_urls' | 'trailer_urls' | 'extrafanart' | 'score';
 
 /**
  * MetadataListResponse
@@ -2894,6 +2946,14 @@ export type MetadataPartial = {
      */
     plot?: string | null;
     /**
+     * Original Title
+     */
+    original_title?: string | null;
+    /**
+     * Original Plot
+     */
+    original_plot?: string | null;
+    /**
      * Directors
      */
     directors?: Array<string> | null;
@@ -2953,6 +3013,10 @@ export type MetadataResponse = {
      */
     title?: string | null;
     /**
+     * Original Title
+     */
+    original_title?: string | null;
+    /**
      * Actors
      */
     actors?: Array<string>;
@@ -2984,6 +3048,10 @@ export type MetadataResponse = {
      * Plot
      */
     plot?: string | null;
+    /**
+     * Original Plot
+     */
+    original_plot?: string | null;
     /**
      * Directors
      */
@@ -3055,6 +3123,16 @@ export type MetadataResponse = {
         [key: string]: unknown;
     };
     /**
+     * Field Languages
+     */
+    field_languages?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Website
+     */
+    website?: string | null;
+    /**
      * Raw
      */
     raw?: {
@@ -3123,6 +3201,75 @@ export type Mosaic = 'uncensored' | 'cracked' | 'leaked';
 export type MoveMode = 'move' | 'copy' | 'hardlink' | 'symlink';
 
 /**
+ * NamingConfig
+ *
+ * 命名模板与语法. 字段与 Library 行的模板类字段一一对应.
+ */
+export type NamingConfig = {
+    /**
+     * Syntax
+     */
+    syntax?: 'native' | 'jinja';
+    /**
+     * Video Template
+     */
+    video_template?: string;
+    /**
+     * Link Template
+     */
+    link_template?: string | null;
+    link_mode?: LinkMode;
+    /**
+     * Strm Content Template
+     */
+    strm_content_template?: string | null;
+    /**
+     * Thumb Template
+     */
+    thumb_template?: string | null;
+    /**
+     * Poster Template
+     */
+    poster_template?: string | null;
+    /**
+     * Fanart Template
+     */
+    fanart_template?: string | null;
+    /**
+     * Extrafanart Template
+     */
+    extrafanart_template?: string | null;
+    /**
+     * Extrafanart Name Template
+     */
+    extrafanart_name_template?: string | null;
+    /**
+     * Nfo Template
+     */
+    nfo_template?: string | null;
+    /**
+     * Trailer Template
+     */
+    trailer_template?: string | null;
+    /**
+     * Subtitle Template
+     */
+    subtitle_template?: string | null;
+    /**
+     * Subtitle Extensions
+     */
+    subtitle_extensions?: Array<string>;
+    /**
+     * Write Nfo
+     */
+    write_nfo?: boolean;
+    /**
+     * Copy Resources
+     */
+    copy_resources?: Array<DownloadableResource>;
+};
+
+/**
  * NetworkConfig
  */
 export type NetworkConfig = {
@@ -3168,6 +3315,182 @@ export type NetworkConfig = {
 };
 
 /**
+ * NfoConfig
+ *
+ * NFO 字段开关. 字段清单与默认值见 3.4.3.
+ */
+export type NfoConfig = {
+    /**
+     * Title
+     */
+    title?: boolean;
+    /**
+     * Originaltitle
+     */
+    originaltitle?: boolean;
+    /**
+     * Originaltitle Source
+     */
+    originaltitle_source?: 'title' | 'original';
+    /**
+     * Sorttitle
+     */
+    sorttitle?: boolean;
+    /**
+     * Plot
+     */
+    plot?: boolean;
+    /**
+     * Outline
+     */
+    outline?: boolean;
+    /**
+     * Outline Summary
+     */
+    outline_summary?: boolean;
+    /**
+     * Originalplot
+     */
+    originalplot?: boolean;
+    /**
+     * Actor
+     */
+    actor?: boolean;
+    /**
+     * Director
+     */
+    director?: boolean;
+    /**
+     * Premiered
+     */
+    premiered?: boolean;
+    /**
+     * Releasedate
+     */
+    releasedate?: boolean;
+    /**
+     * Year
+     */
+    year?: boolean;
+    /**
+     * Num
+     */
+    num?: boolean;
+    /**
+     * Runtime
+     */
+    runtime?: boolean;
+    /**
+     * Votes
+     */
+    votes?: boolean;
+    /**
+     * Score
+     */
+    score?: boolean;
+    /**
+     * Criticrating
+     */
+    criticrating?: boolean;
+    /**
+     * Country
+     */
+    country?: boolean;
+    /**
+     * Mpaa
+     */
+    mpaa?: boolean;
+    /**
+     * Mpaa Value
+     */
+    mpaa_value?: string;
+    /**
+     * Customrating
+     */
+    customrating?: boolean;
+    /**
+     * Series
+     */
+    series?: boolean;
+    /**
+     * Set
+     */
+    set?: boolean;
+    /**
+     * Tag
+     */
+    tag?: boolean;
+    /**
+     * Genre
+     */
+    genre?: boolean;
+    /**
+     * Studio
+     */
+    studio?: boolean;
+    /**
+     * Maker
+     */
+    maker?: boolean;
+    /**
+     * Publisher
+     */
+    publisher?: boolean;
+    /**
+     * Label
+     */
+    label?: boolean;
+    /**
+     * Poster
+     */
+    poster?: boolean;
+    /**
+     * Cover
+     */
+    cover?: boolean;
+    /**
+     * Trailer
+     */
+    trailer?: boolean;
+    /**
+     * Website
+     */
+    website?: boolean;
+    /**
+     * External Ids
+     */
+    external_ids?: boolean;
+    /**
+     * Add Part To Title
+     */
+    add_part_to_title?: boolean;
+    /**
+     * Add Translated By
+     */
+    add_translated_by?: boolean;
+    /**
+     * Tagline Format
+     */
+    tagline_format?: string | null;
+    /**
+     * Set By Actress
+     */
+    set_by_actress?: boolean;
+    /**
+     * Set By Serial Name
+     */
+    set_by_serial_name?: boolean;
+    /**
+     * Set By Series
+     */
+    set_by_series?: boolean;
+    /**
+     * Additional Tags
+     */
+    additional_tags?: Array<string>;
+};
+
+/**
  * OptionalPathTemplateDefaults
  *
  * 附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).
@@ -3205,6 +3528,22 @@ export type OptionalPathTemplateDefaults = {
      * Subtitle Template
      */
     subtitle_template: string;
+};
+
+/**
+ * OrganizeCommonConfig
+ *
+ * 整理时的覆写策略. 只放本阶段实现的字段.
+ */
+export type OrganizeCommonConfig = {
+    /**
+     * Overwrite Video
+     */
+    overwrite_video?: boolean;
+    /**
+     * Overwrite Image
+     */
+    overwrite_image?: boolean;
 };
 
 /**
@@ -9215,6 +9554,139 @@ export type UpdateLibraryResponses = {
 };
 
 export type UpdateLibraryResponse = UpdateLibraryResponses[keyof UpdateLibraryResponses];
+
+export type ListLibraryOverridesData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides';
+};
+
+export type ListLibraryOverridesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListLibraryOverridesError = ListLibraryOverridesErrors[keyof ListLibraryOverridesErrors];
+
+export type ListLibraryOverridesResponses = {
+    /**
+     * Successful Response
+     */
+    200: LibraryOverridesResponse;
+};
+
+export type ListLibraryOverridesResponse = ListLibraryOverridesResponses[keyof ListLibraryOverridesResponses];
+
+export type DeleteLibraryOverrideData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+        /**
+         * Section
+         */
+        section: string;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides/{section}';
+};
+
+export type DeleteLibraryOverrideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteLibraryOverrideError = DeleteLibraryOverrideErrors[keyof DeleteLibraryOverrideErrors];
+
+export type DeleteLibraryOverrideResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteLibraryOverrideResponse = DeleteLibraryOverrideResponses[keyof DeleteLibraryOverrideResponses];
+
+export type PutLibraryOverrideData = {
+    /**
+     * Payload
+     */
+    body: {
+        [key: string]: unknown;
+    };
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+        /**
+         * Section
+         */
+        section: string;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides/{section}';
+};
+
+export type PutLibraryOverrideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PutLibraryOverrideError = PutLibraryOverrideErrors[keyof PutLibraryOverrideErrors];
+
+export type PutLibraryOverrideResponses = {
+    /**
+     * Successful Response
+     */
+    200: LibraryOverrideResponse;
+};
+
+export type PutLibraryOverrideResponse = PutLibraryOverrideResponses[keyof PutLibraryOverrideResponses];
+
+export type GetEffectiveConfigData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/effective-config';
+};
+
+export type GetEffectiveConfigErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetEffectiveConfigError = GetEffectiveConfigErrors[keyof GetEffectiveConfigErrors];
+
+export type GetEffectiveConfigResponses = {
+    /**
+     * Successful Response
+     */
+    200: EffectiveConfigResponse;
+};
+
+export type GetEffectiveConfigResponse = GetEffectiveConfigResponses[keyof GetEffectiveConfigResponses];
 
 export type ClouddriveNotifyData = {
     body: CloudDriveNotifyRequest;

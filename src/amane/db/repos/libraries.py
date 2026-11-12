@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any, Unpack
 
 from sqlmodel import col, select
@@ -179,6 +180,64 @@ class LibrariesRepoMixin(RepositoryMixinBase):
             if row is None:
                 return None
             return dict(row.payload)
+
+    async def list_config_overrides(self, library_id: int) -> list[ConfigOverride]:
+        """该库全部覆盖行, 按 section 排序保证响应稳定."""
+        async with self._session() as session:
+            stmt = (
+                select(ConfigOverride)
+                .where(
+                    col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                    col(ConfigOverride.scope_id) == library_id,
+                )
+                .order_by(col(ConfigOverride.section))
+            )
+            return list((await session.exec(stmt)).all())
+
+    async def upsert_config_override(self, library_id: int, section: str, payload: dict[str, Any]) -> ConfigOverride:
+        """整体替换该 section 的 payload; 无行则建行 (UNIQUE(scope_type, scope_id, section))."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                row = ConfigOverride(
+                    scope_type=CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                    scope_id=library_id,
+                    section=section,
+                    payload=payload,
+                )
+            else:
+                row.payload = payload
+                row.updated_at = datetime.now(UTC)
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row
+
+    async def delete_config_override(self, library_id: int, section: str) -> bool:
+        """清空该 section 的覆盖 (回到继承); 无行返回 False, 调用方按幂等清空处理."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                return False
+            await session.delete(row)
+            await session.commit()
+            return True
 
     async def get_library(self, library_id: int) -> Library | None:
         async with self._session() as session:

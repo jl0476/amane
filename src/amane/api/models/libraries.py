@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...db import Library
 from ...enums import DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
 from ...library import (
@@ -116,6 +117,27 @@ class LibraryResponse(BaseModel):
 
 class LibraryListResponse(BaseModel):
     items: list[LibraryResponse]
+
+
+class LibraryOverrideResponse(BaseModel):
+    """单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现."""
+
+    section: str
+    payload: dict[str, Any] = {}
+
+
+class LibraryOverridesResponse(BaseModel):
+    """该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现."""
+
+    overrides: dict[str, dict[str, Any]] = {}
+
+
+class EffectiveConfigResponse(BaseModel):
+    """GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层)."""
+
+    common: OrganizeCommonConfig
+    naming: NamingConfig
+    nfo: NfoConfig
 
 
 @subset_of(Library, covariant=True)

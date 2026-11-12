@@ -1,16 +1,22 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from fastapi import APIRouter, HTTPException, Response
+from pydantic import ValidationError
 
-from ...db.models import TEMPLATE_OVERRIDE_FIELDS, TaskType
+from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
+from ...config.overrides import ConfigResolver, validate_override_payload
+from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, TaskType
 from ...handlers import RefreshPayload, ScanMode
 from ...utils.model import to_resp
-from ..deps import RepoDep, RuntimeDep
+from ..deps import ConfigDep, RepoDep, RuntimeDep
 from ..models import (
+    EffectiveConfigResponse,
     LibraryCreateRequest,
     LibraryListResponse,
+    LibraryOverrideResponse,
+    LibraryOverridesResponse,
     LibraryResponse,
     LibraryUpdateRequest,
     PathTemplateSchemaResponse,
@@ -185,3 +191,57 @@ async def delete_library(library_id: int, repo: RepoDep, runtime: RuntimeDep):
     runtime.inventory_store.drop_library(library_id)
     logger.info("library deleted", library_id=library_id, deleted_media=deleted_media)
     return Response(status_code=204)
+
+
+async def _require_library(library_id: int, repo: RepoDep) -> Library:
+    library = await repo.get_library(library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    return library
+
+
+@router.get("/{library_id}/overrides")
+async def list_library_overrides(library_id: int, repo: RepoDep) -> LibraryOverridesResponse:
+    """该库的全部覆盖, 按 section 分组; payload 为稀疏 JSON, {} 哨兵原样返回."""
+    await _require_library(library_id, repo)
+    rows = await repo.list_config_overrides(library_id)
+    return LibraryOverridesResponse(overrides={row.section: row.payload for row in rows})
+
+
+@router.put("/{library_id}/overrides/{section}")
+async def put_library_override(
+    library_id: int,
+    section: str,
+    payload: dict[str, Any],
+    repo: RepoDep,
+) -> LibraryOverrideResponse:
+    """整体替换某 section 的覆盖 payload; 校验失败 422 且不落库."""
+    await _require_library(library_id, repo)
+    try:
+        validate_override_payload(section, payload)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    row = await repo.upsert_config_override(library_id, section, dict(payload))
+    logger.info("library override updated", library_id=library_id, section=section)
+    return LibraryOverrideResponse(section=row.section, payload=row.payload)
+
+
+@router.delete("/{library_id}/overrides/{section}", status_code=204)
+async def delete_library_override(library_id: int, section: str, repo: RepoDep) -> Response:
+    """清空某 section 的覆盖 (回到继承); 无覆盖行同样 204, 清空语义幂等."""
+    await _require_library(library_id, repo)
+    await repo.delete_config_override(library_id, section)
+    logger.info("library override deleted", library_id=library_id, section=section)
+    return Response(status_code=204)
+
+
+@router.get("/{library_id}/effective-config")
+async def get_effective_config(library_id: int, repo: RepoDep, config: ConfigDep) -> EffectiveConfigResponse:
+    """common / naming / nfo 三节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层)."""
+    library = await _require_library(library_id, repo)
+    resolver = ConfigResolver(config.hot, repo)
+    return EffectiveConfigResponse(
+        common=await resolver.resolve(OrganizeCommonConfig, scope=library, library=library),
+        naming=await resolver.resolve(NamingConfig, scope=library, library=library),
+        nfo=await resolver.resolve(NfoConfig, scope=library, library=library),
+    )

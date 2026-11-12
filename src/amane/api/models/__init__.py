@@ -40,8 +40,11 @@ from .feeds import (
 )
 from .health import HealthResponse
 from .libraries import (
+    EffectiveConfigResponse,
     LibraryCreateRequest,
     LibraryListResponse,
+    LibraryOverrideResponse,
+    LibraryOverridesResponse,
     LibraryResponse,
     LibraryUpdateRequest,
     OptionalPathTemplateDefaults,
@@ -153,6 +156,7 @@ __all__ = [
     "CropPosterRequest",
     "DeleteSubmission",
     "DesktopResponse",
+    "EffectiveConfigResponse",
     "FacetBatchAction",
     "FacetBatchRequest",
     "FacetBatchResponse",
@@ -175,6 +179,8 @@ __all__ = [
     "HealthResponse",
     "LibraryCreateRequest",
     "LibraryListResponse",
+    "LibraryOverrideResponse",
+    "LibraryOverridesResponse",
     "LibraryResponse",
     "LibraryUpdateRequest",
     "MediaBatchDeleteRequest",
