@@ -51,10 +51,54 @@ def _title_with_number(number: str, title: str) -> str:
     return f"{number} {text}".strip()
 
 
+# outline 摘要的分隔符: 句号 / 问号 / 叹号 / 换行, 多个分隔符以最早出现者为准.
+_SUMMARY_SEPARATORS: tuple[str, ...] = ("。", "？", "！", "\n")
+_SUMMARY_MAX_BYTES = 120
+
+# 元素名可用字符: cache_key 里的 ``:`` (多语言站) 与空格等字符会使元素名无法解析, 一律替换为 ``_``.
+_SITE_ID_INVALID_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _clip_utf8(text: str, limit: int) -> str:
+    """按 UTF-8 字节截断到最长合法前缀, 不切开多字节字符."""
+    data = text.encode("utf-8")[:limit]
+    while data:
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            data = data[:-1]
+    return ""
+
+
+def _plot_summary(plot: str) -> str:
+    """outline 摘要: 第一个句号 / 问号 / 叹号 / 换行之前的内容; 无分隔符时按 UTF-8 字节截断."""
+    cut = len(plot)
+    for separator in _SUMMARY_SEPARATORS:
+        index = plot.find(separator)
+        if index != -1 and index < cut:
+            cut = index
+    if cut < len(plot):
+        return plot[:cut]
+    return _clip_utf8(plot, _SUMMARY_MAX_BYTES)
+
+
+def _site_id_element(site: str) -> str:
+    """external_ids 的键是 cache_key, 直接拼进元素名会写出 ``<r18dev:jpid>`` 这类非法 XML.
+
+    键里的非名称字符替换为 ``_`` 作分段, 清洗过的键与 ``id`` 之间同样以 ``_`` 分隔
+    (``r18dev:jp`` → ``r18dev_jp_id``); 无需清洗的键维持现状 (``javdb`` → ``javdbid``).
+    """
+    sanitized = _SITE_ID_INVALID_CHARS.sub("_", site)
+    if sanitized == site:
+        return f"{site}id"
+    return f"{sanitized}_id"
+
+
 class NfoOptions(BaseModel):
     """write_nfo 的元素开关, 字段名即对应的 XML 元素名.
 
-    默认值构成 NFO 的固定模板口径; votes / country / customrating 当前无数据来源, 开启也不输出元素.
+    默认值构成 NFO 的固定模板口径; votes / country / customrating 当前无数据来源, 开启也不输出元素;
+    set_by_* / tagline_format / add_part_to_title / add_translated_by 尚未接线, 当前不影响输出.
     """
 
     model_config = {"extra": "forbid"}
@@ -123,7 +167,15 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
             if options.plot:
                 code.write(f"  <plot>{_escape_xml(metadata.plot)}</plot>\n")
             if options.outline:
-                code.write(f"  <outline>{_escape_xml(metadata.plot)}</outline>\n")
+                if options.outline_summary:
+                    summary = _plot_summary(metadata.plot)
+                    if summary:
+                        code.write(f"  <outline>{_escape_xml(summary)}</outline>\n")
+                else:
+                    code.write(f"  <outline>{_escape_xml(metadata.plot)}</outline>\n")
+
+        if options.originalplot and metadata.original_plot:
+            code.write(f"  <originalplot>{_escape_xml(metadata.original_plot)}</originalplot>\n")
 
         if metadata.release:
             if options.premiered:
@@ -138,15 +190,22 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
         if options.num and metadata.number:
             code.write(f"  <num>{_escape_xml(metadata.number)}</num>\n")
 
+        title_text: str | None = None
         if metadata.title:
-            # originaltitle_source 的 "original" 取值需要条目原文标题数据, 当前与 "title" 同值输出.
-            title = _escape_xml(_title_with_number(metadata.number, metadata.title))
-            if options.title:
-                code.write(f"  <title>{title}</title>\n")
-            if options.originaltitle:
-                code.write(f"  <originaltitle>{title}</originaltitle>\n")
-            if options.sorttitle:
-                code.write(f"  <sorttitle>{title}</sorttitle>\n")
+            title_text = _escape_xml(_title_with_number(metadata.number, metadata.title))
+        # originaltitle_source="original" 取原文标题轨 (原文不拼番号), 为空回退 <title> 的值.
+        original_title_text: str | None = None
+        if options.originaltitle:
+            if options.originaltitle_source == "original" and metadata.original_title:
+                original_title_text = _escape_xml(metadata.original_title)
+            else:
+                original_title_text = title_text
+        if options.title and title_text:
+            code.write(f"  <title>{title_text}</title>\n")
+        if options.originaltitle and original_title_text:
+            code.write(f"  <originaltitle>{original_title_text}</originaltitle>\n")
+        if options.sorttitle and title_text:
+            code.write(f"  <sorttitle>{title_text}</sorttitle>\n")
 
         if options.mpaa and options.mpaa_value:
             code.write(f"  <mpaa>{_escape_xml(options.mpaa_value)}</mpaa>\n")
@@ -213,10 +272,14 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
             for director in metadata.directors:
                 code.write(f"  <director>{_escape_xml(director)}</director>\n")
 
+        if options.website and metadata.website:
+            code.write(f"  <website>{_escape_xml(metadata.website)}</website>\n")
+
         if options.external_ids and metadata.external_ids:
             for site, ext_id in metadata.external_ids.items():
                 if ext_id:
-                    code.write(f"  <{site}id>{_escape_xml(str(ext_id))}</{site}id>\n")
+                    element = _site_id_element(site)
+                    code.write(f"  <{element}>{_escape_xml(str(ext_id))}</{element}>\n")
 
         code.write("</movie>\n")
 

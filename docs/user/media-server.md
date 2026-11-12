@@ -75,13 +75,16 @@ Amane 与 Emby / Jellyfin 分工互补: 媒体服务器管理视频文件, 负�
 
 ### NFO {#nfo}
 
-NFO 为 Kodi 格式, 根元素为 `<movie>`, 内容固定, 不提供自定义模板. NFO 模板只决定文件路径, 默认 `{link_dir}/{video_name}.nfo` 与视频同名, 以便媒体服务器按文件名匹配.
+NFO 为 Kodi 格式, 根元素为 `<movie>`. 写出哪些元素由 NFO 字段开关决定, 不提供自定义模板; NFO 模板只决定文件路径, 默认 `{link_dir}/{video_name}.nfo` 与视频同名, 以便媒体服务器按文件名匹配.
 
 | 元素 | 内容 |
 |------|------|
-| `<title>` `<originaltitle>` `<sorttitle>` | 番号 + 空格 + 标题; 标题已以番号开头时不再重复, 如 `MIDV-123 Title Here` |
+| `<title>` `<sorttitle>` | 番号 + 空格 + 标题; 标题已以番号开头时不再重复, 如 `MIDV-123 Title Here` |
+| `<originaltitle>` | 默认与 `<title>` 同值, 也可改为源站原文标题 (不拼番号) |
 | `<num>` | 番号 |
-| `<plot>` `<outline>` | 剧情简介 (纯文本) |
+| `<plot>` | 剧情, 纯文本, 可多行 |
+| `<outline>` | 剧情的一行摘要; 默认与 `<plot>` 同值, 开启摘要后取剧情第一个 `。` `？` `！` 或换行之前的内容, 无这些分隔符时取前 120 字节 |
+| `<originalplot>` | 源站原文剧情, 默认不写; Kodi 非标准元素, Emby / Jellyfin 会忽略 |
 | `<premiered>` `<releasedate>` `<year>` | 发行日期与年份 |
 | `<actor>` | 每位演员一项, 含 `<name>` |
 | `<studio>` `<maker>` | 制作商 |
@@ -91,8 +94,9 @@ NFO 为 Kodi 格式, 根元素为 `<movie>`, 内容固定, 不提供自定义模
 | `<director>` | 导演 |
 | `<rating>` `<criticrating>` | 评分, 后者为前者的 10 倍 |
 | `<runtime>` | 时长 |
-| `<mpaa>` | 固定为 `JP-18+` |
-| `<来源标识id>` | 各刮削来源的作品 ID, 元素名为来源标识后接 `id` |
+| `<mpaa>` | 默认 `JP-18+` |
+| `<website>` | 标题来源的详情页地址, 默认不写 |
+| `<来源标识id>` | 各刮削来源的作品 ID, 元素名为来源标识后接 `id`; 来源标识中的非名称字符 (多语言站的 `:` 等) 替换为 `_`, 如 `r18dev:jp` 写作 `<r18dev_jp_id>` |
 
 标题已包含番号, 媒体服务器中按标题排序即按番号排序. 分集影片的每个分集各有一份 NFO, 图片默认共用.
 
