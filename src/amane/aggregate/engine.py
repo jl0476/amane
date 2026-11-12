@@ -490,6 +490,9 @@ def _assemble_aggregate_fields(graph: FetchGraph, state: ExecutionState) -> None
         if data.source_url and ck not in state.result.source_urls:
             state.result.source_urls[ck] = data.source_url
 
+    # website 单值: 取标题胜出来源的 source_url; 标题来源无地址或标题未定值时留空, 不沿链回退.
+    state.result.website = state.result.source_urls.get(state.result.field_sources.get(MetadataField.TITLE, "")) or None
+
 
 def _normalize_source_text(meta: MediaMetadata) -> MediaMetadata:
     """长文本在进入聚合前收成纯文本.

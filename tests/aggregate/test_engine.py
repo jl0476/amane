@@ -1223,3 +1223,73 @@ class TestOriginalFields:
 
         assert result.metadata.original_plot == "前戏\n高潮\n\n尾声 & 至此"
         assert result.raw["javdb"]["original_plot"] == result.metadata.original_plot
+
+
+# ============================================================
+# website 派生: 标题胜出来源的单值地址
+# ============================================================
+
+
+class TestWebsite:
+    @pytest.mark.asyncio
+    async def test_website_from_title_source(self):
+        """website 取标题胜出来源的 source_url, 与来源在 source_urls 里的位置无关."""
+        fp = defaultdict(lambda: [DB, DMM], {TITLE: [DMM, DB]})
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", title="T_DB", source_url="http://db.com/v/1")),
+            K2: MockCrawler(MediaMetadata(number="X", title="T_DMM", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "dmm"
+        assert state.result.website == "http://dmm.com/v/1"
+        assert set(state.result.source_urls.values()) == {"http://db.com/v/1", "http://dmm.com/v/1"}
+
+    @pytest.mark.asyncio
+    async def test_website_none_when_title_source_has_no_url(self):
+        """标题来源无 source_url (r18dev 类) → website 留空, 不沿链回退到其它站的地址."""
+        fp = defaultdict(lambda: [DB, DMM], {TITLE: [DB, DMM]})
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", title="T_DB", source_url=None)),
+            K2: MockCrawler(MediaMetadata(number="X", title="T_DMM", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "javdb"
+        assert state.result.source_urls == {"dmm": "http://dmm.com/v/1"}
+        assert state.result.website is None
+
+    @pytest.mark.asyncio
+    async def test_website_none_when_title_unresolved(self):
+        """标题未定值 → website 留空, 不取任何 source_url."""
+        fp = defaultdict(lambda: [DB, DMM])
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", source_url="http://db.com/v/1")),
+            K2: MockCrawler(MediaMetadata(number="X", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources == {}
+        assert state.result.website is None
+
+    @pytest.mark.asyncio
+    async def test_website_matches_language_node_key(self):
+        """多语言站的 field_sources 与 source_urls 同为节点键, website 照常取到."""
+        avsox = str(SiteName.AVSOX)
+        fp = defaultdict(lambda: [avsox], {TITLE: [avsox]})
+        graph = build_graph(fp, {TITLE: Language.JP}, frozenset({TITLE}), frozenset({avsox}))
+
+        crawler = MockCrawler(MediaMetadata(number="X", title="T", source_url="http://avsox.click/ja/1"))
+        state = await execute_graph(graph, {avsox: crawler}, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "avsox:jp"
+        assert state.result.website == "http://avsox.click/ja/1"
