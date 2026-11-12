@@ -25,15 +25,23 @@ from .manager import (
     WatermarkConfig,
     WorkerConfig,
 )
+from .overrides import (
+    SECTION_MODELS,
+    ConfigResolver,
+    overlay_value,
+    validate_override_payload,
+)
 
 __all__ = [
     "SAFE_DIRS_ALLOW_ALL",
+    "SECTION_MODELS",
     "ActorScrapingConfig",
     "AgentConfig",
     "AgentThinkingMode",
     "BrowserConfig",
     "ColdSettings",
     "ConfigManager",
+    "ConfigResolver",
     "DownloadableResource",
     "HotSettings",
     "LLMConfig",
@@ -52,4 +60,6 @@ __all__ = [
     "WatcherConfig",
     "WatermarkConfig",
     "WorkerConfig",
+    "overlay_value",
+    "validate_override_payload",
 ]

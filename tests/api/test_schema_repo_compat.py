@@ -471,6 +471,8 @@ _ROUNDTRIP = [
                 "strm_content_template",
                 "ingest",
                 "cloud_path",
+                # 名单值域受 TEMPLATE_OVERRIDE_FIELDS 约束, 并集语义由迁移与钉住测试覆盖
+                "template_overrides",
                 # path 解析为真实路径 (符号链接解析后), 与写入值不再逐字相同
                 "path",
             }

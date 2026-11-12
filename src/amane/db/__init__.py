@@ -1,11 +1,14 @@
 from .engine import create_async_engine_from_path, get_session
 from .models import (
+    CONFIG_OVERRIDE_SCOPE_LIBRARY,
     SCRAPE_FACET_KINDS,
+    TEMPLATE_OVERRIDE_FIELDS,
     Actor,
     ActorSortField,
     AgentSession,
     AgentSessionStatus,
     Comment,
+    ConfigOverride,
     Director,
     FacetKind,
     FacetRule,
@@ -42,12 +45,15 @@ from .repo_types import FacetItem
 from .repository import Repository
 
 __all__ = [
+    "CONFIG_OVERRIDE_SCOPE_LIBRARY",
     "SCRAPE_FACET_KINDS",
+    "TEMPLATE_OVERRIDE_FIELDS",
     "Actor",
     "ActorSortField",
     "AgentSession",
     "AgentSessionStatus",
     "Comment",
+    "ConfigOverride",
     "Director",
     "FacetItem",
     "FacetKind",

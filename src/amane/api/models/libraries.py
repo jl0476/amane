@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...db import Library
 from ...enums import DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
 from ...library import (
@@ -75,8 +76,11 @@ class LibraryCreateRequest(BaseModel):
 if TYPE_CHECKING:
     type LibraryUpdateRequest = Library
 
-# 外部可写字段: 除主键 id 外的全部库配置列.
-LibraryUpdateRequest = create_partial_model(Library, ignore_fields=("id",), partial_cls_name="LibraryUpdateRequest")
+# 外部可写字段: 除主键 id 与 template_overrides 名单外的全部库配置列.
+# template_overrides 只能经由请求中显式给出的模板字段追加 (路由按 model_fields_set 计算), 不允许直接改写.
+LibraryUpdateRequest = create_partial_model(
+    Library, ignore_fields=("id", "template_overrides"), partial_cls_name="LibraryUpdateRequest"
+)
 
 
 class LibraryResponse(BaseModel):
@@ -105,6 +109,7 @@ class LibraryResponse(BaseModel):
     subtitle_extensions: list[str]
     write_nfo: bool
     copy_resources: list[DownloadableResource]
+    template_overrides: list[str]
     trailer_pattern: str
     blacklist_patterns: list[str]
     min_file_size: int
@@ -112,6 +117,27 @@ class LibraryResponse(BaseModel):
 
 class LibraryListResponse(BaseModel):
     items: list[LibraryResponse]
+
+
+class LibraryOverrideResponse(BaseModel):
+    """单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现."""
+
+    section: str
+    payload: dict[str, Any] = {}
+
+
+class LibraryOverridesResponse(BaseModel):
+    """该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现."""
+
+    overrides: dict[str, dict[str, Any]] = {}
+
+
+class EffectiveConfigResponse(BaseModel):
+    """GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层)."""
+
+    common: OrganizeCommonConfig
+    naming: NamingConfig
+    nfo: NfoConfig
 
 
 @subset_of(Library, covariant=True)

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
-from typing import Unpack
+from datetime import UTC, datetime
+from typing import Any, Unpack
 
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -23,9 +24,17 @@ from ...organize.path_templates import (
 )
 from ...organize.strm_content import normalize_strm_content_template, validate_strm_content_template
 from ...utils.path import resolved_path
-from ..models import Library, MediaFile
+from ..models import CONFIG_OVERRIDE_SCOPE_LIBRARY, TEMPLATE_OVERRIDE_FIELDS, ConfigOverride, Library, MediaFile
 from ..repo_types import LibraryUpdates
 from .base import RepositoryMixinBase
+
+
+def _validated_template_overrides(names: list[str]) -> list[str]:
+    """去重保序; 名单值域之外的字段名拒绝, 不静默忽略."""
+    unknown = set(names) - set(TEMPLATE_OVERRIDE_FIELDS)
+    if unknown:
+        raise ValueError(f"template_overrides 含未知模板字段: {', '.join(sorted(unknown))}")
+    return list(dict.fromkeys(names))
 
 
 def _path_template_or_none(value: str | None) -> str | None:
@@ -90,8 +99,10 @@ class LibrariesRepoMixin(RepositoryMixinBase):
         trailer_pattern: str | None = None,
         blacklist_patterns: list[str] | None = None,
         min_file_size: int = 0,
+        template_overrides: list[str] | None = None,
     ) -> Library:
         min_file_size = validate_min_file_size(min_file_size)
+        pinned_templates = _validated_template_overrides(list(template_overrides or []))
         cloud_path = resolve_ingest_cloud_path(ingest, cloud_path)
         video_template = validate_path_template(video_template)
         link_template = _path_template_or_none(normalize_link_template(link_template))
@@ -139,6 +150,7 @@ class LibrariesRepoMixin(RepositoryMixinBase):
                 ),
                 blacklist_patterns=[validate_blacklist_pattern(p) for p in (blacklist_patterns or [])],
                 min_file_size=min_file_size,
+                template_overrides=pinned_templates,
             )
             session.add(lib)
             await session.commit()
@@ -152,6 +164,80 @@ class LibrariesRepoMixin(RepositoryMixinBase):
                 stmt = stmt.where(Library.automation != LibraryAutomation.NONE)
             result = await session.exec(stmt)
             return list(result.all())
+
+    async def get_config_override_payload(self, library_id: int, section: str) -> dict[str, Any] | None:
+        """读取库级覆盖 payload (稀疏 JSON, {} 哨兵原样返回); 无覆盖行返回 None."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                return None
+            return dict(row.payload)
+
+    async def list_config_overrides(self, library_id: int) -> list[ConfigOverride]:
+        """该库全部覆盖行, 按 section 排序保证响应稳定."""
+        async with self._session() as session:
+            stmt = (
+                select(ConfigOverride)
+                .where(
+                    col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                    col(ConfigOverride.scope_id) == library_id,
+                )
+                .order_by(col(ConfigOverride.section))
+            )
+            return list((await session.exec(stmt)).all())
+
+    async def upsert_config_override(self, library_id: int, section: str, payload: dict[str, Any]) -> ConfigOverride:
+        """整体替换该 section 的 payload; 无行则建行 (UNIQUE(scope_type, scope_id, section))."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                row = ConfigOverride(
+                    scope_type=CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                    scope_id=library_id,
+                    section=section,
+                    payload=payload,
+                )
+            else:
+                row.payload = payload
+                row.updated_at = datetime.now(UTC)
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row
+
+    async def delete_config_override(self, library_id: int, section: str) -> bool:
+        """清空该 section 的覆盖 (回到继承); 无行返回 False, 调用方按幂等清空处理."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                return False
+            await session.delete(row)
+            await session.commit()
+            return True
 
     async def get_library(self, library_id: int) -> Library | None:
         async with self._session() as session:
@@ -255,6 +341,11 @@ class LibrariesRepoMixin(RepositoryMixinBase):
             if "copy_resources" in updates:
                 resources = updates["copy_resources"]
                 lib.copy_resources = resources if resources is not None else []
+            if "template_overrides" in updates:
+                # 名单只增不减: 请求中显式给出的模板字段名并入既有名单, 已有标记不移除.
+                lib.template_overrides = _validated_template_overrides(
+                    [*lib.template_overrides, *updates["template_overrides"]]
+                )
             if "trailer_pattern" in updates:
                 lib.trailer_pattern = validate_trailer_pattern(updates["trailer_pattern"])
             if "blacklist_patterns" in updates:
