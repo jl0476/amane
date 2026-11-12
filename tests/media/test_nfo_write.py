@@ -280,3 +280,208 @@ async def test_mpaa_value_escapes_xml_special_chars(tmp_path: Path) -> None:
 
     root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
     assert root.findtext("mpaa") == "R-15 & <未定>"
+
+
+# (NfoOptions, 元数据字段覆盖, 预期 <originaltitle> 文本; None 表示不写)
+ORIGINAL_TITLE_CASES: list[tuple[NfoOptions, dict[str, str | None], str | None]] = [
+    # 默认 source="title": 原文非空也不读, 仍取 <title> 的值
+    (NfoOptions(), {"original_title": "オリジナルタイトル"}, "MIDV-123 Test Title"),
+    (NfoOptions(originaltitle_source="original"), {"original_title": "オリジナルタイトル"}, "オリジナルタイトル"),
+    (NfoOptions(originaltitle_source="original"), {"original_title": None}, "MIDV-123 Test Title"),
+    (NfoOptions(originaltitle_source="original"), {"original_title": ""}, "MIDV-123 Test Title"),
+    (NfoOptions(originaltitle_source="original"), {"original_title": "A & B"}, "A & B"),
+    # 原文标题不拼番号, 与 <title> 的拼接口径不同
+    (NfoOptions(originaltitle_source="original"), {"original_title": "オリジナルタイトル"}, "オリジナルタイトル"),
+    # 无标题时原文独立写出; 标题与原文皆空则整段不写
+    (
+        NfoOptions(originaltitle_source="original"),
+        {"title": None, "original_title": "オリジナルタイトル"},
+        "オリジナルタイトル",
+    ),
+    (NfoOptions(originaltitle_source="original"), {"title": None, "original_title": None}, None),
+]
+
+ORIGINAL_TITLE_IDS = [
+    "default-ignores-original",
+    "original",
+    "original-none-falls-back",
+    "original-empty-falls-back",
+    "original-escaped",
+    "original-keeps-raw",
+    "original-without-title",
+    "original-and-title-empty",
+]
+
+
+@pytest.mark.parametrize(("options", "overrides", "expected"), ORIGINAL_TITLE_CASES, ids=ORIGINAL_TITLE_IDS)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_originaltitle_source_selects_content_track(
+    tmp_path: Path, options: NfoOptions, overrides: dict[str, str | None], expected: str | None
+) -> None:
+    """originaltitle_source 决定取值轨: "original" 取原文标题, 为空回退 <title> 的值."""
+    entry = Metadata(number="MIDV-123", title="Test Title").model_copy(update=overrides)
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path, options) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert root.findtext("originaltitle") == expected
+
+
+# (元素名, NfoOptions, 元数据字段覆盖, 预期元素文本; None 表示不写)
+OPT_IN_FIELD_CASES: list[tuple[str, NfoOptions, dict[str, str | None], str | None]] = [
+    ("originalplot", NfoOptions(), {"original_plot": "原文剧情"}, None),
+    ("originalplot", NfoOptions(originalplot=True), {"original_plot": "原文剧情"}, "原文剧情"),
+    ("originalplot", NfoOptions(originalplot=True), {"original_plot": None}, None),
+    ("originalplot", NfoOptions(originalplot=True), {"original_plot": ""}, None),
+    ("originalplot", NfoOptions(originalplot=True), {"original_plot": "A & <B>"}, "A & <B>"),
+    ("website", NfoOptions(), {"website": "https://example.com/page"}, None),
+    ("website", NfoOptions(website=True), {"website": "https://example.com/page"}, "https://example.com/page"),
+    ("website", NfoOptions(website=True), {"website": None}, None),
+    ("website", NfoOptions(website=True), {"website": ""}, None),
+]
+
+OPT_IN_FIELD_IDS = [
+    "originalplot-off-by-default",
+    "originalplot-on",
+    "originalplot-none",
+    "originalplot-empty",
+    "originalplot-escaped",
+    "website-off-by-default",
+    "website-on",
+    "website-none",
+    "website-empty",
+]
+
+
+@pytest.mark.parametrize(("element", "options", "overrides", "expected"), OPT_IN_FIELD_CASES, ids=OPT_IN_FIELD_IDS)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_opt_in_field_written_only_when_enabled_and_non_empty(
+    tmp_path: Path, element: str, options: NfoOptions, overrides: dict[str, str | None], expected: str | None
+) -> None:
+    """originalplot / website 默认关闭, 开启且有值才写."""
+    entry = Metadata(number="MIDV-123", title="Test Title").model_copy(update=overrides)
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path, options) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert root.findtext(element) == expected
+
+
+# (external_ids, 预期元素名, 预期文本; None 表示不写)
+SITE_ID_CASES: list[tuple[dict[str, str], str, str | None]] = [
+    # 多语言 cache_key 的 ``:`` 替换为 ``_``, 否则 <r18dev:jpid> 是未绑定前缀的非法 XML
+    ({"r18dev:jp": "x"}, "r18dev_jp_id", "x"),
+    ({"javdb": "ABC123"}, "javdbid", "ABC123"),
+    ({"a b:c": "x"}, "a_b_c_id", "x"),
+    # 键整体非法: 两个 ``_`` 来自键, 一个来自与 ``id`` 的分段
+    ({"日本": "x"}, "___id", "x"),
+    ({"r18dev:jp": ""}, "r18dev_jp_id", None),
+]
+
+SITE_ID_IDS = ["multilingual-colon", "plain-key-unchanged", "space-and-colon", "non-ascii", "empty-value"]
+
+
+@pytest.mark.parametrize(("external_ids", "element", "expected"), SITE_ID_CASES, ids=SITE_ID_IDS)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_site_id_element_name_sanitized(
+    tmp_path: Path, external_ids: dict[str, str], element: str, expected: str | None
+) -> None:
+    """<{site}id> 元素名里的非 XML 名称字符替换为 _; ElementTree 能解析即名称合法."""
+    entry = Metadata(number="MIDV-123", title="Test Title", external_ids=external_ids)
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert root.findtext(element) == expected
+
+
+# (plot, 预期 <outline> 文本; None 表示不写)
+SUMMARY_CASES: list[tuple[str, str | None]] = [
+    ("第一句。第二句。第三句", "第一句"),
+    ("第一句！第二句。第三句", "第一句"),
+    ("第一句？第二句", "第一句"),
+    ("第一行\n第二行", "第一行"),
+    # 半角句点不是分隔符: ``vol.1`` 这类写法不截断
+    ("vol.1 的剧情", "vol.1 的剧情"),
+    ("没有分隔符", "没有分隔符"),
+    # 123 字节: 截断点落在第 41 个字符内部, 回退到完整字符
+    ("あ" * 41, "あ" * 40),
+    ("a" * 130, "a" * 120),
+    ("あ" * 40, "あ" * 40),
+    # 分隔符前无内容: 摘要为空不写
+    ("\n第二行", None),
+    ("。第一句", None),
+    # 分隔符前的空白原样保留
+    ("第一句 。第二句", "第一句 "),
+]
+
+SUMMARY_IDS = [
+    "period",
+    "exclamation-first",
+    "question",
+    "newline",
+    "ascii-dot-kept",
+    "short-no-separator",
+    "multibyte-cut-inside",
+    "ascii-cut",
+    "exact-120-bytes",
+    "empty-after-leading-newline",
+    "empty-after-leading-period",
+    "trailing-space-kept",
+]
+
+
+@pytest.mark.parametrize(("plot", "expected"), SUMMARY_CASES, ids=SUMMARY_IDS)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_outline_summary_takes_first_sentence(tmp_path: Path, plot: str, expected: str | None) -> None:
+    """outline_summary=True 时 outline 取摘要; plot 全文不受影响."""
+    entry = Metadata(number="MIDV-123", title="Test Title", plot=plot)
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path, NfoOptions(outline_summary=True)) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert root.findtext("outline") == expected
+    assert root.findtext("plot") == plot
+
+
+# (元素名, 元数据字段覆盖, NfoOptions): 取值为空串时整段不写 (输出规则表「为空时: 不写」)
+EMPTY_VALUE_CASES: list[tuple[str, dict[str, str | None], NfoOptions]] = [
+    ("num", {"number": ""}, NfoOptions()),
+    ("mpaa", {}, NfoOptions(mpaa_value="")),
+]
+
+
+@pytest.mark.parametrize(
+    ("element", "overrides", "options"), EMPTY_VALUE_CASES, ids=["empty-number", "empty-mpaa-value"]
+)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_empty_value_writes_no_element(
+    tmp_path: Path, element: str, overrides: dict[str, str | None], options: NfoOptions
+) -> None:
+    entry = Metadata(number="MIDV-123", title="Test Title").model_copy(update=overrides)
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path, options) is True
+
+    assert f"<{element}>" not in nfo_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_default_options_ignore_original_fields(tmp_path: Path) -> None:
+    """含原文字段的条目在默认开关下输出与基准逐字节一致: 默认值不读 original_title / original_plot / website."""
+    entry = full_metadata().model_copy(
+        update={
+            "original_title": "オリジナルタイトル",
+            "original_plot": "オリジナル剧情第一行",
+            "website": "https://example.com/page",
+        }
+    )
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(entry, nfo_path, NfoOptions()) is True
+
+    assert nfo_path.read_bytes() == GOLDEN.encode("utf-8")
