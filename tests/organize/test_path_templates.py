@@ -23,8 +23,10 @@ from amane.organize import (
     resolve_paths,
     resolve_subtitle_path,
     validate_extrafanart_name_template,
+    validate_naming_templates,
     validate_path_template,
 )
+from amane.organize.backend import SyntaxName
 from amane.organize.template import (
     PATH_FIELD_ELLIPSIS,
     PATH_FIELD_MAX_BYTES,
@@ -1445,3 +1447,106 @@ def test_resolve_subtitle_path_prefers_naming_over_library_row(media: Path) -> N
         wp, meta, Path("subs.srt"), video_dir=media / "v", video_name="v", source_path=media / "raw" / "v.mp4"
     )
     assert baseline == media / "v" / "lib-subs.srt"
+
+
+# --- 任务 21: 运行时分派与语法验证 ---
+
+
+def test_resolve_paths_dispatches_jinja_syntax(media: Path) -> None:
+    """naming.syntax=jinja 时经 Jinja 后端渲染: `{{ }}` 形态被求值 (native 解析会直接报错)."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", video_template="{{ studio }}/{{ number }}.{{ ext }}")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.video == media / "StudioX" / "ABC-123.mp4"
+
+
+def test_resolve_paths_jinja_sidecar_fallback(media: Path) -> None:
+    """jinja 语法下未设置的附属模板回退到 Jinja 形态的内建默认, 不落盘字面量."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", video_template="{{ studio }}/{{ number }}.{{ ext }}")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.thumb == media / "StudioX" / "thumb.jpg"
+    assert result.nfo == media / "StudioX" / "ABC-123.nfo"
+    for path in (result.thumb, result.nfo, result.poster, result.fanart, result.trailer, result.extrafanart_dir):
+        assert "{" not in str(path) and "}" not in str(path)
+
+
+def test_resolve_subtitle_path_dispatches_jinja_syntax(media: Path) -> None:
+    """resolve_subtitle_path 按生效语法分派: jinja 模板被求值, 未设置时回退 Jinja 默认."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", subtitle_template="{{ video_dir }}/subs-{{ raw_srt_name }}.{{ ext }}")
+
+    result = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        source_path=media / "raw" / "v.mp4",
+        naming=naming,
+    )
+    assert result == media / "v" / "subs-subs.srt"
+
+    fallback = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        naming=NamingConfig(syntax="jinja", video_template="{{ number }}.{{ ext }}"),
+    )
+    assert fallback == media / "v" / "subs.srt"
+    assert "{" not in str(fallback)
+
+
+def test_render_path_template_dispatches_syntax() -> None:
+    """render_path_template 按语法分派: 默认 native 不变, jinja 求值 `{{ }}`."""
+    assert render_path_template("{{ studio }}", {"studio": "S"}, syntax="jinja") == "S"
+    assert render_path_template("{studio}", {"studio": "S"}) == "S"
+
+
+def test_render_extrafanart_names_dispatches_syntax() -> None:
+    """剧照文件名按语法分派渲染."""
+    ctx = TemplateContext.from_mapping({"number": "ABC-123", "index": "1", "index_padded": "01"})
+    names = render_extrafanart_names("{{ number }}-{{ index_padded }}.jpg", ctx, 2, syntax="jinja")
+    # 宽度按本轮数量 (2 → 1 位), 序号由函数重写注入
+    assert names == ["ABC-123-1.jpg", "ABC-123-2.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("syntax", "source", "match"),
+    [
+        ("jinja", "{studio}/{number}", r"残留"),
+        ("native", "{{ studio }}/{{ number }}", r"video_template"),
+        ("native", "{% if cd %}-CD{% endif %}", r"video_template"),
+        ("native", "{nope}.{ext}", r"未知占位符"),
+        ("native", "{number:foo}.{ext}", r"未知 filter"),
+    ],
+)
+def test_validate_naming_templates_rejects(syntax: SyntaxName, source: str, match: str) -> None:
+    """切换验证: 目标引擎的保存校验与渲染探针任一失败即抛错, 消息指明模板字段."""
+    with pytest.raises(ValueError, match=match):
+        validate_naming_templates(syntax, {"video_template": source}, probe=True)
+
+
+def test_validate_naming_templates_probe_only_on_switch() -> None:
+    """probe=False 只做保存校验: 自研形态在 jinja 目标下保存校验通过 (能解析), 探针才查残留."""
+    validate_naming_templates("jinja", {"video_template": "{studio}"}, probe=False)
+    with pytest.raises(ValueError, match="残留"):
+        validate_naming_templates("jinja", {"video_template": "{studio}"}, probe=True)
+
+
+def test_validate_naming_templates_skips_none_and_accepts_clean() -> None:
+    """None 模板跳过 (运行时不启用); 两套默认模板各自通过对应语法的验证."""
+    validate_naming_templates("jinja", {"link_template": None, "strm_content_template": None}, probe=True)
+    validate_naming_templates("native", {"video_template": VIDEO_TEMPLATE_DEFAULT}, probe=True)
+    validate_naming_templates(
+        "jinja",
+        {"video_template": "{{ studio }}/{{ number }}/{{ number }}{% if cd %}-CD{{ cd }}{% endif %}.{{ ext }}"},
+        probe=True,
+    )

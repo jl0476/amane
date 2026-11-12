@@ -14,6 +14,7 @@ from ...library import (
     TrailerPattern,
     resolve_ingest_cloud_path,
 )
+from ...organize.backend import SYNTAXES, template_backend
 from ...organize.path_templates import (
     EXTRAFANART_NAME_TEMPLATE_DEFAULT,
     EXTRAFANART_TEMPLATE_DEFAULT,
@@ -174,6 +175,21 @@ class PathTemplatePlaceholder(BaseModel):
     )
 
 
+class PathTemplateSyntaxVariable(BaseModel):
+    """占位符在对应语法下的变量名: Jinja 映射 4 个带 `?` 的占位符, 其余同名."""
+
+    name: str
+    variable: str
+
+
+class PathTemplateSyntaxInfo(BaseModel):
+    """一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认."""
+
+    name: str
+    default_video_template: str
+    placeholders: list[PathTemplateSyntaxVariable]
+
+
 class PathTemplateSchemaResponse(BaseModel):
     """与 ORGANIZE 实际使用的默认值同源; 路径模板由 resolve_paths 解析, 剧照文件名模板由写盘阶段渲染."""
 
@@ -181,6 +197,7 @@ class PathTemplateSchemaResponse(BaseModel):
     optional_defaults: OptionalPathTemplateDefaults
     placeholders: list[PathTemplatePlaceholder]
     subtitle_extensions_default: list[str]
+    syntaxes: list[PathTemplateSyntaxInfo]
 
 
 def path_template_schema() -> PathTemplateSchemaResponse:
@@ -189,7 +206,18 @@ def path_template_schema() -> PathTemplateSchemaResponse:
         optional_defaults=OPTIONAL_TEMPLATE_DEFAULTS,
         placeholders=[
             PathTemplatePlaceholder(name=name, map_keys=list(PLACEHOLDER_MAP_KEYS.get(name, ())))
-            for name in PLACEHOLDERS
+            for name in (*PLACEHOLDERS, "dir")
         ],
         subtitle_extensions_default=list(DEFAULT_SUBTITLE_EXTENSIONS),
+        syntaxes=[
+            PathTemplateSyntaxInfo(
+                name=described.name,
+                default_video_template=described.default_video_template,
+                placeholders=[
+                    PathTemplateSyntaxVariable(name=p.name, variable=p.variable) for p in described.placeholders
+                ],
+            )
+            for syntax in SYNTAXES
+            for described in (template_backend(syntax).describe(),)
+        ],
     )

@@ -19,7 +19,6 @@ from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
 from ..observability.models import OrganizeConflict, OrganizeConflictReason
 from ..organize import (
-    EXTRAFANART_NAME_TEMPLATE_DEFAULT,
     MoveMode,
     PlaceOutcome,
     ResolvedPaths,
@@ -31,6 +30,7 @@ from ..organize import (
     render_extrafanart_names,
     render_strm_content,
     resolve_paths,
+    sidecar_template,
     target_state,
     video_dest,
 )
@@ -200,6 +200,7 @@ async def execute_file_operations(
                     file_info=file_info,
                     link=paths.link,
                     actor_genders=actor_genders,
+                    syntax=naming.syntax if naming is not None else "native",
                 )
             except ValueError as e:
                 return FileOperationsResult(outcome=PlaceOutcome.FAILED, dest=org_result.dest, error=str(e))
@@ -514,7 +515,13 @@ async def _download_images_via_store(
             if naming is not None
             else (library.extrafanart_name_template if library is not None else None)
         )
-        names = render_extrafanart_names(template or EXTRAFANART_NAME_TEMPLATE_DEFAULT, paths.context, len(extrafanart))
+        syntax = naming.syntax if naming is not None else "native"
+        names = render_extrafanart_names(
+            sidecar_template(template, "extrafanart_name_template", syntax),
+            paths.context,
+            len(extrafanart),
+            syntax=syntax,
+        )
         extrafanart_targets = list(zip(names, extrafanart, strict=True))
 
     await _place_library_images(

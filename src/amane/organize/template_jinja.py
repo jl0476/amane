@@ -26,24 +26,38 @@ from jinja2 import Template, Undefined, meta, nodes
 from jinja2.exceptions import SecurityError, TemplateSyntaxError
 from jinja2.sandbox import SandboxedEnvironment
 
-from .backend import TemplatePlaceholder, TemplateSyntax
 from .template import (
     _CLIP_KEYS,
     _FILTER_ARITY,
     PLACEHOLDERS,
     TemplateContext,
+    TemplatePlaceholder,
+    TemplateSyntax,
     _clip_field,
     _has_value,
     _is_anchor,
     _normalize_path_segments,
     _truncate_utf8,
     resolve_rendered,
+    video_relpath,
 )
 
 JINJA_VIDEO_TEMPLATE_DEFAULT = (
     "{{ studio }}/{{ number }}/{{ number }}{% if cd %}-CD{{ cd }}{% endif %}{% if sub %}-{{ sub }}{% endif %}.{{ ext }}"
 )
 """Jinja 语法的默认视频模板 (规格 3.2.3 的字面量)."""
+
+JINJA_TEMPLATE_DEFAULTS: Mapping[str, str] = {
+    "thumb_template": "{{ link_dir }}/thumb.jpg",
+    "poster_template": "{{ link_dir }}/poster.jpg",
+    "fanart_template": "{{ link_dir }}/fanart.jpg",
+    "extrafanart_template": "{{ link_dir }}/extrafanart",
+    "extrafanart_name_template": "{{ index }}.jpg",
+    "nfo_template": "{{ link_dir }}/{{ video_name }}.nfo",
+    "trailer_template": "{{ link_dir }}/trailer.mp4",
+    "subtitle_template": "{{ link_dir }}/{{ raw_srt_name }}.{{ ext }}",
+}
+"""Jinja 语法的附属模板默认值: 与自研语法默认一一对应 (规格 3.2.3 两套默认), 供渲染期回退与切换验证."""
 
 VARIABLE_MAP: Mapping[str, str] = {
     "cd?": "cd",
@@ -143,6 +157,11 @@ def _prepare_variables(variables: Mapping[str, str]) -> dict[str, str]:
         VARIABLE_MAP.get(name, name): _TemplateValue(_clip_field(value) if name in _CLIP_KEYS else value)
         for name, value in variables.items()
     }
+
+
+def _prepare_text_variables(variables: Mapping[str, str]) -> dict[str, str]:
+    """STRM 正文用: 改写变量键但不截断长字段, 与原生 StrmEngine 的语义一致."""
+    return {VARIABLE_MAP.get(name, name): _TemplateValue(value) for name, value in variables.items()}
 
 
 def _walk_eligible(body: Sequence[nodes.Node]) -> bool:
@@ -283,6 +302,19 @@ class JinjaTemplateBackend:
 
     def resolve(self, source: str, ctx: TemplateContext, base_path: Path, safe_dirs: Sequence[Path] | None) -> Path:
         return resolve_rendered(self.render(source, ctx.variables), base_path, safe_dirs)
+
+    def render_strm(self, source: str, ctx: TemplateContext) -> str:
+        """STRM 正文: 不截断长字段, 不做路径段规范化 (保留 `https://`); 引用 video_relpath 时
+        执行与原生 StrmEngine 相同的库内校验."""
+        if self._uses_variable(source, "video_relpath"):
+            if ctx.dest is None or ctx.library_root is None:
+                raise ValueError("video_relpath 需要 dest 与 library_root")
+            video_relpath(ctx.dest, ctx.library_root)
+        template = _compile(self._env, source)
+        return "".join(template.stream(_prepare_text_variables(ctx.variables)))
+
+    def _uses_variable(self, source: str, name: str) -> bool:
+        return name in meta.find_undeclared_variables(self._env.parse(source))
 
     def validate(self, source: str) -> None:
         """编译校验 (语法错误) 加变量名白名单与 filter 链形状检查 (成员性 / 参数个数 / split 规则)."""

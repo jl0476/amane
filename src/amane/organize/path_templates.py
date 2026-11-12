@@ -11,9 +11,11 @@ from pydantic import AfterValidator
 from ..enums import ActorGender, LinkMode, MoveMode
 from ..parsing.file_info import FileInfo
 from ..utils.path import is_descendant, path_key
+from .backend import NATIVE_VIDEO_TEMPLATE_DEFAULT, SyntaxName, template_backend
 from .template import PLACEHOLDER_MAP_KEYS as PLACEHOLDER_MAP_KEYS
 from .template import PLACEHOLDERS as PLACEHOLDERS
 from .template import Parser, PathEngine, TemplateContext
+from .template_jinja import JINJA_TEMPLATE_DEFAULTS
 
 if TYPE_CHECKING:
     from ..config import NamingConfig
@@ -34,7 +36,8 @@ class ResolvedPaths:
     """渲染剧照文件名需要的同一份取值 (含 ``{video_*}`` / ``{link_*}``); 手工构造时可为 None."""
 
 
-VIDEO_TEMPLATE_DEFAULT = "{studio}/{number}/{number}[-CD{cd?}][-{sub?}].{ext}"
+VIDEO_TEMPLATE_DEFAULT = NATIVE_VIDEO_TEMPLATE_DEFAULT
+"""自研语法默认视频模板: 单源在 backend.py (规格 3.2.1 分派落点), 此处只为既有导入面保留名字."""
 THUMB_TEMPLATE_DEFAULT = "{link_dir}/thumb.jpg"
 POSTER_TEMPLATE_DEFAULT = "{link_dir}/poster.jpg"
 FANART_TEMPLATE_DEFAULT = "{link_dir}/fanart.jpg"
@@ -53,6 +56,34 @@ def normalize_link_template(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+_SIDE_CAR_FALLBACKS: dict[str, tuple[str, str]] = {
+    "thumb_template": (THUMB_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["thumb_template"]),
+    "poster_template": (POSTER_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["poster_template"]),
+    "fanart_template": (FANART_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["fanart_template"]),
+    "extrafanart_template": (EXTRAFANART_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["extrafanart_template"]),
+    "extrafanart_name_template": (
+        EXTRAFANART_NAME_TEMPLATE_DEFAULT,
+        JINJA_TEMPLATE_DEFAULTS["extrafanart_name_template"],
+    ),
+    "nfo_template": (NFO_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["nfo_template"]),
+    "trailer_template": (TRAILER_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["trailer_template"]),
+    "subtitle_template": (SUBTITLE_TEMPLATE_DEFAULT, JINJA_TEMPLATE_DEFAULTS["subtitle_template"]),
+}
+"""附属模板的内建默认: 每套语法各一份字面量, 未设置时按生效语法回退, 保证任一语法下都能渲染."""
+
+
+def sidecar_template(value: str | None, field: str, syntax: SyntaxName) -> str:
+    """附属模板渲染取值: 未设置时回退到该语法的内建默认."""
+    if value is not None:
+        return value
+    native, jinja = _SIDE_CAR_FALLBACKS[field]
+    return jinja if syntax == "jinja" else native
+
+
+def _syntax_of(naming: NamingConfig | None) -> SyntaxName:
+    return naming.syntax if naming is not None else "native"
 
 
 def validate_path_template(value: str) -> str:
@@ -106,7 +137,9 @@ PathTemplate = Annotated[str, AfterValidator(validate_path_template)]
 ExtrafanartNameTemplate = Annotated[str, AfterValidator(validate_extrafanart_name_template)]
 
 
-def render_extrafanart_names(template: str, context: TemplateContext | None, count: int) -> list[str]:
+def render_extrafanart_names(
+    template: str, context: TemplateContext | None, count: int, syntax: SyntaxName = "native"
+) -> list[str]:
     """按 1..count 渲染文件名; 宽度取数量位数, 同目录内字典序与序号一致.
 
     宽度按本轮数量算, 数量跨位数时全部名字变宽, 旧名字成为孤儿.
@@ -116,12 +149,12 @@ def render_extrafanart_names(template: str, context: TemplateContext | None, cou
         return []
     if context is None:
         raise ValueError("剧照文件名需要路径渲染上下文")
-    engine = PathEngine(template)
+    backend = template_backend(syntax)
     width = len(str(count))
     names: list[str] = []
     for index in range(1, count + 1):
         variables = {**context.variables, "index": str(index), "index_padded": f"{index:0{width}d}"}
-        name = engine.render(TemplateContext.from_mapping(variables))
+        name = backend.render(template, variables)
         # 隐藏文件与无主干的名字媒体服务器不认, 分隔符会写到目录之外.
         if not name or name.startswith(".") or "/" in name or "\\" in name:
             raise ValueError(f"剧照文件名模板 {template!r} 渲染结果不是合法的文件名: {name!r}")
@@ -132,8 +165,9 @@ def render_extrafanart_names(template: str, context: TemplateContext | None, cou
     return names
 
 
-def render_path_template(template: str, variables: dict[str, str]) -> str:
-    return PathEngine(template).render(TemplateContext.from_mapping(variables))
+def render_path_template(template: str, variables: dict[str, str], syntax: SyntaxName = "native") -> str:
+    """路径试算入口: 按生效语法分派渲染 (规格 3.2.1)."""
+    return template_backend(syntax).render(template, variables)
 
 
 def resolve_paths(
@@ -157,6 +191,8 @@ def resolve_paths(
     「视频模板解析为库根目录」守卫 (规格 3.4.1); 附属产物按模板落在视频所在目录.
     """
     base_path = Path(library.path)
+    syntax = _syntax_of(naming)
+    backend = template_backend(syntax)
     ctx = TemplateContext.from_metadata(
         metadata,
         ext=ext,
@@ -174,7 +210,7 @@ def resolve_paths(
         video = source_path
     else:
         video_template = naming.video_template if naming is not None else library.video_template
-        video = PathEngine(video_template).resolve(ctx, base_path, safe_dirs)
+        video = backend.resolve(video_template, ctx, base_path, safe_dirs)
         if path_key(video) == path_key(base_path):
             # 空模板或唯一占位符取值落空时, 视频路径退化为库根目录; 后续会以与原因无关的错误失败, 或按库根名在库外落盘.
             raise ValueError(f"视频模板解析为库根目录: {video_template!r}")
@@ -189,14 +225,14 @@ def resolve_paths(
     nfo_template = naming.nfo_template if naming is not None else library.nfo_template
     trailer_template = naming.trailer_template if naming is not None else library.trailer_template
 
-    thumb = PathEngine(thumb_template or THUMB_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    poster = PathEngine(poster_template or POSTER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    fanart = PathEngine(fanart_template or FANART_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    extrafanart_dir = PathEngine(extrafanart_template or EXTRAFANART_TEMPLATE_DEFAULT).resolve(
-        ctx, base_path, safe_dirs
+    thumb = backend.resolve(sidecar_template(thumb_template, "thumb_template", syntax), ctx, base_path, safe_dirs)
+    poster = backend.resolve(sidecar_template(poster_template, "poster_template", syntax), ctx, base_path, safe_dirs)
+    fanart = backend.resolve(sidecar_template(fanart_template, "fanart_template", syntax), ctx, base_path, safe_dirs)
+    extrafanart_dir = backend.resolve(
+        sidecar_template(extrafanart_template, "extrafanart_template", syntax), ctx, base_path, safe_dirs
     )
-    nfo = PathEngine(nfo_template or NFO_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    trailer = PathEngine(trailer_template or TRAILER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    nfo = backend.resolve(sidecar_template(nfo_template, "nfo_template", syntax), ctx, base_path, safe_dirs)
+    trailer = backend.resolve(sidecar_template(trailer_template, "trailer_template", syntax), ctx, base_path, safe_dirs)
 
     return ResolvedPaths(
         video=video,
@@ -227,7 +263,7 @@ def _resolve_link_path(
     template = normalize_link_template(naming.link_template if naming is not None else library.link_template)
     if template is None:
         return None
-    link = PathEngine(template).resolve(ctx, base_path, safe_dirs)
+    link = template_backend(_syntax_of(naming)).resolve(template, ctx, base_path, safe_dirs)
     link_mode = naming.link_mode if naming is not None else library.link_mode
     if link_mode == LinkMode.STRM:
         link = link.with_suffix(".strm")
@@ -280,7 +316,60 @@ def resolve_subtitle_path(
     if link_name is not None:
         ctx.variables["link_name"] = link_name
     ctx.apply_subtitle(subtitle_source)
-    template = (naming.subtitle_template if naming is not None else library.subtitle_template) or (
-        SUBTITLE_TEMPLATE_DEFAULT
+    syntax = _syntax_of(naming)
+    template = sidecar_template(
+        naming.subtitle_template if naming is not None else library.subtitle_template, "subtitle_template", syntax
     )
-    return PathEngine(template).resolve(ctx, base_path, safe_dirs)
+    return template_backend(syntax).resolve(template, ctx, base_path, safe_dirs)
+
+
+# --- 语法切换验证与保存路径校验 (规格 3.2.2 / 3.2.3) ---
+
+NAMING_TEMPLATE_FIELDS: tuple[str, ...] = (
+    "video_template",
+    "link_template",
+    "strm_content_template",
+    "thumb_template",
+    "poster_template",
+    "fanart_template",
+    "extrafanart_template",
+    "extrafanart_name_template",
+    "nfo_template",
+    "trailer_template",
+    "subtitle_template",
+)
+"""naming section 中参与渲染的模板字段; video 必有值, link / strm 未设置时不渲染, 附属未设置按语法回退."""
+
+# 样例取值覆盖全部 30 占位符 + dir 别名: 取占位符名本身 (非空、无花括号), 探针只关心残留.
+PROBE_VARIABLES: dict[str, str] = {name: name for name in (*PLACEHOLDERS, "dir")}
+
+# 未替换的残留: 自研占位符形态, 或 Jinja 的 `{{` / `{%` 前缀. 样例取值不含花括号, 渲染结果中出现即语法不匹配.
+_RESIDUAL_RE = re.compile(r"\{\{|\{%|\{[\w?]+\}")
+
+
+def validate_naming_templates(syntax: SyntaxName, values: Mapping[str, str | None], *, probe: bool) -> None:
+    """naming 模板的语法感知校验 (规格 3.2.2 / 3.2.3).
+
+    每个非 None 模板先过目标引擎的保存校验 (未知占位符 / 未知 filter / 语法形状);
+    ``probe=True`` (语法切换) 再做渲染探针: 用覆盖全部占位符的样例取值渲染, 残留
+    `{ident}` / `{{` / `{%` 判失败 —— Jinja 把自研占位符当普通文本, 「能解析」不证明模板有效.
+    失败抛 ValueError, 消息指明模板字段与残留位置; None 跳过 (运行时不启用该模板).
+    """
+    backend = template_backend(syntax)
+    for field in NAMING_TEMPLATE_FIELDS:
+        if field not in values or values[field] is None:
+            continue
+        source = values[field]
+        if not isinstance(source, str):
+            raise ValueError(f"模板 {field} 必须是字符串")
+        try:
+            backend.validate(source)
+            if probe:
+                rendered = backend.render(source, PROBE_VARIABLES)
+                residual = _RESIDUAL_RE.search(rendered)
+                if residual:
+                    raise ValueError(
+                        f"渲染结果存在未替换的残留 {residual.group()!r} (位置 {residual.start()}): 模板语法与目标不符"
+                    )
+        except ValueError as exc:
+            raise ValueError(f"模板 {field}: {exc}") from exc

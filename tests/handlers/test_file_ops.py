@@ -850,3 +850,83 @@ async def test_override_subtitle_template_drives_real_subtitle_path(
     assert (dest_dir / "NSFS-039.mp4").exists()
     assert (dest_dir / "subs-NSFS-039.srt").read_text(encoding="utf-8") == "sub"
     assert not (dest_dir / "NSFS-039.srt").exists()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_jinja_syntax_drives_real_organize(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """naming.syntax=jinja 驱动真实整理: 视频/附属/字幕/STRM 正文/剧照文件名全部按 Jinja 渲染.
+
+    任一入口漏接, 该入口的产物路径会出现字面量 `{{`.
+    """
+    lib_root = tmp_path / "lib"
+    local = tmp_path / "emby"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    local.mkdir(parents=True)
+    src = src_dir / "MIDV-123.mp4"
+    src.write_bytes(b"video")
+    (src_dir / "MIDV-123.srt").write_text("sub", encoding="utf-8")
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, subtitle_extensions=["srt"])
+    assert lib.id is not None
+    await repo.upsert_config_override(
+        lib.id,
+        "naming",
+        {
+            "syntax": "jinja",
+            "video_template": "{{ studio }}/{{ number }}/{{ number }}.{{ ext }}",
+            "thumb_template": "{{ link_dir }}/thumb.jpg",
+            "poster_template": "{{ link_dir }}/poster.jpg",
+            "fanart_template": "{{ link_dir }}/fanart.jpg",
+            "extrafanart_template": "{{ link_dir }}/extrafanart",
+            "extrafanart_name_template": "{{ number }}-{{ index_padded }}.jpg",
+            "nfo_template": "{{ link_dir }}/{{ video_name }}.nfo",
+            "trailer_template": "{{ link_dir }}/trailer.mp4",
+            "link_template": str(local / "{{ number }}" / "{{ number }}.{{ ext }}"),
+            "strm_content_template": "/{{ video_relpath }}",
+            "subtitle_template": "{{ video_dir }}/subs-{{ raw_srt_name }}.{{ ext }}",
+        },
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        studio="Studio",
+        thumb_urls=["https://s/t.jpg"],
+        extrafanart_urls={"dmm": ["https://s/e1.jpg", "https://s/e2.jpg"]},
+    )
+    assert meta.id is not None
+    media = await repo.create_media_file(
+        lib.id, path=str(src), number="MIDV-123", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+    assert media.id is not None
+
+    org = OrganizeHandler(
+        repo,
+        HotSettings(),
+        resource_store,
+        web_client=cast("WebClient", FakeClient()),
+        safe_dirs=[tmp_path],
+    )
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.failed == 0
+
+    video = lib_root / "Studio" / "MIDV-123" / "MIDV-123.mp4"
+    link_dir = local / "MIDV-123"
+    assert video.exists()
+    assert (link_dir / "thumb.jpg").exists()
+    assert (link_dir / "poster.jpg").exists()
+    assert (link_dir / "MIDV-123.nfo").exists()
+    assert (link_dir / "MIDV-123.strm").read_text(encoding="utf-8") == "/Studio/MIDV-123/MIDV-123.mp4\n"
+    assert (lib_root / "Studio" / "MIDV-123" / "subs-MIDV-123.srt").read_text(encoding="utf-8") == "sub"
+    extrafanart = sorted(p.name for p in (link_dir / "extrafanart").iterdir())
+    assert extrafanart == ["MIDV-123-1.jpg", "MIDV-123-2.jpg"]
+    # 六个入口全部接通: 磁盘产物路径与文件名不含字面量 {{
+    for produced in lib_root.rglob("*"):
+        assert "{{" not in produced.name
+    for produced in local.rglob("*"):
+        assert "{{" not in produced.name
+    updated = await repo.get_media_file(media.id)
+    assert updated is not None and updated.path == str(video)

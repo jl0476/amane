@@ -3,6 +3,7 @@ from .file import OrganizeResult, PlaceOutcome, TargetCheck, TargetState, execut
 from .link import create_video_link
 from .path_templates import (
     EXTRAFANART_NAME_TEMPLATE_DEFAULT,
+    NAMING_TEMPLATE_FIELDS,
     VIDEO_TEMPLATE_DEFAULT,
     ExtrafanartNameTemplate,
     PathTemplate,
@@ -12,7 +13,9 @@ from .path_templates import (
     render_path_template,
     resolve_paths,
     resolve_subtitle_path,
+    sidecar_template,
     validate_extrafanart_name_template,
+    validate_naming_templates,
     validate_path_template,
 )
 from .strm_content import (
@@ -25,6 +28,7 @@ from .subtitles import SubtitleConflict, discover_subtitles, place_subtitles
 
 __all__ = [
     "EXTRAFANART_NAME_TEMPLATE_DEFAULT",
+    "NAMING_TEMPLATE_FIELDS",
     "VIDEO_TEMPLATE_DEFAULT",
     "ExtrafanartNameTemplate",
     "MoveMode",
@@ -47,8 +51,10 @@ __all__ = [
     "render_strm_content",
     "resolve_paths",
     "resolve_subtitle_path",
+    "sidecar_template",
     "target_state",
     "validate_extrafanart_name_template",
+    "validate_naming_templates",
     "validate_path_template",
     "validate_strm_content_template",
     "video_dest",

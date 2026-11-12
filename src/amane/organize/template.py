@@ -87,6 +87,23 @@ PLACEHOLDER_MAP_KEYS: dict[str, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True, slots=True)
+class TemplatePlaceholder:
+    """占位符与其在语法内的引擎变量名: 保存模板用占位符名, 渲染取值用变量名."""
+
+    name: str
+    variable: str
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateSyntax:
+    """语法描述: 语法名、默认视频模板与占位符到变量名的对应, 供语法切换校验与 schema 下发."""
+
+    name: str
+    default_video_template: str
+    placeholders: tuple[TemplatePlaceholder, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _Literal:
     text: str
 

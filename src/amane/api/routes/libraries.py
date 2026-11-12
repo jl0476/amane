@@ -9,6 +9,7 @@ from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...config.overrides import ConfigResolver, section_model, validate_override_payload
 from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, TaskType
 from ...handlers import RefreshPayload, ScanMode
+from ...organize.path_templates import NAMING_TEMPLATE_FIELDS, validate_naming_templates
 from ...utils.model import to_resp
 from ..deps import ConfigDep, RepoDep, RuntimeDep
 from ..models import (
@@ -208,19 +209,51 @@ async def list_library_overrides(library_id: int, repo: RepoDep) -> LibraryOverr
     return LibraryOverridesResponse(overrides={row.section: row.payload for row in rows})
 
 
+async def _validate_naming_override(
+    library: Library, payload: dict[str, Any], repo: RepoDep, config: ConfigDep
+) -> None:
+    """naming 覆盖的语法感知校验 (规格 3.2.2 / 3.2.3).
+
+    PUT 是整体替换: 以「本次 payload 顶掉既有覆盖行」合成生效 naming. 语法未变时只对写入的模板字段
+    做保存校验 (未知占位符 / 未知 filter → 422 + 名称与位置); 语法切换时对生效链全部模板做保存校验
+    加渲染探针, 残留即拒绝切换.
+    """
+    resolver = ConfigResolver(config.hot, repo)
+    old_naming = await resolver.resolve(NamingConfig, scope=library, library=library)
+    new_naming = await resolver.resolve(NamingConfig, library=library, payload=payload)
+    # 写入字段取自请求 payload; 「显式取空」哨兵 {} 与解析期一致地映射为 None.
+    written: dict[str, str | None] = {
+        field: None if payload[field] == {} else payload[field] for field in NAMING_TEMPLATE_FIELDS if field in payload
+    }
+    try:
+        if new_naming.syntax != old_naming.syntax:
+            validate_naming_templates(
+                new_naming.syntax,
+                {field: getattr(new_naming, field) for field in NAMING_TEMPLATE_FIELDS},
+                probe=True,
+            )
+        else:
+            validate_naming_templates(new_naming.syntax, written, probe=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.put("/{library_id}/overrides/{section}")
 async def put_library_override(
     library_id: int,
     section: str,
     payload: dict[str, Any],
     repo: RepoDep,
+    config: ConfigDep,
 ) -> LibraryOverrideResponse:
     """整体替换某 section 的覆盖 payload; 校验失败 422 且不落库."""
-    await _require_library(library_id, repo)
+    library = await _require_library(library_id, repo)
     try:
         validate_override_payload(section, payload)
     except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if section == "naming":
+        await _validate_naming_override(library, payload, repo, config)
     row = await repo.upsert_config_override(library_id, section, dict(payload))
     logger.info("library override updated", library_id=library_id, section=section)
     return LibraryOverrideResponse(section=row.section, payload=row.payload)
