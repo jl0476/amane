@@ -4,9 +4,11 @@ import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from amane.db.models import Metadata
-from amane.media import write_nfo
+from amane.media import NfoOptions, write_nfo
+from tests.media.test_nfo_baseline import GOLDEN, full_metadata
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,3 +93,142 @@ async def test_write_nfo_title_keeps_number_once(tmp_path: Path, number: str, ti
 
     root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
     assert [root.findtext(tag) for tag in ("title", "originaltitle", "sorttitle")] == [expected] * 3
+
+
+# (开关名, 关闭该开关的 NfoOptions, 该开关对应元素的完整标记)
+SWITCH_CASES: list[tuple[str, NfoOptions, list[str]]] = [
+    ("title", NfoOptions(title=False), ["<title>MIDV-123 Test Title</title>"]),
+    ("originaltitle", NfoOptions(originaltitle=False), ["<originaltitle>MIDV-123 Test Title</originaltitle>"]),
+    ("sorttitle", NfoOptions(sorttitle=False), ["<sorttitle>MIDV-123 Test Title</sorttitle>"]),
+    ("plot", NfoOptions(plot=False), ["<plot>剧情内容第一行\n\n剧情内容第二行</plot>"]),
+    ("outline", NfoOptions(outline=False), ["<outline>剧情内容第一行\n\n剧情内容第二行</outline>"]),
+    ("actor", NfoOptions(actor=False), ["<actor>", "<name>Actor A</name>", "</actor>"]),
+    ("director", NfoOptions(director=False), ["<director>Director Z</director>"]),
+    ("premiered", NfoOptions(premiered=False), ["<premiered>2026-01-15</premiered>"]),
+    ("releasedate", NfoOptions(releasedate=False), ["<releasedate>2026-01-15</releasedate>"]),
+    ("year", NfoOptions(year=False), ["<year>2026</year>"]),
+    ("num", NfoOptions(num=False), ["<num>MIDV-123</num>"]),
+    ("runtime", NfoOptions(runtime=False), ["<runtime>120</runtime>"]),
+    ("score", NfoOptions(score=False), ["<rating>8.5</rating>"]),
+    ("criticrating", NfoOptions(criticrating=False), ["<criticrating>85</criticrating>"]),
+    ("mpaa", NfoOptions(mpaa=False), ["<mpaa>JP-18+</mpaa>"]),
+    ("series", NfoOptions(series=False), ["<series>Series Y</series>"]),
+    ("set", NfoOptions(set=False), ["<set>", "<name>Series Y</name>", "</set>"]),
+    ("tag", NfoOptions(tag=False), ["<tag>Drama</tag>", "<tag>Romance</tag>"]),
+    ("genre", NfoOptions(genre=False), ["<genre>Drama</genre>", "<genre>Romance</genre>"]),
+    ("studio", NfoOptions(studio=False), ["<studio>Studio X</studio>"]),
+    ("maker", NfoOptions(maker=False), ["<maker>Studio X</maker>"]),
+    ("publisher", NfoOptions(publisher=False), ["<publisher>Publisher P</publisher>"]),
+    ("label", NfoOptions(label=False), ["<label>Publisher P</label>"]),
+    ("poster", NfoOptions(poster=False), ["<poster>https://example.com/poster.jpg</poster>"]),
+    ("cover", NfoOptions(cover=False), ["<cover>https://example.com/thumb.jpg</cover>"]),
+    ("trailer", NfoOptions(trailer=False), ["<trailer>https://example.com/trailer.mp4</trailer>"]),
+    (
+        "external_ids",
+        NfoOptions(external_ids=False),
+        ["<javdbid>ABC123</javdbid>", "<r18id>R001</r18id>"],
+    ),
+]
+
+
+@pytest.mark.parametrize(("switch", "off_options", "markers"), SWITCH_CASES)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_every_switch_off_removes_element(
+    tmp_path: Path, switch: str, off_options: NfoOptions, markers: list[str]
+) -> None:
+    """开关开启 (默认) 时元素出现, 关闭后对应元素整段消失."""
+    on_path = tmp_path / f"{switch}-on.nfo"
+    off_path = tmp_path / f"{switch}-off.nfo"
+
+    assert await write_nfo(full_metadata(), on_path, NfoOptions()) is True
+    assert await write_nfo(full_metadata(), off_path, off_options) is True
+
+    on_content = on_path.read_text(encoding="utf-8")
+    off_content = off_path.read_text(encoding="utf-8")
+    for marker in markers:
+        assert marker in on_content
+        assert marker not in off_content
+
+
+# 当前无数据来源的开关: 开启也不产生元素 (输出规则表: 为空时不写)
+SOURCELESS_SWITCHES: list[tuple[str, NfoOptions]] = [
+    ("votes", NfoOptions(votes=True)),
+    ("country", NfoOptions(country=True)),
+    ("customrating", NfoOptions(customrating=True)),
+]
+
+
+@pytest.mark.parametrize(("switch", "on_options"), SOURCELESS_SWITCHES, ids=[name for name, _ in SOURCELESS_SWITCHES])
+@pytest.mark.asyncio(loop_scope="function")
+async def test_sourceless_switch_never_writes_element(tmp_path: Path, switch: str, on_options: NfoOptions) -> None:
+    nfo_path = tmp_path / f"{switch}.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, on_options) is True
+
+    assert f"<{switch}>" not in nfo_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_default_options_match_golden(tmp_path: Path) -> None:
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, NfoOptions()) is True
+
+    assert nfo_path.read_bytes() == GOLDEN.encode("utf-8")
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_all_element_switches_off_writes_skeleton(tmp_path: Path) -> None:
+    options = NfoOptions(
+        title=False,
+        originaltitle=False,
+        sorttitle=False,
+        plot=False,
+        outline=False,
+        actor=False,
+        director=False,
+        premiered=False,
+        releasedate=False,
+        year=False,
+        num=False,
+        runtime=False,
+        score=False,
+        criticrating=False,
+        mpaa=False,
+        series=False,
+        set=False,
+        tag=False,
+        genre=False,
+        studio=False,
+        maker=False,
+        publisher=False,
+        label=False,
+        poster=False,
+        cover=False,
+        trailer=False,
+        external_ids=False,
+    )
+    nfo_path = tmp_path / "skeleton.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, options) is True
+
+    assert nfo_path.read_bytes() == b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n</movie>\n'
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_mpaa_value_renders_configured_text(tmp_path: Path) -> None:
+    nfo_path = tmp_path / "mpaa.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, NfoOptions(mpaa_value="R-15")) is True
+
+    assert "<mpaa>R-15</mpaa>" in nfo_path.read_text(encoding="utf-8")
+
+
+def test_unknown_field_rejected() -> None:
+    with pytest.raises(ValidationError):
+        NfoOptions.model_validate({"unrelated": True})
+
+
+def test_invalid_originaltitle_source_rejected() -> None:
+    with pytest.raises(ValidationError):
+        NfoOptions.model_validate({"originaltitle_source": "both"})

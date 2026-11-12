@@ -88,7 +88,7 @@ def full_metadata() -> Metadata:
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_default_nfo_matches_golden(tmp_path: "Path") -> None:
+async def test_default_nfo_matches_golden(tmp_path: Path) -> None:
     nfo_path = tmp_path / "MIDV-123.nfo"
 
     assert await write_nfo(full_metadata(), nfo_path) is True

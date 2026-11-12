@@ -2,10 +2,11 @@
 
 import re
 from io import StringIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import aiofiles
 import structlog
+from pydantic import BaseModel
 
 from ..utils.text import strip_illegal_xml_chars
 
@@ -50,7 +51,66 @@ def _title_with_number(number: str, title: str) -> str:
     return f"{number} {text}".strip()
 
 
-async def write_nfo(metadata: Metadata, nfo_path: Path) -> bool:
+class NfoOptions(BaseModel):
+    """write_nfo 的元素开关, 字段名即对应的 XML 元素名.
+
+    默认值构成 NFO 的固定模板口径; votes / country / customrating 当前无数据来源, 开启也不输出元素.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # 标题类
+    title: bool = True
+    originaltitle: bool = True
+    originaltitle_source: Literal["title", "original"] = "title"
+    sorttitle: bool = True
+    # 剧情类
+    plot: bool = True
+    outline: bool = True
+    outline_summary: bool = False
+    originalplot: bool = False
+    # 人物类
+    actor: bool = True
+    director: bool = True
+    # 日期类
+    premiered: bool = True
+    releasedate: bool = True
+    year: bool = True
+    # 其它
+    num: bool = True
+    runtime: bool = True
+    votes: bool = False
+    score: bool = True
+    criticrating: bool = True
+    country: bool = False
+    mpaa: bool = True
+    mpaa_value: str = "JP-18+"
+    customrating: bool = False
+    series: bool = True
+    set: bool = True
+    tag: bool = True
+    genre: bool = True
+    studio: bool = True
+    maker: bool = True
+    publisher: bool = True
+    label: bool = True
+    poster: bool = True
+    cover: bool = True
+    trailer: bool = True
+    website: bool = False
+    external_ids: bool = True
+    add_part_to_title: bool = False
+    add_translated_by: bool = False
+    tagline_format: str | None = None
+    set_by_actress: bool = False
+    set_by_serial_name: bool = False
+    set_by_series: bool = False
+    additional_tags: list[str] = []
+
+
+async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | None = None) -> bool:
+    if options is None:
+        options = NfoOptions()
     try:
         nfo_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -60,28 +120,38 @@ async def write_nfo(metadata: Metadata, nfo_path: Path) -> bool:
 
         if metadata.plot:
             # 长文本按纯文本写出: 转义后 "]]>" 不可能出现, CDATA 只带来非法 XML 的风险.
-            plot_escaped = _escape_xml(metadata.plot)
-            code.write(f"  <plot>{plot_escaped}</plot>\n")
-            code.write(f"  <outline>{plot_escaped}</outline>\n")
+            if options.plot:
+                code.write(f"  <plot>{_escape_xml(metadata.plot)}</plot>\n")
+            if options.outline:
+                code.write(f"  <outline>{_escape_xml(metadata.plot)}</outline>\n")
 
         if metadata.release:
-            code.write(f"  <premiered>{metadata.release}</premiered>\n")
-            code.write(f"  <releasedate>{metadata.release}</releasedate>\n")
-            year_match = re.match(r"(\d{4})", metadata.release)
-            if year_match:
-                code.write(f"  <year>{year_match.group(1)}</year>\n")
+            if options.premiered:
+                code.write(f"  <premiered>{metadata.release}</premiered>\n")
+            if options.releasedate:
+                code.write(f"  <releasedate>{metadata.release}</releasedate>\n")
+            if options.year:
+                year_match = re.match(r"(\d{4})", metadata.release)
+                if year_match:
+                    code.write(f"  <year>{year_match.group(1)}</year>\n")
 
-        code.write(f"  <num>{_escape_xml(metadata.number)}</num>\n")
+        if options.num and metadata.number:
+            code.write(f"  <num>{_escape_xml(metadata.number)}</num>\n")
 
         if metadata.title:
+            # originaltitle_source 的 "original" 取值需要条目原文标题数据, 当前与 "title" 同值输出.
             title = _escape_xml(_title_with_number(metadata.number, metadata.title))
-            code.write(f"  <title>{title}</title>\n")
-            code.write(f"  <originaltitle>{title}</originaltitle>\n")
-            code.write(f"  <sorttitle>{title}</sorttitle>\n")
+            if options.title:
+                code.write(f"  <title>{title}</title>\n")
+            if options.originaltitle:
+                code.write(f"  <originaltitle>{title}</originaltitle>\n")
+            if options.sorttitle:
+                code.write(f"  <sorttitle>{title}</sorttitle>\n")
 
-        code.write("  <mpaa>JP-18+</mpaa>\n")
+        if options.mpaa and options.mpaa_value:
+            code.write(f"  <mpaa>{options.mpaa_value}</mpaa>\n")
 
-        if metadata.actors:
+        if options.actor and metadata.actors:
             for actor in metadata.actors:
                 code.write("  <actor>\n")
                 code.write(f"    <name>{_escape_xml(actor)}</name>\n")
@@ -89,46 +159,57 @@ async def write_nfo(metadata: Metadata, nfo_path: Path) -> bool:
                 code.write("  </actor>\n")
 
         if metadata.score is not None:
-            code.write(f"  <rating>{metadata.score}</rating>\n")
-            code.write(f"  <criticrating>{int(metadata.score * 10)}</criticrating>\n")
+            if options.score:
+                code.write(f"  <rating>{metadata.score}</rating>\n")
+            if options.criticrating:
+                code.write(f"  <criticrating>{int(metadata.score * 10)}</criticrating>\n")
 
-        if metadata.runtime is not None:
+        if options.runtime and metadata.runtime is not None:
             code.write(f"  <runtime>{metadata.runtime}</runtime>\n")
 
         if metadata.series:
-            code.write(f"  <series>{_escape_xml(metadata.series)}</series>\n")
-            code.write("  <set>\n")
-            code.write(f"    <name>{_escape_xml(metadata.series)}</name>\n")
-            code.write("  </set>\n")
+            if options.series:
+                code.write(f"  <series>{_escape_xml(metadata.series)}</series>\n")
+            if options.set:
+                code.write("  <set>\n")
+                code.write(f"    <name>{_escape_xml(metadata.series)}</name>\n")
+                code.write("  </set>\n")
 
         if metadata.studio:
-            code.write(f"  <studio>{_escape_xml(metadata.studio)}</studio>\n")
-            code.write(f"  <maker>{_escape_xml(metadata.studio)}</maker>\n")
+            if options.studio:
+                code.write(f"  <studio>{_escape_xml(metadata.studio)}</studio>\n")
+            if options.maker:
+                code.write(f"  <maker>{_escape_xml(metadata.studio)}</maker>\n")
 
         if metadata.publisher:
-            code.write(f"  <publisher>{_escape_xml(metadata.publisher)}</publisher>\n")
-            code.write(f"  <label>{_escape_xml(metadata.publisher)}</label>\n")
+            if options.publisher:
+                code.write(f"  <publisher>{_escape_xml(metadata.publisher)}</publisher>\n")
+            if options.label:
+                code.write(f"  <label>{_escape_xml(metadata.publisher)}</label>\n")
 
         if metadata.tags:
             for tag in metadata.tags:
-                if tag:
+                if not tag:
+                    continue
+                if options.tag:
                     code.write(f"  <tag>{_escape_xml(tag)}</tag>\n")
+                if options.genre:
                     code.write(f"  <genre>{_escape_xml(tag)}</genre>\n")
 
-        if metadata.poster_url:
+        if options.poster and metadata.poster_url:
             code.write(f"  <poster>{_escape_xml(metadata.poster_url)}</poster>\n")
 
-        if metadata.thumb_url:
+        if options.cover and metadata.thumb_url:
             code.write(f"  <cover>{_escape_xml(metadata.thumb_url)}</cover>\n")
 
-        if metadata.trailer_url:
+        if options.trailer and metadata.trailer_url:
             code.write(f"  <trailer>{_escape_xml(metadata.trailer_url)}</trailer>\n")
 
-        if metadata.directors:
+        if options.director and metadata.directors:
             for director in metadata.directors:
                 code.write(f"  <director>{_escape_xml(director)}</director>\n")
 
-        if metadata.external_ids:
+        if options.external_ids and metadata.external_ids:
             for site, ext_id in metadata.external_ids.items():
                 if ext_id:
                     code.write(f"  <{site}id>{_escape_xml(str(ext_id))}</{site}id>\n")
