@@ -26,6 +26,7 @@ HTTP 宿主与 DI 在 `app.py` / `deps.py` / `middleware.py` / `spa.py`; `routes
 | `tasks` | `/tasks` | 队列 + `POST /batch`(操作既有) + `POST /batch/submit`(批量入队) + worker 暂停领队 + 终态 `record` + 日志尾部 |
 | `schedules` | `/schedules` | cron CRUD + trigger |
 | `config` | `/config` | HotSettings + schema |
+| `parse-rules` | `/parse-rules` | 识别词 CRUD; 作用域 / 匹配契约与注入点见 [parsing.md](parsing.md) |
 | `plugins` | `/plugins` | 插件目录、安装 / 卸载 / 热扫描、配置 schema 与启用状态 |
 | `network` | `/network` | 刮削来源连通性探测 / 浏览器后端可用性 |
 | `playback` | `/playback` | 播放源列表与码流 |

@@ -17,6 +17,7 @@ from ..crawlers.factory import CrawlerFactory
 from ..crawlers.http import HttpClient
 from ..crawlers.r18dev import R18Database
 from ..db.models import TaskType
+from ..db.parse_rules import ParseRuleProvider
 from ..enums import BrowserBackendName, BrowserMode, SiteName
 from ..handlers import (
     ActorPushHandler,
@@ -39,6 +40,7 @@ from ..llm import TranslationCache, TranslationCoalescer, build_translator
 from ..media.watermarks import user_watermark_dir
 from ..net.browser import BrowserPool
 from ..net.http import RateLimiters, WebClient, site_proxy_overrides
+from ..parsing import ParseRuleSet
 from ..playback import PlaybackFactory, PlaybackState
 from ..plugins.manager import PluginManager
 from ..plugins.packaging import install_plugin_path, install_plugin_zip, uninstall_plugin_tree
@@ -241,6 +243,7 @@ class AppRuntime:
     semantic: SemanticService | None = None
     browser: BrowserPool | None = None
     r18_handle: R18Handle | None = None
+    parse_rules: ParseRuleProvider | None = None
 
     _r18_config: R18Config | None = field(default=None, repr=False)
     _browser_key: tuple[BrowserConfig, str | None] | None = field(default=None, repr=False)
@@ -262,6 +265,22 @@ class AppRuntime:
             )
         self.repo.set_media_hook(self.semantic)
         self._bind_semantic_bridge()
+        if self.parse_rules is None:
+            self.parse_rules = ParseRuleProvider(self.repo)
+
+    def _parse_rule_provider(self) -> ParseRuleProvider:
+        """``parse_rules`` 经 __post_init__ 后不为 None; bootstrap 传入的实例与之同源."""
+        if self.parse_rules is None:
+            self.parse_rules = ParseRuleProvider(self.repo)
+        return self.parse_rules
+
+    async def parse_rules_for(self, library_id: int) -> ParseRuleSet:
+        """该库的识别词集 (含全局合成, 经缓存); 五个生产入口注入用."""
+        return await self._parse_rule_provider().for_library(library_id)
+
+    def invalidate_parse_rules(self) -> None:
+        """规则 CRUD 后调用; 缓存按 (count, max(updated_at)) 版本键失效."""
+        self._parse_rule_provider().invalidate()
 
     def _bind_semantic_bridge(self) -> None:
         """Agent 的语义工具只经 bridge 获取检索能力, 不直接依赖运行时. 热重载替换服务后须重新绑定."""
@@ -343,6 +362,7 @@ class AppRuntime:
                 library_locks=self.library_locks,
                 inventory_store=self.inventory_store,
                 semantic=self.semantic,
+                parse_rules=self.parse_rules,
             ),
             concurrency=hot.worker.concurrency,
             poll_interval=hot.worker.poll_interval,
@@ -550,6 +570,7 @@ def build_handlers(
     semantic: SemanticService,
     library_locks: LibraryTaskLocks | None = None,
     inventory_store: InventoryStore | None = None,
+    parse_rules: ParseRuleProvider | None = None,
 ) -> dict[TaskType, TaskHandler[Any, Any]]:
     # 未启用/缺密钥时 translator 为 None, ScrapeHandler 跳过翻译.
     # 经 _rebuild() 热重载; 代理沿用 network.proxy.
@@ -574,7 +595,7 @@ def build_handlers(
     if inventory_store is None:
         inventory_store = InventoryStore()
     handlers: dict[TaskType, TaskHandler[Any, Any]] = {
-        TaskType.REFRESH: RefreshHandler(repo, hot.watcher.media_extensions, inventory_store),
+        TaskType.REFRESH: RefreshHandler(repo, hot.watcher.media_extensions, inventory_store, parse_rules=parse_rules),
         TaskType.SCRAPE: ScrapeHandler(
             repo,
             factory,
@@ -594,6 +615,7 @@ def build_handlers(
             safe_dirs,
             watermark_dir=user_watermark_dir(state_dir) if state_dir is not None else None,
             library_locks=library_locks,
+            parse_rules=parse_rules,
         ),
         TaskType.SCAN_INVALID: ScanInvalidHandler(repo, hot, inventory_store),
         TaskType.DELETE: DeleteHandler(repo, inventory_store, hot, library_locks=library_locks),

@@ -15,6 +15,7 @@ from ..config import SAFE_DIRS_ALLOW_ALL, ColdSettings, ConfigManager
 from ..config.token import resolve_api_token, resolve_image_token
 from ..db.embeddings import EmbeddingStore
 from ..db.engine import create_async_engine_from_path
+from ..db.parse_rules import ParseRuleProvider
 from ..db.profiling import DbLogPolicy
 from ..db.repository import Repository
 from ..events import EventBus
@@ -181,6 +182,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
 
     library_locks = LibraryTaskLocks()
     inventory_store = InventoryStore()
+    parse_rule_provider = ParseRuleProvider(repo)
     semantic_service = SemanticService(repo, resource_store, cold.data_dir, hot.semantic)
     handlers = build_handlers(
         repo,
@@ -196,6 +198,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         library_locks=library_locks,
         inventory_store=inventory_store,
         semantic=semantic_service,
+        parse_rules=parse_rule_provider,
     )
 
     worker = AsyncWorker(
@@ -228,6 +231,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
             use_polling=hot.watcher.use_polling,
             media_extensions=hot.watcher.media_extensions,
             debounce_seconds=hot.watcher.debounce_seconds,
+            parse_rules=parse_rule_provider,
         )
         await watcher_service.start()
     except Exception:
@@ -260,6 +264,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         library_locks=library_locks,
         inventory_store=inventory_store,
         semantic=semantic_service,
+        parse_rules=parse_rule_provider,
         playback_factory=PlaybackFactory(
             plugin_manager=plugin_manager,
             plugin_configs=hot.plugins,

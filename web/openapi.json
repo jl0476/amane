@@ -1836,6 +1836,152 @@
         }
       }
     },
+    "/api/parse-rules": {
+      "get": {
+        "tags": [
+          "parse-rules"
+        ],
+        "summary": "List Parse Rules",
+        "operationId": "list_parse_rules",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParseRuleListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "parse-rules"
+        ],
+        "summary": "Create Parse Rule",
+        "operationId": "create_parse_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseRuleUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParseRuleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/parse-rules/{rule_id}": {
+      "put": {
+        "tags": [
+          "parse-rules"
+        ],
+        "summary": "Update Parse Rule",
+        "description": "整体替换; 重复键 (含 PUT 撞其它既有行) 409.",
+        "operationId": "update_parse_rule",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseRuleUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParseRuleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "parse-rules"
+        ],
+        "summary": "Delete Parse Rule",
+        "operationId": "delete_parse_rule",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playback/sources": {
       "get": {
         "tags": [
@@ -6099,7 +6245,7 @@
           "libraries"
         ],
         "summary": "Delete Library Override",
-        "description": "清空某 section 的覆盖 (回到继承); 无覆盖行同样 204, 清空语义幂等.",
+        "description": "清空某 section 的覆盖 (回到继承); 预留节 422, 无覆盖行同样 204, 清空语义幂等.",
         "operationId": "delete_library_override",
         "parameters": [
           {
@@ -13977,6 +14123,117 @@
         ],
         "title": "OrganizeSubmission"
       },
+      "ParseRuleListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ParseRuleResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ParseRuleListResponse"
+      },
+      "ParseRuleResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "type": "integer",
+            "title": "Scope Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RuleKind"
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/ContentType"
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "scope_type",
+          "scope_id",
+          "kind",
+          "content_type",
+          "pattern",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ParseRuleResponse"
+      },
+      "ParseRuleUpsertRequest": {
+        "properties": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "global",
+              "library"
+            ],
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Scope Id",
+            "default": 0
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RuleKind"
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/ContentType"
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope_type",
+          "kind",
+          "content_type",
+          "pattern"
+        ],
+        "title": "ParseRuleUpsertRequest",
+        "description": "POST 与 PUT 同形 (整体替换); scope_type=global 时 scope_id 恒按 0 落库.\n\n值与 ``PARSE_RULE_SCOPE_GLOBAL`` / ``PARSE_RULE_SCOPE_LIBRARY`` 一致; Literal 不能引用变量."
+      },
       "PathTemplatePlaceholder": {
         "properties": {
           "name": {
@@ -14782,6 +15039,15 @@
           "semantic_index"
         ],
         "title": "RoutineType"
+      },
+      "RuleKind": {
+        "type": "string",
+        "enum": [
+          "number_keyword",
+          "path_keyword"
+        ],
+        "title": "RuleKind",
+        "description": "识别词的两段: 番号关键词先于路径关键词, 是唯一显式优先级."
       },
       "RuntimePaths": {
         "properties": {

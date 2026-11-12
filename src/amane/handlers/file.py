@@ -8,6 +8,7 @@ import structlog
 
 from ..config import HotSettings, WatermarkConfig
 from ..db.models import Library, MediaFile
+from ..db.parse_rules import ParseRuleProvider
 from ..db.repo_types import MediaFileUpdates
 from ..enums import ActorGender, DownloadableResource, LinkMode
 from ..library import MEDIA_EXTENSIONS, LibraryFileKind, LibraryScan, ancestor_dirs, prune_empty_dirs
@@ -34,7 +35,7 @@ from ..organize import (
     video_dest,
 )
 from ..organize.link import create_video_link
-from ..parsing import ContentType, FileInfo, parse_file_info
+from ..parsing import ContentType, FileInfo, ParseRuleSet, parse_file_info
 from ..utils.path import existing_disk_path as existing_disk_path_sync
 from ..utils.path import is_descendant, nfc_path, path_is_under
 from ..utils.threads import existing_disk_path, in_thread, path_is_dir
@@ -203,9 +204,10 @@ async def apply_file_operations(
     web_client: WebClient | None = None,
     safe_dirs: Sequence[Path] | None = (),
     watermark_dir: Path | None = None,
+    rules: ParseRuleSet | None = None,
 ) -> FileOperationsResult | None:
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
-    Library 由 MediaFile.library_id 派生.
+    Library 由 MediaFile.library_id 派生. ``rules`` 是该库的识别词集 (调用方注入).
     """
     if media_file_id is None:
         return None
@@ -218,7 +220,7 @@ async def apply_file_operations(
 
     # 渲染路径后执行落盘.
     ext = Path(media_file.path).suffix.lstrip(".")
-    file_info = parse_file_info(media_file.path, has_external_subtitle=media_file.has_external_subtitle)
+    file_info = parse_file_info(media_file.path, has_external_subtitle=media_file.has_external_subtitle, rules=rules)
     actor_genders = {a.name: a.gender for a in await repo.get_actors_by_names(metadata.actors)}
     paths = resolve_paths(
         library,
@@ -488,6 +490,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         watermark_dir: Path | None = None,
         *,
         library_locks: LibraryTaskLocks | None = None,
+        parse_rules: ParseRuleProvider | None = None,
     ):
         super().__init__(payload_t=OrganizePayload, result_t=OrganizeResult)
         self._repo = repo
@@ -497,6 +500,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         self._safe_dirs = safe_dirs
         self._watermark_dir = watermark_dir
         self._library_locks = library_locks if library_locks is not None else LibraryTaskLocks()
+        self._parse_rules = parse_rules
 
     async def _load_scope(self, payload: OrganizePayload, library: Library) -> list[MediaFile]:
         assert library.id is not None
@@ -589,6 +593,9 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
 
                 write_nfo = library.write_nfo if payload.write_nfo is None else payload.write_nfo
                 copy_resources = library.copy_resources if payload.copy_resources is None else payload.copy_resources
+                rules = (
+                    await self._parse_rules.for_library(payload.library_id) if self._parse_rules is not None else None
+                )
                 fop_result = await apply_file_operations(
                     self._repo,
                     media_file.id,
@@ -600,6 +607,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     web_client=self._web_client,
                     safe_dirs=self._safe_dirs,
                     watermark_dir=self._watermark_dir,
+                    rules=rules,
                 )
                 if fop_result is None:
                     skipped += 1

@@ -3651,6 +3651,80 @@ export type OrganizeSubmission = {
 };
 
 /**
+ * ParseRuleListResponse
+ */
+export type ParseRuleListResponse = {
+    /**
+     * Items
+     */
+    items: Array<ParseRuleResponse>;
+};
+
+/**
+ * ParseRuleResponse
+ */
+export type ParseRuleResponse = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * Scope Type
+     */
+    scope_type: string;
+    /**
+     * Scope Id
+     */
+    scope_id: number;
+    kind: RuleKind;
+    content_type: ContentType;
+    /**
+     * Pattern
+     */
+    pattern: string;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * ParseRuleUpsertRequest
+ *
+ * POST 与 PUT 同形 (整体替换); scope_type=global 时 scope_id 恒按 0 落库.
+ *
+ * 值与 ``PARSE_RULE_SCOPE_GLOBAL`` / ``PARSE_RULE_SCOPE_LIBRARY`` 一致; Literal 不能引用变量.
+ */
+export type ParseRuleUpsertRequest = {
+    /**
+     * Scope Type
+     */
+    scope_type: 'global' | 'library';
+    /**
+     * Scope Id
+     */
+    scope_id?: number;
+    kind: RuleKind;
+    content_type: ContentType;
+    /**
+     * Pattern
+     */
+    pattern: string;
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+};
+
+/**
  * PathTemplatePlaceholder
  */
 export type PathTemplatePlaceholder = {
@@ -4174,6 +4248,13 @@ export type RescrapeTarget = 'metadata' | 'actor';
  * RoutineType
  */
 export type RoutineType = 'cleanup' | 'upscale' | 'r18_import' | 'rescrape' | 'semantic_index';
+
+/**
+ * RuleKind
+ *
+ * 识别词的两段: 番号关键词先于路径关键词, 是唯一显式优先级.
+ */
+export type RuleKind = 'number_keyword' | 'path_keyword';
 
 /**
  * RuntimePaths
@@ -7098,6 +7179,107 @@ export type CheckConnectivityResponses = {
 };
 
 export type CheckConnectivityResponse = CheckConnectivityResponses[keyof CheckConnectivityResponses];
+
+export type ListParseRulesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/parse-rules';
+};
+
+export type ListParseRulesResponses = {
+    /**
+     * Successful Response
+     */
+    200: ParseRuleListResponse;
+};
+
+export type ListParseRulesResponse = ListParseRulesResponses[keyof ListParseRulesResponses];
+
+export type CreateParseRuleData = {
+    body: ParseRuleUpsertRequest;
+    path?: never;
+    query?: never;
+    url: '/api/parse-rules';
+};
+
+export type CreateParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateParseRuleError = CreateParseRuleErrors[keyof CreateParseRuleErrors];
+
+export type CreateParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    201: ParseRuleResponse;
+};
+
+export type CreateParseRuleResponse = CreateParseRuleResponses[keyof CreateParseRuleResponses];
+
+export type DeleteParseRuleData = {
+    body?: never;
+    path: {
+        /**
+         * Rule Id
+         */
+        rule_id: number;
+    };
+    query?: never;
+    url: '/api/parse-rules/{rule_id}';
+};
+
+export type DeleteParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteParseRuleError = DeleteParseRuleErrors[keyof DeleteParseRuleErrors];
+
+export type DeleteParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteParseRuleResponse = DeleteParseRuleResponses[keyof DeleteParseRuleResponses];
+
+export type UpdateParseRuleData = {
+    body: ParseRuleUpsertRequest;
+    path: {
+        /**
+         * Rule Id
+         */
+        rule_id: number;
+    };
+    query?: never;
+    url: '/api/parse-rules/{rule_id}';
+};
+
+export type UpdateParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateParseRuleError = UpdateParseRuleErrors[keyof UpdateParseRuleErrors];
+
+export type UpdateParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    200: ParseRuleResponse;
+};
+
+export type UpdateParseRuleResponse = UpdateParseRuleResponses[keyof UpdateParseRuleResponses];
 
 export type ListPlaybackSourcesData = {
     body?: never;

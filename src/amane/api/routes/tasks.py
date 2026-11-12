@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, TypeAdapter
 
+from ...app.runtime import AppRuntime
 from ...db import MediaFile, Repository
 from ...db.models import SortOrder, Task, TaskSortField, TaskStatus, TaskType
 from ...handlers import ActorScrapePayload, ScrapePayload
@@ -176,8 +177,8 @@ async def get_task_children(
 
 
 @router.post("", status_code=202)
-async def submit_task(req: Annotated[TaskSubmission, Body(...)], repo: RepoDep) -> TaskResponse:
-    task_type, payload = await resolve_submission(req, repo)
+async def submit_task(req: Annotated[TaskSubmission, Body(...)], repo: RepoDep, runtime: RuntimeDep) -> TaskResponse:
+    task_type, payload = await resolve_submission(req, repo, rules_for=runtime.parse_rules_for)
     task = await repo.create_task(task_type=task_type, payload=payload)
     # mode="json": 该日志经 WS 广播时会被 json 序列化, payload 中的 set/enum 等需转为原生类型.
     logger.info("task submitted", task_id=task.id, task_type=task_type, payload=payload.model_dump(mode="json"))
@@ -237,13 +238,15 @@ async def batch_tasks(
 async def _resolve_batch_submission(
     submission: TaskSubmission,
     repo: Repository,
+    runtime: AppRuntime,
     files_by_id: dict[int, MediaFile],
     known_actors: set[int],
 ) -> tuple[TaskType, BaseModel] | None:
     """解析单条提交; 目标实体不存在返回 None (计入 missing), 参数级错误照常抛出."""
     if isinstance(submission, ScrapeSubmission):
         media = files_by_id.get(submission.media_id) if submission.media_id is not None else None
-        payload = submission.build_payload(media)
+        rules = await runtime.parse_rules_for(media.library_id) if media is not None else None
+        payload = submission.build_payload(media, rules=rules)
         return None if payload is None else (TaskType.SCRAPE, payload)
     if isinstance(submission, ActorScrapeSubmission):
         if submission.actor_id not in known_actors:
@@ -266,7 +269,9 @@ def _batch_dedupe_key(entry: tuple[TaskType, BaseModel]) -> tuple[TaskType, str,
 
 
 @router.post("/batch/submit", status_code=202)
-async def batch_submit_tasks(req: TaskBatchSubmitRequest, repo: RepoDep) -> TaskBatchSubmitResponse:
+async def batch_submit_tasks(
+    req: TaskBatchSubmitRequest, repo: RepoDep, runtime: RuntimeDep
+) -> TaskBatchSubmitResponse:
     """批量提交任务. 逐项解析同单条提交, 同类型合并为一次入队事务.
 
     ``missing`` 只覆盖目标实体不存在 (404); 路径越界 / 参数互斥等仍是整批中断.
@@ -288,7 +293,7 @@ async def batch_submit_tasks(req: TaskBatchSubmitRequest, repo: RepoDep) -> Task
     skipped = 0
     for submission in submissions:
         try:
-            entry = await _resolve_batch_submission(submission, repo, files_by_id, known_actors)
+            entry = await _resolve_batch_submission(submission, repo, runtime, files_by_id, known_actors)
         except HTTPException as exc:
             if exc.status_code != 404:
                 raise
