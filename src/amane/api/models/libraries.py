@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,6 +31,7 @@ from ...organize.path_templates import (
     PathTemplate,
 )
 from ...organize.strm_content import StrmContentTemplate
+from ...parsing import ContentType
 from ...utils.model import create_partial_model, subset_of
 
 
@@ -221,3 +222,39 @@ def path_template_schema() -> PathTemplateSchemaResponse:
             for described in (template_backend(syntax).describe(),)
         ],
     )
+
+
+class NamingPreviewRequest(BaseModel):
+    """命名试算入参 (规格 3.2.4): 不落盘, 走与整理相同的 resolve_paths 代码路径.
+
+    ``media_file_id`` 用真实文件与已刮削的元数据; 两者都缺省时用请求字段构造.
+    ``library_id`` 缺省用全局默认模板; ``syntax`` 缺省用生效语法.
+    """
+
+    library_id: int | None = None
+    media_file_id: int | None = None
+    syntax: Literal["native", "jinja"] | None = None
+    number: str = ""
+    source_path: str = ""
+    content_type: ContentType = ContentType.CENSORED
+    title: str = ""
+    actors: list[str] = []
+    studio: str = ""
+    release: str = ""
+
+
+class NamingPreviewResponse(BaseModel):
+    """解析结果 + 各产物渲染路径; subtitle 按 `{源文件主干}.srt` 的假想字幕渲染."""
+
+    number: str
+    content_type: str
+    mosaic: str
+    subtitle_tag: str
+    definition: str
+    video: str
+    thumb: str
+    poster: str
+    fanart: str
+    nfo: str
+    trailer: str
+    subtitle: str

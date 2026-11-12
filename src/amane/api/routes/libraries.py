@@ -7,9 +7,16 @@ from pydantic import ValidationError
 
 from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...config.overrides import ConfigResolver, section_model, validate_override_payload
-from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, TaskType
+from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, Metadata, TaskType
 from ...handlers import RefreshPayload, ScanMode
-from ...organize.path_templates import NAMING_TEMPLATE_FIELDS, validate_naming_templates
+from ...organize.path_templates import (
+    NAMING_TEMPLATE_FIELDS,
+    resolve_paths,
+    resolve_subtitle_path,
+    validate_naming_templates,
+)
+from ...parsing import parse_file_info
+from ...parsing.file_info import mosaic_nature
 from ...utils.model import to_resp
 from ..deps import ConfigDep, RepoDep, RuntimeDep
 from ..models import (
@@ -20,6 +27,8 @@ from ..models import (
     LibraryOverridesResponse,
     LibraryResponse,
     LibraryUpdateRequest,
+    NamingPreviewRequest,
+    NamingPreviewResponse,
     PathTemplateSchemaResponse,
     path_template_schema,
 )
@@ -37,6 +46,91 @@ router = APIRouter(prefix="/libraries", tags=["libraries"])
 async def get_path_template_schema() -> PathTemplateSchemaResponse:
     """与 ORGANIZE 实际使用的默认值同源."""
     return path_template_schema()
+
+
+@router.post("/naming/preview")
+async def preview_naming(req: NamingPreviewRequest, repo: RepoDep, config: ConfigDep) -> NamingPreviewResponse:
+    """命名模板试算 (规格 3.2.4): 与整理走同一渲染代码路径 (resolve_paths + TemplateContext), 纯计算不落盘.
+
+    相对模板以库根为基准; 无 library_id 时以 ``/`` 为基准按全局默认模板试算.
+    """
+    metadata, source_path, library_id = await _preview_inputs(req, repo)
+    library = await repo.get_library(library_id) if library_id is not None else None
+    if library is not None:
+        naming = await ConfigResolver(config.hot, repo).resolve(NamingConfig, scope=library, library=library)
+        base_library = library
+    else:
+        naming = config.hot.naming
+        base_library = Library(name="preview", path="/")
+    if req.syntax is not None and req.syntax != naming.syntax:
+        naming = naming.model_copy(update={"syntax": req.syntax})
+
+    file_info = parse_file_info(str(source_path) if source_path is not None else req.number)
+    paths = resolve_paths(
+        base_library,
+        metadata,
+        ext=source_path.suffix.lstrip(".") if source_path is not None else "mp4",
+        source_path=source_path,
+        file_info=file_info,
+        safe_dirs=None,
+        naming=naming,
+    )
+    # 字幕按 `{源文件主干}.srt` 的假想字幕源渲染, 与整理时最常见的同名字幕一致.
+    subtitle_source = (source_path if source_path is not None else Path(req.number or metadata.number)).with_suffix(
+        ".srt"
+    )
+    subtitle = resolve_subtitle_path(
+        base_library,
+        metadata,
+        subtitle_source,
+        video_dir=paths.video.parent,
+        video_name=paths.video.stem,
+        video_dest=paths.video,
+        source_path=source_path,
+        file_info=file_info,
+        safe_dirs=None,
+        naming=naming,
+    )
+    return NamingPreviewResponse(
+        number=metadata.number,
+        content_type=str(metadata.content_type),
+        mosaic=str(nature) if (nature := mosaic_nature(file_info.mosaic, metadata.content_type)) else "",
+        subtitle_tag="C" if file_info.has_subtitle else "",
+        definition=file_info.definition or "",
+        video=str(paths.video),
+        thumb=str(paths.thumb),
+        poster=str(paths.poster),
+        fanart=str(paths.fanart),
+        nfo=str(paths.nfo),
+        trailer=str(paths.trailer),
+        subtitle=str(subtitle),
+    )
+
+
+async def _preview_inputs(req: NamingPreviewRequest, repo: RepoDep) -> tuple[Metadata, Path | None, int | None]:
+    """试算入参组装: media_file_id 优先取真实文件与元数据, 否则按请求字段构造."""
+    if req.media_file_id is not None:
+        media_file = await repo.get_media_file(req.media_file_id)
+        if media_file is None:
+            raise HTTPException(status_code=404, detail=f"媒体文件 {req.media_file_id} 不存在")
+        metadata = await repo.get_metadata(media_file.metadata_id) if media_file.metadata_id is not None else None
+        if metadata is None:
+            metadata = Metadata(number=media_file.number or "")
+        return metadata, Path(media_file.path), req.library_id if req.library_id is not None else media_file.library_id
+    metadata = Metadata(
+        number=req.number,
+        title=req.title,
+        actors=req.actors,
+        studio=req.studio,
+        release=req.release,
+        content_type=req.content_type,
+    )
+    source_path = Path(req.source_path) if req.source_path else None
+    if source_path is not None:
+        parsed = parse_file_info(str(source_path))
+        if parsed.number:
+            metadata.number = parsed.number
+    return metadata, source_path, req.library_id
 
 
 @router.get("")
