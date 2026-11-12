@@ -30,12 +30,15 @@ from ..enums import (
     BrowserMode,
     DownloadableResource,
     Language,
+    LinkMode,
     MetadataField,
     SiteName,
     WatermarkCorner,
     WatermarkKind,
 )
+from ..library.rules import DEFAULT_SUBTITLE_EXTENSIONS
 from ..net.bsk import resolve_bsk_path
+from ..organize.path_templates import VIDEO_TEMPLATE_DEFAULT
 from ..parsing import ContentType
 from ..plugins.models import PluginConfig
 from ..sr import SrPreset
@@ -806,6 +809,100 @@ class SemanticConfig(BaseModel):
     auto_maintain: bool = Field(default=False, description="条目图片变化后立即增量索引; 打开时视觉模型常驻")
 
 
+class OrganizeCommonConfig(BaseModel):
+    """整理时的覆写策略. 只放本阶段实现的字段."""
+
+    model_config = {"extra": "forbid"}
+
+    overwrite_video: bool = False
+    """目标已有视频时覆写源文件; 默认 False 保持现状 (冲突即跳过)."""
+
+    overwrite_image: bool = True
+    """目标已有图片产物时是否覆写.
+
+    默认 True —— 现有 `handlers/file.py::_place_library_images` 直接 copy2 写入,
+    不判断目标上是否已有产物, 即现状就是覆盖写. 取 True 才能保持既有行为;
+    显式设 False 才转为「目标已存在则跳过」.
+    """
+
+
+class NamingConfig(BaseModel):
+    """命名模板与语法. 字段与 Library 行的模板类字段一一对应."""
+
+    model_config = {"extra": "forbid"}
+
+    syntax: Literal["native", "jinja"] = "native"
+    video_template: str = VIDEO_TEMPLATE_DEFAULT
+    link_template: str | None = None
+    link_mode: LinkMode = LinkMode.STRM
+    strm_content_template: str | None = None
+    thumb_template: str | None = None
+    poster_template: str | None = None
+    fanart_template: str | None = None
+    extrafanart_template: str | None = None
+    extrafanart_name_template: str | None = None
+    nfo_template: str | None = None
+    trailer_template: str | None = None
+    subtitle_template: str | None = None
+    subtitle_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_SUBTITLE_EXTENSIONS))
+    write_nfo: bool = True
+    copy_resources: list[DownloadableResource] = Field(default_factory=lambda: list(DownloadableResource))
+
+
+class NfoConfig(BaseModel):
+    """NFO 字段开关. 字段清单与默认值见 3.4.3."""
+
+    model_config = {"extra": "forbid"}
+
+    # 标题类
+    title: bool = True
+    originaltitle: bool = True
+    originaltitle_source: Literal["title", "original"] = "title"
+    sorttitle: bool = True
+    # 剧情类
+    plot: bool = True
+    outline: bool = True
+    outline_summary: bool = False
+    originalplot: bool = False
+    # 人物类
+    actor: bool = True
+    director: bool = True
+    # 日期类
+    premiered: bool = True
+    releasedate: bool = True
+    year: bool = True
+    # 其它
+    num: bool = True
+    runtime: bool = True
+    votes: bool = False
+    score: bool = True
+    criticrating: bool = True
+    country: bool = False
+    mpaa: bool = True
+    mpaa_value: str = "JP-18+"
+    customrating: bool = False
+    series: bool = True
+    set: bool = True
+    tag: bool = True
+    genre: bool = True
+    studio: bool = True
+    maker: bool = True
+    publisher: bool = True
+    label: bool = True
+    poster: bool = True
+    cover: bool = True
+    trailer: bool = True
+    website: bool = False
+    external_ids: bool = True
+    add_part_to_title: bool = False
+    add_translated_by: bool = False
+    tagline_format: str | None = None
+    set_by_actress: bool = False
+    set_by_serial_name: bool = False
+    set_by_series: bool = False
+    additional_tags: list[str] = []
+
+
 class HotSettings(BaseModel):
     """运行时可更新, 持久化到 TOML. extra=forbid, 未知字段须校验失败."""
 
@@ -854,6 +951,9 @@ class HotSettings(BaseModel):
         return data
 
     scraping: ScrapingConfig = ScrapingConfig()
+    common: OrganizeCommonConfig = OrganizeCommonConfig()
+    naming: NamingConfig = NamingConfig()
+    nfo: NfoConfig = NfoConfig()
     media_server: MediaServerConfig = MediaServerConfig()
     actor_scraping: ActorScrapingConfig = ActorScrapingConfig()
     agent: AgentConfig = AgentConfig()
