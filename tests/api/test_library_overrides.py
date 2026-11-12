@@ -71,11 +71,14 @@ async def test_put_empty_payload_replaces_whole_section(client: AsyncClient, saf
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("section", ["download", "watermark", "metadata", "provider", "parser"])
-async def test_put_rejects_reserved_sections(client: AsyncClient, safe_path: Path, section: str) -> None:
-    """白名单外的预留 section 一律 422, 不落库."""
+async def test_write_rejects_reserved_sections(client: AsyncClient, safe_path: Path, section: str) -> None:
+    """白名单外的预留 section 一律 422 (PUT 与 DELETE 同判), 不落库."""
     library_id = await _create_library(client, safe_path, "reserved")
-    resp = await client.put(f"libraries/{library_id}/overrides/{section}", json={"overwrite_video": True})
+    base = f"libraries/{library_id}/overrides"
+
+    resp = await client.put(f"{base}/{section}", json={"overwrite_video": True})
     assert resp.status_code == 422
+    assert (await client.delete(f"{base}/{section}")).status_code == 422
     assert (await client.get(f"libraries/{library_id}/overrides")).json() == {"overrides": {}}
 
 

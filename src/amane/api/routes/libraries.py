@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import ValidationError
 
 from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
-from ...config.overrides import ConfigResolver, validate_override_payload
+from ...config.overrides import ConfigResolver, section_model, validate_override_payload
 from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, TaskType
 from ...handlers import RefreshPayload, ScanMode
 from ...utils.model import to_resp
@@ -228,8 +228,13 @@ async def put_library_override(
 
 @router.delete("/{library_id}/overrides/{section}", status_code=204)
 async def delete_library_override(library_id: int, section: str, repo: RepoDep) -> Response:
-    """清空某 section 的覆盖 (回到继承); 无覆盖行同样 204, 清空语义幂等."""
+    """清空某 section 的覆盖 (回到继承); 预留节 422, 无覆盖行同样 204, 清空语义幂等."""
     await _require_library(library_id, repo)
+    try:
+        # DELETE 同为写操作: 白名单校验与 PUT 同判 (规格 §3.1.4).
+        section_model(section)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await repo.delete_config_override(library_id, section)
     logger.info("library override deleted", library_id=library_id, section=section)
     return Response(status_code=204)

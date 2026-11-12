@@ -66,7 +66,7 @@ Worker 替换不取消运行中任务: `_rebuild()` 构建新 worker 后旧 work
 
 名单只增不减: 历史库由数据迁移把全部 15 个模板字段写入名单 (迁移时刻的库行值就是生效输入, 全量保留才能保持落盘); 建库 / 改库请求中显式给出的模板字段由 `src/amane/api/routes/libraries.py` 按 `model_fields_set` 追加; 新建库名单为空, 全部跟随全局.
 
-payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空模板字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo, scope_type 只收 library, 预留节 (download / watermark / metadata / provider) 与 watch_dir 写入一律 422; parser 不是 section, 识别词存 `parse_rules` 表. 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
+payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空模板字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo, scope_type 只收 library, 预留节 (download / watermark / metadata / provider) 与 watch_dir 的写操作 (PUT / DELETE) 一律 422; parser 不是 section, 识别词存 `parse_rules` 表. 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
 
 ## 配置项增补规范
 

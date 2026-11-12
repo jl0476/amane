@@ -69,7 +69,8 @@ class OverridePayload(RootModel[dict[str, Any]]):
         return _normalize_payload(data)
 
 
-def _section_model(section: str) -> type[BaseModel]:
+def section_model(section: str) -> type[BaseModel]:
+    """白名单查询; 预留节与 parser 抛 ValueError (写操作一律 422)."""
     model = SECTION_MODELS.get(section)
     if model is None:
         raise ValueError(f"section {section!r} 未实现, 可用: {', '.join(sorted(SECTION_MODELS))}")
@@ -78,7 +79,7 @@ def _section_model(section: str) -> type[BaseModel]:
 
 def validate_override_payload(section: str, payload: Mapping[str, Any]) -> None:
     """覆盖写入前校验: section 白名单 + payload 契约 + section 模型 (未知键与类型不符在此报错)."""
-    model = _section_model(section)
+    model = section_model(section)
     normalized = OverridePayload.model_validate(dict(payload)).root
     model.model_validate(normalized)
 
