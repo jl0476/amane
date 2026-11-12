@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Unpack
+from typing import Any, Unpack
 
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -23,7 +23,7 @@ from ...organize.path_templates import (
 )
 from ...organize.strm_content import normalize_strm_content_template, validate_strm_content_template
 from ...utils.path import resolved_path
-from ..models import Library, MediaFile
+from ..models import CONFIG_OVERRIDE_SCOPE_LIBRARY, ConfigOverride, Library, MediaFile
 from ..repo_types import LibraryUpdates
 from .base import RepositoryMixinBase
 
@@ -152,6 +152,22 @@ class LibrariesRepoMixin(RepositoryMixinBase):
                 stmt = stmt.where(Library.automation != LibraryAutomation.NONE)
             result = await session.exec(stmt)
             return list(result.all())
+
+    async def get_config_override_payload(self, library_id: int, section: str) -> dict[str, Any] | None:
+        """读取库级覆盖 payload (稀疏 JSON, {} 哨兵原样返回); 无覆盖行返回 None."""
+        async with self._session() as session:
+            row = (
+                await session.exec(
+                    select(ConfigOverride).where(
+                        col(ConfigOverride.scope_type) == CONFIG_OVERRIDE_SCOPE_LIBRARY,
+                        col(ConfigOverride.scope_id) == library_id,
+                        col(ConfigOverride.section) == section,
+                    )
+                )
+            ).first()
+            if row is None:
+                return None
+            return dict(row.payload)
 
     async def get_library(self, library_id: int) -> Library | None:
         async with self._session() as session:

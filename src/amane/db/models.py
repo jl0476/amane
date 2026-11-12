@@ -280,9 +280,7 @@ class Metadata(SQLModel, table=True):
     source_urls: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     field_sources: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     # 逐字段语言声明: 键为字段名, 值为该字段取值语言; 只记录来源声明过的字段, 与 field_sources 平行.
-    field_languages: dict[str, str] = Field(
-        default_factory=dict, sa_column=Column(JSON, server_default=text("'{}'"))
-    )
+    field_languages: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON, server_default=text("'{}'")))
     # 主来源详情页地址: 取标题胜出来源的 source_url, 标题来源无地址时留空; 聚合派生, 不接受 PATCH.
     website: str | None = None
     # 各站原始快照, 供离线重新聚合.
@@ -423,6 +421,12 @@ class Library(SQLModel, table=True):
         default_factory=lambda: [r for r in DownloadableResource if r != DownloadableResource.trailer],
         sa_column=Column(JSON, nullable=False),
     )
+    template_overrides: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    """显式设置的模板字段名名单 (值域见 TEMPLATE_OVERRIDE_FIELDS).
+
+    名单内字段参与生效配置合成的库层 (None 也是显式值); 名单外视为继承全局. 该列只增不减:
+    建库 / 改库请求中显式给出的模板字段名由 API 路由追加; 新建库为空, 全部模板字段跟随全局.
+    """
     trailer_pattern: TrailerPattern = Field(default=DEFAULT_TRAILER_PATTERN, sa_column=Column(String, nullable=False))
     """匹配文件名 (含扩展名) 的正则; 命中则扫描/监控跳过. 空串关闭."""
     blacklist_patterns: list[BlacklistPattern] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
@@ -433,6 +437,52 @@ class Library(SQLModel, table=True):
     只对扫描视频扩展名生效 (与 watcher.media_extensions / MEDIA_EXTENSIONS 同一套);
     图片、NFO、字幕、`.strm` 指针都不参与.
     """
+
+
+CONFIG_OVERRIDE_SCOPE_LIBRARY = "library"
+"""config_overrides.scope_type 当前唯一取值; watch_dir 预留 (写入被拒), 见覆盖层规格 §3.1.1."""
+
+# Library 行中与 naming section 同名的模板类字段 (规格 §3.1.3 字段分类表); template_overrides 名单的值域.
+TEMPLATE_OVERRIDE_FIELDS = (
+    "video_template",
+    "link_template",
+    "link_mode",
+    "strm_content_template",
+    "thumb_template",
+    "poster_template",
+    "fanart_template",
+    "extrafanart_template",
+    "extrafanart_name_template",
+    "nfo_template",
+    "trailer_template",
+    "subtitle_template",
+    "subtitle_extensions",
+    "write_nfo",
+    "copy_resources",
+)
+
+
+class ConfigOverride(SQLModel, table=True):
+    """库级配置覆盖. payload 是稀疏 JSON: 键缺失 = 继承, 键存在 = 覆盖.
+
+    禁止 JSON null (「继承」与「显式关闭」无法同时表达); 可空模板字段的「显式取空」写作空对象 {},
+    由 `amane.config.overrides` 在解析期映射为 None. 校验契约与 section 白名单也在该模块.
+    """
+
+    __tablename__ = "config_overrides"  # type: ignore[assignment]
+    __table_args__ = (UniqueConstraint("scope_type", "scope_id", "section", name="uq_config_overrides_scope_section"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope_type: str = Field(nullable=False)
+    """作用域类型; 本阶段只写 library."""
+    scope_id: int = Field(nullable=False)
+    """作用域行 id; library 作用域时为 libraries.id."""
+    section: str = Field(nullable=False)
+    """配置节名; 只写已实现白名单 (common / naming / nfo), 预留节与 parser 一律拒绝."""
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    """稀疏覆盖; {} 哨兵表示对应模板字段显式取空, 不使用 null."""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Schedule(SQLModel, table=True):
