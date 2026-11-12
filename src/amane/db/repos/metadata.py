@@ -52,22 +52,16 @@ logger = structlog.get_logger()
 
 
 def _normalize_text_fields(fields: MetadataFields) -> MetadataFields:
-    """长文本列在落库前归一 (与聚合输出同一函数, 幂等).
+    """长文本列在落库前归一 (与聚合输出同一函数, 幂等); 就地改写, 返回原字典.
 
+    只改写调用方传入的键, 不注入未传键 — 注入会让 PATCH 单字段时把另一字段落成 None.
     覆盖面是全部写库路径: 首刮 / 补刮 / merge / REST PATCH / Agent 工具都经这两个写方法.
     """
-    plot = fields.get("plot")
-    original_plot = fields.get("original_plot")
-    if not isinstance(plot, str) and not isinstance(original_plot, str):
-        return fields
-    return cast(
-        "MetadataFields",
-        {
-            **fields,
-            "plot": normalize_long_text(plot) if isinstance(plot, str) else plot,
-            "original_plot": normalize_long_text(original_plot) if isinstance(original_plot, str) else original_plot,
-        },
-    )
+    if "plot" in fields and isinstance(fields["plot"], str):
+        fields["plot"] = normalize_long_text(fields["plot"])
+    if "original_plot" in fields and isinstance(fields["original_plot"], str):
+        fields["original_plot"] = normalize_long_text(fields["original_plot"])
+    return fields
 
 
 def _image_signature(metadata: Metadata) -> tuple[list[str], list[str], dict[str, list[str]]]:

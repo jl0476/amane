@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from amane.api.models.metadata import PartialMetadata
-from amane.db.repo_types import WriteMode
+from amane.db.repo_types import MetadataFields, WriteMode
+from amane.db.repos.metadata import _normalize_text_fields
 from amane.enums import MetadataField
 
 if TYPE_CHECKING:
@@ -109,3 +110,41 @@ async def test_locked_original_title_blocks_auto_write(repo: Repository):
     assert manual is not None
     assert manual.original_title == "手动改写"
     assert manual.locked_fields == [str(MetadataField.ORIGINAL_TITLE)]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        pytest.param({"plot": "<p>plot</p>"}, {"plot": "plot"}, id="plot_only"),
+        pytest.param({"original_plot": "<p>原文</p>"}, {"original_plot": "原文"}, id="original_plot_only"),
+        pytest.param({"plot": None}, {"plot": None}, id="plot_null_kept"),
+        pytest.param({}, {}, id="no_text_field"),
+    ],
+)
+def test_normalize_text_fields_only_rewrites_present_keys(fields: MetadataFields, expected: dict):
+    """归一只改写传入的键, 不注入未传键 — 注入会让 PATCH 单字段时把另一字段清成 None."""
+    assert _normalize_text_fields(fields) == expected
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_update_plot_keeps_original_plot(repo: Repository):
+    """PATCH 只改 plot 时 original_plot 保留 (归一注入未传键会静默清空原文)."""
+    meta = await repo.upsert_metadata("ABP-123", plot="旧简介", original_plot="旧原文")
+    assert meta.id is not None
+
+    updated = await repo.update_metadata(meta.id, plot="新简介")
+    assert updated is not None
+    assert updated.plot == "新简介"
+    assert updated.original_plot == "旧原文"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_update_original_plot_keeps_plot(repo: Repository):
+    """PATCH 只改 original_plot 时 plot 保留."""
+    meta = await repo.upsert_metadata("ABP-123", plot="旧简介", original_plot="旧原文")
+    assert meta.id is not None
+
+    updated = await repo.update_metadata(meta.id, original_plot="新原文")
+    assert updated is not None
+    assert updated.original_plot == "新原文"
+    assert updated.plot == "旧简介"
