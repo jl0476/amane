@@ -37,7 +37,7 @@ class OriginalCrawler:
                 "plot": "日本語あらすじ",
                 "original_title": "日本語タイトル",
                 "original_plot": "日本語あらすじ",
-                "field_languages": {"original_title": "ja", "original_plot": "ja"},
+                "field_languages": {"original_title": "jp", "original_plot": "jp"},
                 "source_url": "https://www.javdb.com/v/abc123",
                 "poster_urls": ["http://img.example.com/p.jpg"],
             }
@@ -102,7 +102,7 @@ async def test_scrape_persists_original_fields_to_db_and_api(api_env):
     assert row.original_title == "日本語タイトル"
     assert row.original_plot == "日本語あらすじ"
     assert row.website == "https://www.javdb.com/v/abc123"
-    assert row.field_languages == {"original_title": "ja", "original_plot": "ja"}
+    assert row.field_languages == {"original_title": "jp", "original_plot": "jp"}
 
     resp = await client.get(f"/metadata/{metadata_id}")
     assert resp.status_code == 200
@@ -110,7 +110,7 @@ async def test_scrape_persists_original_fields_to_db_and_api(api_env):
     assert body["metadata"]["original_title"] == "日本語タイトル"
     assert body["metadata"]["original_plot"] == "日本語あらすじ"
     assert body["metadata"]["website"] == "https://www.javdb.com/v/abc123"
-    assert body["metadata"]["field_languages"] == {"original_title": "ja", "original_plot": "ja"}
+    assert body["metadata"]["field_languages"] == {"original_title": "jp", "original_plot": "jp"}
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -123,7 +123,7 @@ async def test_translate_keeps_original_fields(repo: Repository, resource_store)
         plot="日本語あらすじ",
         original_title="日本語タイトル",
         original_plot="日本語あらすじ",
-        field_languages={"original_title": "ja", "original_plot": "ja"},
+        field_languages={"original_title": "jp", "original_plot": "jp"},
     )
 
     await handler._translate_metadata(
@@ -136,4 +136,4 @@ async def test_translate_keeps_original_fields(repo: Repository, resource_store)
     assert metadata.plot == "[zh_cn]日本語あらすじ"
     assert metadata.original_title == "日本語タイトル"
     assert metadata.original_plot == "日本語あらすじ"
-    assert metadata.field_languages == {"original_title": "ja", "original_plot": "ja"}
+    assert metadata.field_languages == {"original_title": "jp", "original_plot": "jp"}

@@ -187,7 +187,7 @@ def _full_metadata(**overrides) -> MediaMetadata:
         "original_plot": "Plot",
         "trailer_urls": ["http://tr.mp4"],
         "extrafanart": ["http://e.jpg"],
-        "field_languages": {"original_title": "ja", "original_plot": "ja"},
+        "field_languages": {"original_title": "jp", "original_plot": "jp"},
     }
     defaults.update(overrides)
     return MediaMetadata.model_validate(defaults)
@@ -1103,7 +1103,7 @@ class TestOriginalFields:
                     "number": "X",
                     "title": "日本語タイトル",
                     "original_title": "日本語タイトル",
-                    "field_languages": {"original_title": "ja"},
+                    "field_languages": {"original_title": "jp"},
                 }
             )
         )
@@ -1126,7 +1126,7 @@ class TestOriginalFields:
         assert state.result.plot == "中文简介"
         assert state.result.original_plot == "中文简介"
         assert state.result.field_sources["original_plot"] == "dmm"
-        assert state.result.field_languages == {"original_title": "ja", "original_plot": "zh_cn"}
+        assert state.result.field_languages == {"original_title": "jp", "original_plot": "zh_cn"}
 
     @pytest.mark.asyncio
     async def test_undeclared_language_is_skipped_and_chain_continues(self):
@@ -1142,7 +1142,7 @@ class TestOriginalFields:
                 {
                     "number": "X",
                     "original_title": "声明原文",
-                    "field_languages": {"original_title": "ja"},
+                    "field_languages": {"original_title": "jp"},
                 }
             )
         )
@@ -1151,7 +1151,7 @@ class TestOriginalFields:
 
         assert state.result.original_title == "声明原文"
         assert state.result.field_sources["original_title"] == "dmm"
-        assert state.result.field_languages == {"original_title": "ja"}
+        assert state.result.field_languages == {"original_title": "jp"}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1195,7 +1195,7 @@ class TestOriginalFields:
                 {
                     "number": "X",
                     "title": "T",
-                    "field_languages": {"title": "ja", "unknown_field": "en"},
+                    "field_languages": {"title": "jp", "unknown_field": "en"},
                 }
             )
         )
@@ -1203,7 +1203,7 @@ class TestOriginalFields:
         state = await execute_graph(graph, {K1: crawler}, SearchQuery("X"))
 
         assert state.result.title == "T"
-        assert state.result.field_languages == {"title": "ja"}
+        assert state.result.field_languages == {"title": "jp"}
 
     @pytest.mark.asyncio
     async def test_original_plot_normalized_on_fetch(self):
@@ -1214,7 +1214,7 @@ class TestOriginalFields:
                     "number": "X",
                     "title": "T",
                     "original_plot": "前戏<br>高潮<br><br>尾声 &amp; 至此",
-                    "field_languages": {"original_plot": "ja"},
+                    "field_languages": {"original_plot": "jp"},
                 }
             )
         )

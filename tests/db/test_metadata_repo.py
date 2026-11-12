@@ -23,19 +23,19 @@ async def test_update_metadata_accepts_original_fields(repo: Repository):
         original_title="日本語タイトル",
         original_plot="日本語あらすじ",
         website="https://avsox.click/ja/movies/1",
-        field_languages={"original_title": "ja", "original_plot": "ja"},
+        field_languages={"original_title": "jp", "original_plot": "jp"},
     )
     assert updated is not None
     assert updated.original_title == "日本語タイトル"
     assert updated.original_plot == "日本語あらすじ"
     assert updated.website == "https://avsox.click/ja/movies/1"
-    assert updated.field_languages == {"original_title": "ja", "original_plot": "ja"}
+    assert updated.field_languages == {"original_title": "jp", "original_plot": "jp"}
 
     fetched = await repo.get_metadata(meta.id)
     assert fetched is not None
     assert fetched.original_title == "日本語タイトル"
     assert fetched.website == "https://avsox.click/ja/movies/1"
-    assert fetched.field_languages == {"original_title": "ja", "original_plot": "ja"}
+    assert fetched.field_languages == {"original_title": "jp", "original_plot": "jp"}
 
 
 @pytest.mark.asyncio(loop_scope="function")
