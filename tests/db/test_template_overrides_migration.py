@@ -127,7 +127,7 @@ def test_migration_pins_all_template_fields(tmp_path: Path) -> None:
 
 
 def test_migration_round_trip_repins_all_fields(tmp_path: Path) -> None:
-    """重跑结果一致: downgrade 删列后重新 upgrade, 名单重新钉满全部字段."""
+    """重跑结果一致: downgrade 删列后重新 upgrade, 名单重新钉满; 已钉满的行再跑一次数据迁移不改写."""
     db_path = tmp_path / "migrate.db"
     cfg = alembic_config(db_path)
     command.upgrade(cfg, _PREVIOUS)
@@ -139,13 +139,16 @@ def test_migration_round_trip_repins_all_fields(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{db_path}")
     try:
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT template_overrides FROM libraries")).one()
-            names = (
-                row.template_overrides
-                if isinstance(row.template_overrides, list)
-                else json.loads(row.template_overrides)
-            )
-            assert set(names) == set(TEMPLATE_OVERRIDE_FIELDS)
+            before = conn.execute(text("SELECT template_overrides FROM libraries")).scalar_one()
+        migration = _load_migration()
+        # 名单已含全部字段: 跳过分支生效, 重跑不改写
+        with engine.begin() as conn:
+            migration._pin_existing_libraries(conn)
+        with engine.connect() as conn:
+            after = conn.execute(text("SELECT template_overrides FROM libraries")).scalar_one()
+        names = after if isinstance(after, list) else json.loads(after)
+        assert set(names) == set(TEMPLATE_OVERRIDE_FIELDS)
+        assert after == before
     finally:
         engine.dispose()
 

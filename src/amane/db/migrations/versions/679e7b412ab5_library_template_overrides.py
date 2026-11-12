@@ -66,12 +66,13 @@ def _as_name_list(raw: Any) -> list[str]:
 
 
 def upgrade() -> None:
-    op.add_column(
-        "libraries",
-        sa.Column("template_overrides", sa.JSON(), nullable=False, server_default="[]"),
-    )
+    with op.batch_alter_table("libraries") as batch_op:
+        batch_op.add_column(
+            sa.Column("template_overrides", sa.JSON(), nullable=False, server_default="[]"),
+        )
     _pin_existing_libraries(op.get_bind())
 
 
 def downgrade() -> None:
-    op.drop_column("libraries", "template_overrides")
+    with op.batch_alter_table("libraries") as batch_op:
+        batch_op.drop_column("template_overrides")
