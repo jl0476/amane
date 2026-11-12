@@ -12,7 +12,7 @@ from ..db.repo_types import MediaFileUpdates
 from ..enums import ActorGender, DownloadableResource, LinkMode
 from ..library import MEDIA_EXTENSIONS, LibraryFileKind, LibraryScan, ancestor_dirs, prune_empty_dirs
 from ..library.rules import is_in_trash
-from ..media import ResourceStore, allows_poster_crop, apply_cover_watermarks_from_info, crop_poster
+from ..media import NfoOptions, ResourceStore, allows_poster_crop, apply_cover_watermarks_from_info, crop_poster
 from ..media import write_nfo as write_nfo_file
 from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
@@ -163,7 +163,7 @@ async def execute_file_operations(
 
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
-        await write_nfo_file(metadata, paths.nfo)
+        await write_nfo_file(metadata, paths.nfo, NfoOptions())
 
     # 字幕按模板落到 video_dest 侧.
     subtitle_conflicts: list[SubtitleConflict] = []

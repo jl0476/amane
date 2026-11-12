@@ -13,7 +13,7 @@ from .images import (
     should_crop_poster,
     validate_crop_box,
 )
-from .nfo import write_nfo
+from .nfo import NfoOptions, write_nfo
 from .pipeline import MaterializedImages, manual_crop_image, materialize_images
 from .resource_store import AcquireResult, ResourceStore, UpscaleOutcome, derived_locator
 
@@ -21,6 +21,7 @@ __all__ = [
     "AcquireResult",
     "CropRotation",
     "MaterializedImages",
+    "NfoOptions",
     "ResourceStore",
     "UpscaleOutcome",
     "allows_poster_crop",
