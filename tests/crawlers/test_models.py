@@ -46,7 +46,9 @@ def test_deserialize_raw_snapshot(payload: dict, expected: tuple):
 
 def test_stale_snapshot_constructs_from_kwargs():
     """聚合引擎 _fetch_one 用 MediaMetadata(**cached) 反序列化, 缺字段的存量快照同样不得抛 TypeError."""
-    m = MediaMetadata(**{"number": "ABP-123"})
+    # dict 模拟 DB JSON 快照的松散形态, 与 _fetch_one 的实参类型一致.
+    cached: dict = {"number": "ABP-123"}
+    m = MediaMetadata(**cached)
     assert m.original_title is None
     assert m.original_plot is None
     assert m.field_languages is None

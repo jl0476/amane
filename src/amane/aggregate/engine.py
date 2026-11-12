@@ -43,9 +43,7 @@ SCALAR_FIELDS: list[MetadataField] = [
 ]
 
 # 原文字段: 来源必须逐字段声明语言才参与聚合, 未声明则该源不提供 (宁可留空, 不可猜).
-_ORIGINAL_TEXT_FIELDS: frozenset[MetadataField] = frozenset(
-    {MetadataField.ORIGINAL_TITLE, MetadataField.ORIGINAL_PLOT}
-)
+_ORIGINAL_TEXT_FIELDS: frozenset[MetadataField] = frozenset({MetadataField.ORIGINAL_TITLE, MetadataField.ORIGINAL_PLOT})
 
 RAW_TO_DB_FIELD: dict[str, str] = {
     "extrafanart": "extrafanart_urls",
@@ -269,9 +267,9 @@ def _resolve_scalars(graph: FetchGraph, state: ExecutionState) -> None:
             data = state.fetched[cache_key]
             if data is None:
                 continue
-            if getattr(data, field, None):
-                if _fill_scalar(state.result, field, data, cache_key):
-                    break
+            # 填充返回 False 表示来源未声明语言: 该源不提供该字段, 沿链继续.
+            if getattr(data, field, None) and _fill_scalar(state.result, field, data, cache_key):
+                break
 
 
 def _resolve_lang(
