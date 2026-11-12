@@ -2,7 +2,7 @@
 
 import pytest
 
-from amane.organize.template import TemplateContext, TemplateEngine, validate_template
+from amane.organize.template import PathEngine, TemplateContext, TemplateEngine, validate_template
 
 
 def _render(template: str, variables: dict[str, str]) -> str:
@@ -225,3 +225,10 @@ def test_validate_error_names_position() -> None:
     message = str(exc.value)
     assert "unknownf" in message
     assert "位置" in message
+
+
+def test_filter_keeps_absolute_anchor() -> None:
+    """绝对取值占位符带 filter 时, 渲染结果的路径锚仍按绝对路径保留."""
+    ctx = TemplateContext.from_mapping({"video_dir": "/media/lib/video"})
+    engine = PathEngine("{video_dir:trim}/thumb.jpg")
+    assert engine.render(ctx) == "/media/lib/video/thumb.jpg"
