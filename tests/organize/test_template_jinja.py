@@ -204,6 +204,12 @@ _JINJA_VALIDATE_ACCEPT_CASES = [
     "{% if cd %}-CD{{ cd }}{% endif %}",
     "{{ title | truncate(4) | upper }}",
     '{{ studio | default(publisher | default("未知")) }}',
+    # 合法链形状: split 之后接 first / last, first 之后接字符串 filter, replace 双参,
+    # filter 参数内的嵌套链同样按形状校验.
+    '{{ studio | split(",") | first }}',
+    '{{ studio | split(",") | first | upper }}',
+    '{{ title | replace("a", "b") }}',
+    '{{ studio | default(number | split(",") | first) }}',
 ]
 
 _JINJA_VALIDATE_REJECT_CASES = [
@@ -212,6 +218,18 @@ _JINJA_VALIDATE_REJECT_CASES = [
     "{{ t | nosuchf }}",
     "{{ studio",
     "{% if studio %}X",
+    # filter 链形状与 native 一致: split 只能与 first / last 组合, 链尾不得是 split,
+    # first / last 只能作用于 split 的结果 (否则按字符串取首末项, 落盘静默垃圾).
+    '{{ studio | split(",") }}',
+    "{{ studio | first }}",
+    '{{ studio | split(",") | upper }}',
+    # 条件帧内的 filter 延迟到运行期才解析, 编译不报错, 必须由遍历拦截.
+    "{% if studio | nosuchf %}X{% endif %}",
+    # arity 与 native 共表: default 单参, upper 无参.
+    "{{ studio | default(number, title) }}",
+    "{{ title | upper(1) }}",
+    # filter 参数内的嵌套链同样按形状校验.
+    '{{ studio | default(number | split(",")) }}',
 ]
 
 

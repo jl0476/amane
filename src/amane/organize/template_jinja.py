@@ -6,6 +6,7 @@ first / last 用 Jinja 原生. 变量键按 `VARIABLE_MAP` 改写: `cd?` 等 4 �
 渲染前换成合法变量名, 其余同名 (含 `dir`); title / actor 等字段与自研引擎同样按 UTF-8 字节截断.
 取值包成 `_TemplateValue`, 让 `{% if %}` 与自研条件块共用「有值」判定 ("Unknown" / "None" 与空串
 同为无值). 变量缺失渲染为空串, 与自研引擎的 Unknown 回退是有意差异.
+保存校验与自研引擎共用 `_FILTER_ARITY` 与 split / first / last 的链形状规则.
 
 绝对锚判定与自研引擎一致: 按渲染分片顺序取首个有输出的块 — 文本块空白跳过, 表达式按渲染值判定,
 空值判相对; 条件块按实际渲染分支. 分片按 AST 叶子逐片消耗, 结构超出白名单 (for / set / elif /
@@ -28,6 +29,7 @@ from jinja2.sandbox import SandboxedEnvironment
 from .backend import TemplatePlaceholder, TemplateSyntax
 from .template import (
     _CLIP_KEYS,
+    _FILTER_ARITY,
     PLACEHOLDERS,
     TemplateContext,
     _clip_field,
@@ -216,6 +218,54 @@ def _keeps_absolute(
     return _is_anchor(rendered) if result is None else result
 
 
+def _validate_filter_shapes(env: _PathSandboxedEnvironment, ast: nodes.Template) -> None:
+    """全 AST 校验 filter 链, 只从链头起算 (被外层 filter 经 ``node`` 链入的节点不是链头, 由外层覆盖).
+    编译只拦截输出帧内的未定义 filter, 条件帧与嵌套参数内的 filter 延迟到运行期才解析, 必须在此遍历拦截."""
+    stack: list[tuple[nodes.Node, bool]] = [(ast, False)]
+    while stack:
+        node, inside_chain = stack.pop()
+        if isinstance(node, nodes.Filter):
+            if not inside_chain:
+                _validate_filter_chain(env, node)
+            stack.extend((child, child is node.node) for child in node.iter_child_nodes())
+        else:
+            stack.extend((child, False) for child in node.iter_child_nodes())
+
+
+def _validate_filter_chain(env: _PathSandboxedEnvironment, node: nodes.Filter) -> None:
+    """单条 filter 链的形状校验, 镜像 native `_validate_expr` / `_validate_filter`:
+    成员性与参数个数按共用的 `_FILTER_ARITY`; split 之后只能 first / last, 链尾不得是 split.
+    链的输入按字符串判定 (变量取值恒为 str), first / last 缺 split 前置即拒绝."""
+    chain: list[nodes.Filter] = [node]
+    cursor: nodes.Node | None = node.node
+    while isinstance(cursor, nodes.Filter):
+        chain.append(cursor)
+        cursor = cursor.node
+    after_split = False
+    for item in reversed(chain):
+        name = item.name
+        line = item.lineno
+        if name not in env.filters:
+            raise ValueError(f"路径模板在第 {line} 行使用未定义 filter: {name!r}")
+        if name in _FILTER_ARITY:
+            if item.kwargs or item.dyn_args is not None or item.dyn_kwargs is not None:
+                raise ValueError(f"路径模板在第 {line} 行的 filter {name!r} 不接受关键字参数")
+            expected = _FILTER_ARITY[name]
+            if len(item.args) != expected:
+                if expected == 0:
+                    raise ValueError(f"路径模板在第 {line} 行的 filter {name!r} 不接受参数")
+                raise ValueError(f"路径模板在第 {line} 行的 filter {name!r} 需要 {expected} 个参数")
+        if after_split and name not in ("first", "last"):
+            raise ValueError(
+                f"路径模板在第 {line} 行的 filter {name!r} 不能作用于 split 的结果: split 之后只能使用 first 或 last"
+            )
+        if name in ("first", "last") and not after_split:
+            raise ValueError(f"路径模板在第 {line} 行的 filter {name!r} 只能作用于 split 的结果")
+        after_split = name == "split"
+    if after_split:
+        raise ValueError(f"路径模板在第 {chain[0].lineno} 行的 filter 链以 split 结尾, 链尾必须是 first 或 last")
+
+
 class JinjaTemplateBackend:
     """Jinja2 语法后端: 沙箱渲染, 输出经段规范化, 逃逸防护与自研引擎共用 `resolve_rendered`."""
 
@@ -235,12 +285,14 @@ class JinjaTemplateBackend:
         return resolve_rendered(self.render(source, ctx.variables), base_path, safe_dirs)
 
     def validate(self, source: str) -> None:
-        """编译校验 (语法错误与未定义 filter) 加变量名白名单."""
+        """编译校验 (语法错误) 加变量名白名单与 filter 链形状检查 (成员性 / 参数个数 / split 规则)."""
         _compile(self._env, source)
-        undeclared = meta.find_undeclared_variables(self._env.parse(source))
+        ast = self._env.parse(source)
+        undeclared = meta.find_undeclared_variables(ast)
         unknown = sorted(name for name in undeclared if name not in _VARIABLE_NAMES)
         if unknown:
             raise ValueError(f"路径模板使用未知占位符: {', '.join(unknown)}")
+        _validate_filter_shapes(self._env, ast)
 
     def describe(self) -> TemplateSyntax:
         return TemplateSyntax(
