@@ -389,6 +389,7 @@ async def test_organize_custom_cd_suffix(repo: Repository, resource_store: Resou
         path=str(lib_root),
         write_nfo=False,
         video_template="{studio}/{number}/{number}[-第{cd?}集].{ext}",
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -537,7 +538,13 @@ async def test_organize_stamps_uncensored_from_entry_type(
     src = src_dir / f"{number}.mp4"
     src.write_bytes(b"video")
 
-    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, video_template="{number}.{ext}")
+    lib = await repo.create_library(
+        name="t",
+        path=str(lib_root),
+        write_nfo=False,
+        video_template="{number}.{ext}",
+        template_overrides=["video_template"],
+    )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number=number, thumb_urls=["https://s/t.jpg"])
     assert meta.id is not None
@@ -958,7 +965,13 @@ async def test_organize_empty_subtitle_extensions_leaves_subs(
     sub = src_dir / "chs.srt"
     sub.write_text("keep")
 
-    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, subtitle_extensions=[])
+    lib = await repo.create_library(
+        name="t",
+        path=str(lib_root),
+        write_nfo=False,
+        subtitle_extensions=[],
+        template_overrides=["subtitle_extensions"],
+    )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
     assert meta.id is not None
@@ -1092,6 +1105,7 @@ async def test_organize_writes_strm_and_nfo_next_to_link(
         link_template=str(local / "{studio}" / "{number}" / "{number}.{ext}"),
         link_mode=LinkMode.STRM,
         copy_resources=[],
+        template_overrides=["link_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -1141,6 +1155,7 @@ async def test_organize_strm_content_template_uses_actual_dest(
         strm_content_template="/{video_relpath}",
         copy_resources=[],
         write_nfo=False,
+        template_overrides=["link_template", "strm_content_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -1332,6 +1347,7 @@ async def test_organize_placed_outside_library(
         copy_resources=[],
         move_mode=mode,
         video_template=f"{other.as_posix()}/{{studio}}/{{number}}/{{number}}.{{ext}}",
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     store_lib = await repo.create_library(name="store", path=str(other), write_nfo=False)

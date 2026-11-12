@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 import pytest
 
+from amane.config import NamingConfig
 from amane.db.models import Library, Metadata
 from amane.enums import ActorGender, LinkMode
 from amane.organize import (
@@ -1394,3 +1395,53 @@ def test_resolve_paths_uses_actress_placeholder(media: Path) -> None:
         actor_genders={"F": ActorGender.FEMALE, "M": ActorGender.MALE},
     )
     assert result.video == media / "F" / "ABC-123.mp4"
+
+
+# --- 任务 13: naming 参数 (生效配置) 优先于库行 ---
+
+
+def test_resolve_paths_prefers_naming_over_library_row(media: Path) -> None:
+    """naming 非 None 时模板字段取自它, 库行被忽略; naming=None 维持现状取库行."""
+    wp = Library(
+        name="t",
+        path=str(media),
+        video_template="{studio}/{number}.{ext}",
+        thumb_template="{link_dir}/lib-thumb.jpg",
+        nfo_template="{link_dir}/lib.nfo",
+    )
+    meta = _meta()
+    naming = NamingConfig(video_template="{number}/{number}.{ext}", thumb_template="{link_dir}/naming-thumb.jpg")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.video == media / "ABC-123" / "ABC-123.mp4"
+    # 无链接模板时 {link_dir} 退化为视频侧 ({video_dir})
+    assert result.thumb == media / "ABC-123" / "naming-thumb.jpg"
+    # 未被 naming 覆盖语义的字段: nfo 用 naming 侧的 None → 内建默认, 库行 lib.nfo 被忽略
+    assert result.nfo == media / "ABC-123" / "ABC-123.nfo"
+
+    baseline = resolve_paths(wp, meta, ext="mp4")
+    assert baseline.video == media / "StudioX" / "ABC-123.mp4"
+    assert baseline.thumb == media / "StudioX" / "lib-thumb.jpg"
+
+
+def test_resolve_subtitle_path_prefers_naming_over_library_row(media: Path) -> None:
+    """resolve_subtitle_path 的 naming 参数同样优先于库行 subtitle_template."""
+    wp = Library(name="t", path=str(media), subtitle_template="{link_dir}/lib-{raw_srt_name}.{ext}")
+    meta = _meta()
+    naming = NamingConfig(subtitle_template="{link_dir}/naming.{ext}")
+
+    result = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        source_path=media / "raw" / "v.mp4",
+        naming=naming,
+    )
+    assert result == media / "v" / "naming.srt"
+
+    baseline = resolve_subtitle_path(
+        wp, meta, Path("subs.srt"), video_dir=media / "v", video_name="v", source_path=media / "raw" / "v.mp4"
+    )
+    assert baseline == media / "v" / "lib-subs.srt"

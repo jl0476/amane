@@ -12,6 +12,7 @@ from .file import PlaceOutcome, execute_organize
 from .path_templates import resolve_subtitle_path
 
 if TYPE_CHECKING:
+    from ..config import NamingConfig
     from ..db.models import Library, Metadata
 
 logger = structlog.get_logger()
@@ -65,8 +66,12 @@ def place_subtitles(
     link_dir: Path | None = None,
     link_name: str | None = None,
     actor_genders: Mapping[str, ActorGender] | None = None,
+    naming: NamingConfig | None = None,
 ) -> list[SubtitleConflict]:
-    """失败与冲突只记日志, 不抛异常; 返回被占用而跳过的字幕源与其目标."""
+    """失败与冲突只记日志, 不抛异常; 返回被占用而跳过的字幕源与其目标.
+
+    ``naming`` 非 None 时字幕落盘路径按生效配置渲染, 不回读库行 (规格 3.1.3).
+    """
     conflicted: list[SubtitleConflict] = []
     for sub in sources:
         dest = resolve_subtitle_path(
@@ -82,6 +87,7 @@ def place_subtitles(
             file_info=file_info,
             safe_dirs=safe_dirs,
             actor_genders=actor_genders,
+            naming=naming,
         )
         result = execute_organize.sync(
             source=sub,

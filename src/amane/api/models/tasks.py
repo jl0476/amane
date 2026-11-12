@@ -225,6 +225,15 @@ class RefreshSubmission(RefreshPayload):
 class OrganizeSubmission(OrganizePayload):
     type: Literal["organize"]
 
+    async def resolve(self, repo: Repository) -> None:
+        """在库值回填之前记录用户显式给出的字段: 两者都落库的库值不得冒充用户显式值压掉覆盖表."""
+        self.explicit_fields = [
+            name
+            for name in ("write_nfo", "copy_resources")
+            if name in self.model_fields_set and getattr(self, name) is not None
+        ]
+        await super().resolve(repo)
+
 
 class ScanInvalidSubmission(ScanInvalidPayload):
     type: Literal["scan_invalid"]

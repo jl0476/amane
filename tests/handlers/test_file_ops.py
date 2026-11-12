@@ -4,20 +4,23 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from PIL import Image
 
+from amane.api.models.tasks import OrganizeSubmission
 from amane.config import HotSettings, WatermarkConfig
-from amane.db.models import Library, MediaFile, Metadata
+from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
 from amane.enums import DownloadableResource
-from amane.handlers.file import _copy_into_library, execute_file_operations
+from amane.handlers import OrganizeHandler, OrganizePayload
+from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
 from amane.media import ResourceStore
 from amane.organize import MoveMode, PlaceOutcome, ResolvedPaths, resolve_paths
 from amane.parsing import ContentType, parse_file_info
 
 if TYPE_CHECKING:
+    from amane.db.repository import Repository
     from amane.net.http import WebClient
 
 
@@ -659,3 +662,191 @@ async def test_extrafanart_names_fall_back_without_library(resource_store: Resou
 
     assert result.outcome is PlaceOutcome.PLACED
     assert sorted(p.name for p in paths.extrafanart_dir.iterdir()) == ["1.jpg", "2.jpg"]
+
+
+# --- 任务 13: 任务层 explicit_fields 与生效配置传递 ---
+
+
+def _organize_handler(repo: Repository, resource_store: ResourceStore) -> OrganizeHandler:
+    return OrganizeHandler(repo, HotSettings(), resource_store)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_explicit_fields_survive_json_roundtrip(repo: Repository, tmp_path: Path) -> None:
+    """入队前记录的 explicit_fields 经 model_dump / model_validate 往返后保持一致."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+
+    submission = OrganizeSubmission(type="organize", library_id=lib.id, write_nfo=False)
+    await submission.resolve(repo)
+    assert submission.explicit_fields == ["write_nfo"]
+
+    raw = submission.model_dump(mode="json")
+    payload = OrganizePayload.model_validate(raw)
+    assert payload.explicit_fields == ["write_nfo"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_apply_library_values_not_explicit(repo: Repository, tmp_path: Path) -> None:
+    """_apply_library 回填的库值不进 explicit_fields."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(
+        name="t",
+        path=str(lib_root),
+        write_nfo=False,
+        copy_resources=[DownloadableResource.thumb],
+    )
+    assert lib.id is not None
+
+    payload = OrganizePayload(library_id=lib.id)
+    await payload.resolve(repo)
+
+    assert payload.explicit_fields == []
+    assert payload.write_nfo is False
+    assert payload.copy_resources == [DownloadableResource.thumb]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({}, []),
+        ({"write_nfo": None, "copy_resources": []}, ["copy_resources"]),
+        ({"write_nfo": False}, ["write_nfo"]),
+        ({"write_nfo": False, "copy_resources": []}, ["copy_resources", "write_nfo"]),
+    ],
+)
+async def test_null_payload_field_not_explicit(
+    repo: Repository, tmp_path: Path, body: dict[str, Any], expected: list[str]
+) -> None:
+    """null 是「未指定」不进显式集; 空列表是显式值."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+
+    submission = OrganizeSubmission(type="organize", library_id=lib.id, **body)
+    await submission.resolve(repo)
+
+    assert sorted(submission.explicit_fields) == sorted(expected)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({}, []),
+        ({"write_nfo": False}, ["write_nfo"]),
+        ({"write_nfo": None, "copy_resources": ["thumb"]}, ["copy_resources"]),
+    ],
+)
+async def test_legacy_payload_without_key_uses_non_null_fields(
+    repo: Repository,
+    resource_store: ResourceStore,
+    tmp_path: Path,
+    body: dict[str, Any],
+    expected: list[str],
+) -> None:
+    """升级前入队的任务没有 explicit_fields 键: 按「非 None 即显式」重建旧语义."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+
+    raw: dict[str, Any] = {"library_id": lib.id, "path": "", **body}
+    payload = _organize_handler(repo, resource_store).parse_payload(raw)
+
+    assert sorted(payload.explicit_fields) == sorted(expected)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_manual_and_auto_same_effective_config(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """手动提交与自动整理后继都不带模板字段: explicit_fields 为空, 生效 naming 相同."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "naming", {"video_template": "{ov}/{number}.{ext}"})
+
+    manual = OrganizeSubmission(type="organize", library_id=lib.id)
+    await manual.resolve(repo)
+    auto_raw = OrganizePayload(library_id=lib.id, media_file_ids=[1]).model_dump(mode="json")
+    auto = _organize_handler(repo, resource_store).parse_payload(auto_raw)
+
+    assert manual.explicit_fields == []
+    assert auto.explicit_fields == []
+    manual_effective = await resolve_effective_config(repo, HotSettings(), lib, manual)
+    auto_effective = await resolve_effective_config(repo, HotSettings(), lib, auto)
+    assert manual_effective.naming == auto_effective.naming
+    assert manual_effective.naming.video_template == "{ov}/{number}.{ext}"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_override_naming_drives_real_dest_path(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """naming 覆盖驱动真实落盘: 磁盘产物路径按覆盖模板生成, 库行模板被忽略."""
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(b"video")
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "naming", {"video_template": "{number}-moved/{number}.{ext}"})
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+
+    org = _organize_handler(repo, resource_store)
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.failed == 0
+
+    dest = lib_root / "NSFS-039-moved" / "NSFS-039.mp4"
+    assert dest.exists()
+    assert not (lib_root / "Studio" / "NSFS-039" / "NSFS-039.mp4").exists()
+    updated = await repo.list_media_files(library_id=lib.id, limit=None)
+    assert any(mf.path == str(dest) for mf in updated)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_override_subtitle_template_drives_real_subtitle_path(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """naming 覆盖驱动字幕真实落盘: place_subtitles 经 resolve_subtitle_path(naming=…) 渲染."""
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(b"video")
+    (src_dir / "NSFS-039.srt").write_text("sub", encoding="utf-8")
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, subtitle_extensions=["srt"])
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "naming", {"subtitle_template": "{video_dir}/subs-{raw_srt_name}.{ext}"})
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+
+    org = _organize_handler(repo, resource_store)
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.failed == 0
+
+    dest_dir = lib_root / "Studio" / "NSFS-039"
+    assert (dest_dir / "NSFS-039.mp4").exists()
+    assert (dest_dir / "subs-NSFS-039.srt").read_text(encoding="utf-8") == "sub"
+    assert not (dest_dir / "NSFS-039.srt").exists()

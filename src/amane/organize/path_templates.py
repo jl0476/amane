@@ -16,6 +16,7 @@ from .template import PLACEHOLDERS as PLACEHOLDERS
 from .template import Parser, PathEngine, TemplateContext
 
 if TYPE_CHECKING:
+    from ..config import NamingConfig
     from ..db.models import Library, Metadata
 
 
@@ -144,8 +145,14 @@ def resolve_paths(
     file_info: FileInfo | None = None,
     safe_dirs: Sequence[Path] | None = (),
     actor_genders: Mapping[str, ActorGender] | None = None,
+    *,
+    naming: NamingConfig | None = None,
 ) -> ResolvedPaths:
-    """``safe_dirs is None`` 时不限制绝对模板写出的路径; 相对模板仍须在 base_path 下."""
+    """``safe_dirs is None`` 时不限制绝对模板写出的路径; 相对模板仍须在 base_path 下.
+
+    ``naming`` 非 None 时全部模板字段取自该生效配置, 库行不再参与 (规格 3.1.3);
+    None 时维持按库行取值.
+    """
     base_path = Path(library.path)
     ctx = TemplateContext.from_metadata(
         metadata,
@@ -158,22 +165,30 @@ def resolve_paths(
     )
 
     # 先渲染视频, 注入 `{video_*}` 后再渲染链接与刮削产物.
-    video = PathEngine(library.video_template).resolve(ctx, base_path, safe_dirs)
+    video_template = naming.video_template if naming is not None else library.video_template
+    video = PathEngine(video_template).resolve(ctx, base_path, safe_dirs)
     if path_key(video) == path_key(base_path):
         # 空模板或唯一占位符取值落空时, 视频路径退化为库根目录; 后续会以与原因无关的错误失败, 或按库根名在库外落盘.
-        raise ValueError(f"视频模板解析为库根目录: {library.video_template!r}")
+        raise ValueError(f"视频模板解析为库根目录: {video_template!r}")
     ctx.apply_video(video, base_path)
-    link = _resolve_link_path(library, ctx, base_path, safe_dirs)
+    link = _resolve_link_path(library, ctx, base_path, safe_dirs, naming=naming)
     ctx.apply_link(link)
 
-    thumb = PathEngine(library.thumb_template or THUMB_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    poster = PathEngine(library.poster_template or POSTER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    fanart = PathEngine(library.fanart_template or FANART_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    extrafanart_dir = PathEngine(library.extrafanart_template or EXTRAFANART_TEMPLATE_DEFAULT).resolve(
+    thumb_template = naming.thumb_template if naming is not None else library.thumb_template
+    poster_template = naming.poster_template if naming is not None else library.poster_template
+    fanart_template = naming.fanart_template if naming is not None else library.fanart_template
+    extrafanart_template = naming.extrafanart_template if naming is not None else library.extrafanart_template
+    nfo_template = naming.nfo_template if naming is not None else library.nfo_template
+    trailer_template = naming.trailer_template if naming is not None else library.trailer_template
+
+    thumb = PathEngine(thumb_template or THUMB_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    poster = PathEngine(poster_template or POSTER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    fanart = PathEngine(fanart_template or FANART_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    extrafanart_dir = PathEngine(extrafanart_template or EXTRAFANART_TEMPLATE_DEFAULT).resolve(
         ctx, base_path, safe_dirs
     )
-    nfo = PathEngine(library.nfo_template or NFO_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
-    trailer = PathEngine(library.trailer_template or TRAILER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    nfo = PathEngine(nfo_template or NFO_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
+    trailer = PathEngine(trailer_template or TRAILER_TEMPLATE_DEFAULT).resolve(ctx, base_path, safe_dirs)
 
     return ResolvedPaths(
         video=video,
@@ -193,17 +208,20 @@ def _resolve_link_path(
     ctx: TemplateContext,
     base_path: Path,
     safe_dirs: Sequence[Path] | None,
+    *,
+    naming: NamingConfig | None = None,
 ) -> Path | None:
     """结果必须在库外: 库外指链接文件自身所在的位置, 判定只解析父目录链.
 
     链接文件已指向库内视频时, 判定的是文件落在哪里, 不是它指向的视频, 因此仍然通过校验.
     此时 `{video_dir}` / `{video_name}` / `{video_relpath}` 已注入, `{link_dir}` / `{link_name}` 尚未注入.
     """
-    template = normalize_link_template(library.link_template)
+    template = normalize_link_template(naming.link_template if naming is not None else library.link_template)
     if template is None:
         return None
     link = PathEngine(template).resolve(ctx, base_path, safe_dirs)
-    if library.link_mode == LinkMode.STRM:
+    link_mode = naming.link_mode if naming is not None else library.link_mode
+    if link_mode == LinkMode.STRM:
         link = link.with_suffix(".strm")
     if is_descendant(link.parent, base_path):
         raise ValueError(f"链接模板必须解析到库根之外: {link} 位于 {base_path} 之下")
@@ -224,12 +242,15 @@ def resolve_subtitle_path(
     file_info: FileInfo | None = None,
     safe_dirs: Sequence[Path] | None = (),
     actor_genders: Mapping[str, ActorGender] | None = None,
+    naming: NamingConfig | None = None,
 ) -> Path:
     """`{ext}` / `{raw_srt_name}` 取自该字幕源文件; `{raw_name}` / `{raw_dir}` / `{raw_relpath}` 仍是视频源.
     `{video_dir}` / `{video_name}` 为整理后视频父目录与文件名 (不含扩展名);
     `{video_relpath}` 为整理后视频相对库根目录的路径 (`video_dest` 未传时为空);
     `{link_dir}` / `{link_name}` 为链接父目录与文件名 (未设置链接时分别与视频侧相同).
     默认模板保持原文件名与扩展名.
+
+    ``naming`` 非 None 时 subtitle_template 取自该生效配置, 库行不再参与 (规格 3.1.3).
     """
     base_path = Path(library.path)
     ctx = TemplateContext.from_metadata(
@@ -251,5 +272,7 @@ def resolve_subtitle_path(
     if link_name is not None:
         ctx.variables["link_name"] = link_name
     ctx.apply_subtitle(subtitle_source)
-    template = library.subtitle_template or SUBTITLE_TEMPLATE_DEFAULT
+    template = (naming.subtitle_template if naming is not None else library.subtitle_template) or (
+        SUBTITLE_TEMPLATE_DEFAULT
+    )
     return PathEngine(template).resolve(ctx, base_path, safe_dirs)

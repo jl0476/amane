@@ -150,6 +150,13 @@ class OrganizePayload(LibraryBase):
     copy_resources: list[DownloadableResource] | None = Field(
         default=None, description="覆盖 Library.copy_resources; None 沿用库设置"
     )
+    explicit_fields: list[str] = Field(
+        default_factory=list, description="用户显式给出的模板字段名", json_schema_extra={"x-hidden": True}
+    )
+    """用户显式给出的模板字段名. 入队前由 Submission 记录; 库值回填不计入.
+
+    必须落库 —— ``model_fields_set`` 经 JSON 往返后不再可靠 (规格 3.1.3).
+    """
     media_file_ids: list[int] | None = Field(
         default=None,
         description="勾选快照; 与 path 不能同时指定. None 表示 path 范围内的全部索引",

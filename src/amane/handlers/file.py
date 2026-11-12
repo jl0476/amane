@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ..config import HotSettings, WatermarkConfig
+from ..config import HotSettings, NamingConfig, NfoConfig, OrganizeCommonConfig, WatermarkConfig
+from ..config.overrides import ConfigResolver
 from ..db.models import Library, MediaFile
 from ..db.repo_types import MediaFileUpdates
 from ..enums import ActorGender, DownloadableResource, LinkMode
@@ -69,6 +70,33 @@ class FileOperationsResult:
     error: str | None = None
 
 
+@dataclass
+class EffectiveOrganizeConfig:
+    """任务入口解析一次的生效配置; 下层经参数消费, 不得回读库行覆盖已解析结果 (规格 3.1.3)."""
+
+    naming: NamingConfig
+    common: OrganizeCommonConfig
+    nfo_options: NfoOptions
+
+
+async def resolve_effective_config(
+    repo: Repository,
+    config: HotSettings,
+    library: Library,
+    payload: OrganizePayload,
+) -> EffectiveOrganizeConfig:
+    """四层合成 common / naming / nfo; 第 4 层只读 payload.explicit_fields 列出的字段.
+
+    explicit_fields 是入队前持久化的用户显式字段名单 (JSON 往返后 ``model_fields_set`` 不可靠).
+    """
+    resolver = ConfigResolver(config, repo)
+    explicit = {name: getattr(payload, name) for name in payload.explicit_fields if name in NamingConfig.model_fields}
+    naming = await resolver.resolve(NamingConfig, scope=library, library=library, payload=explicit)
+    common = await resolver.resolve(OrganizeCommonConfig, scope=library, library=library)
+    nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
+    return EffectiveOrganizeConfig(naming=naming, common=common, nfo_options=NfoOptions(**nfo.model_dump()))
+
+
 async def execute_file_operations(
     media_file: MediaFile,
     metadata: Metadata,
@@ -85,10 +113,17 @@ async def execute_file_operations(
     safe_dirs: Sequence[Path] | None = (),
     watermark_dir: Path | None = None,
     actor_genders: dict[str, ActorGender] | None = None,
+    naming: NamingConfig | None = None,
+    nfo_options: NfoOptions | None = None,
+    overwrite_video: bool = False,
+    overwrite_image: bool = True,
 ) -> FileOperationsResult:
     """``file_info`` 由渲染路径的那一次 ``parse_file_info`` 产出, 必须带上 ``has_external_subtitle``.
 
     未带库列时函数不报错, 直接少打中字角标 — 调用方负责构造.
+    ``naming`` 非 None 时模板类字段 (strm 正文 / 链接模式 / 字幕扩展名 / 剧照文件名) 取自生效配置,
+    不回读库行 (规格 3.1.3). ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关, 覆写协议接入
+    前仅随生效配置同路传递.
     """
     source_path = await existing_disk_path(Path(media_file.path))
     if source_path is None:
@@ -122,12 +157,14 @@ async def execute_file_operations(
             content_type=metadata.content_type,
             watermark_dir=watermark_dir,
             library=library,
+            naming=naming,
         )
 
     # 发现字幕: 必须在视频移动前检查同目录.
     subtitles: list[Path] = []
     if library is not None:
-        subtitles = await discover_subtitles(source_path, library.subtitle_extensions, file_info)
+        extensions = naming.subtitle_extensions if naming is not None else library.subtitle_extensions
+        subtitles = await discover_subtitles(source_path, extensions, file_info)
 
     org_result = await execute_organize(
         source=source_path,
@@ -141,12 +178,21 @@ async def execute_file_operations(
 
     # 写链接; 失败仍带 dest, 以便回写 MediaFile.path.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and paths.link is not None:
-        mode = LinkMode(library.link_mode) if library is not None else LinkMode.STRM
+        mode = (
+            naming.link_mode
+            if naming is not None
+            else (LinkMode(library.link_mode) if library is not None else LinkMode.STRM)
+        )
+        strm_template = (
+            naming.strm_content_template
+            if naming is not None
+            else (library.strm_content_template if library is not None else None)
+        )
         strm_content: str | None = None
         if mode == LinkMode.STRM and library is not None:
             try:
                 strm_content = render_strm_content(
-                    library.strm_content_template,
+                    strm_template,
                     org_result.dest,
                     Path(library.path),
                     metadata,
@@ -163,7 +209,7 @@ async def execute_file_operations(
 
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
-        await write_nfo_file(metadata, paths.nfo, NfoOptions())
+        await write_nfo_file(metadata, paths.nfo, nfo_options if nfo_options is not None else NfoOptions())
 
     # 字幕按模板落到 video_dest 侧.
     subtitle_conflicts: list[SubtitleConflict] = []
@@ -180,6 +226,7 @@ async def execute_file_operations(
             link_dir=paths.link.parent if paths.link is not None else None,
             link_name=paths.link.stem if paths.link is not None else None,
             actor_genders=actor_genders,
+            naming=naming,
         )
 
     if org_result.outcome is PlaceOutcome.PLACED:
@@ -203,9 +250,15 @@ async def apply_file_operations(
     web_client: WebClient | None = None,
     safe_dirs: Sequence[Path] | None = (),
     watermark_dir: Path | None = None,
+    naming: NamingConfig | None = None,
+    nfo_options: NfoOptions | None = None,
+    overwrite_video: bool = False,
+    overwrite_image: bool = True,
 ) -> FileOperationsResult | None:
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
     Library 由 MediaFile.library_id 派生.
+
+    ``naming`` / ``nfo_options`` / 覆写开关是任务入口解析好的生效配置, 原样下传, 不在此回读库行.
     """
     if media_file_id is None:
         return None
@@ -228,6 +281,7 @@ async def apply_file_operations(
         source_path=Path(media_file.path),
         safe_dirs=safe_dirs,
         actor_genders=actor_genders,
+        naming=naming,
     )
     return await execute_file_operations(
         media_file,
@@ -245,6 +299,10 @@ async def apply_file_operations(
         safe_dirs=safe_dirs,
         watermark_dir=watermark_dir,
         actor_genders=actor_genders,
+        naming=naming,
+        nfo_options=nfo_options,
+        overwrite_video=overwrite_video,
+        overwrite_image=overwrite_image,
     )
 
 
@@ -419,6 +477,7 @@ async def _download_images_via_store(
     content_type: ContentType,
     watermark_dir: Path | None = None,
     library: Library | None = None,
+    naming: NamingConfig | None = None,
 ) -> None:
     """优先用 Resource 已有文件; 缺失则现场 acquire.
 
@@ -449,7 +508,11 @@ async def _download_images_via_store(
     # 名字与源文件成对落地: 文件名模板只能在这里渲染, 宽度取决于本轮张数.
     extrafanart_targets: list[tuple[str, Path]] = []
     if extrafanart:
-        template = library.extrafanart_name_template if library is not None else None
+        template = (
+            naming.extrafanart_name_template
+            if naming is not None
+            else (library.extrafanart_name_template if library is not None else None)
+        )
         names = render_extrafanart_names(template or EXTRAFANART_NAME_TEMPLATE_DEFAULT, paths.context, len(extrafanart))
         extrafanart_targets = list(zip(names, extrafanart, strict=True))
 
@@ -506,6 +569,15 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         if nfc_path(payload.path) != nfc_path(library.path):
             return [mf for mf in indexed if path_is_under(mf.path, payload.path)]
         return indexed
+
+    def parse_payload(self, raw: dict) -> OrganizePayload:
+        payload = super().parse_payload(raw)
+        if isinstance(raw, dict) and "explicit_fields" not in raw:
+            # 升级前入队的任务没有 explicit_fields 键: 按旧语义「非 None 即显式」重建 (规格 3.1.3).
+            payload.explicit_fields = [
+                name for name in ("write_nfo", "copy_resources") if getattr(payload, name) is not None
+            ]
+        return payload
 
     async def handle(self, payload: OrganizePayload) -> TaskResult[OrganizeResult]:
         library = await self._repo.get_library(payload.library_id)
@@ -566,6 +638,8 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         conflicts: list[OrganizeConflict] = []
         failed = 0
         total = len(live)
+        # 任务入口解析一次生效配置, 向下传参; 下层不得回读库行覆盖已解析结果 (规格 3.1.3).
+        effective = await resolve_effective_config(self._repo, self._config, library, payload)
         # 只有移动方式会移走源文件, 复制 / 硬链接 / 符号链接不腾空目录.
         prune_candidates: set[Path] = set()
         collect_prune = payload.prune_empty_dirs and library.move_mode is MoveMode.MOVE
@@ -587,8 +661,8 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     await self.report_progress(i, total, file_path.name)
                     continue
 
-                write_nfo = library.write_nfo if payload.write_nfo is None else payload.write_nfo
-                copy_resources = library.copy_resources if payload.copy_resources is None else payload.copy_resources
+                write_nfo = effective.naming.write_nfo
+                copy_resources = effective.naming.copy_resources
                 fop_result = await apply_file_operations(
                     self._repo,
                     media_file.id,
@@ -600,6 +674,10 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     web_client=self._web_client,
                     safe_dirs=self._safe_dirs,
                     watermark_dir=self._watermark_dir,
+                    naming=effective.naming,
+                    nfo_options=effective.nfo_options,
+                    overwrite_video=effective.common.overwrite_video,
+                    overwrite_image=effective.common.overwrite_image,
                 )
                 if fop_result is None:
                     skipped += 1
