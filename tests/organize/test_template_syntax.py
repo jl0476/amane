@@ -114,3 +114,56 @@ def test_value_mapping_unaffected(template: str, variables: dict[str, str], expe
 def test_filter_render_rejects_invalid(template: str, variables: dict[str, str]) -> None:
     with pytest.raises(ValueError, match="路径模板"):
         _render(template, variables)
+
+
+# 条件块: 条件是逗号分隔的变量名, 全部有值才真; 「有值」判定与 filter 一致.
+_IF_CASES = [
+    ("{% if a %}X{% endif %}", {"a": "v"}, "X"),
+    ("{% if a %}X{% endif %}", {"a": ""}, ""),
+    ("{% if a %}X{% endif %}", {"a": "Unknown"}, ""),
+    ("{% if a %}X{% endif %}", {"a": "None"}, ""),
+    ("{% if a %}X{% endif %}", {}, ""),
+    ("{% if a %}X{% else %}Y{% endif %}", {"a": "v"}, "X"),
+    ("{% if a %}X{% else %}Y{% endif %}", {"a": ""}, "Y"),
+    ("{% if a,b %}X{% else %}Y{% endif %}", {"a": "1", "b": "2"}, "X"),
+    ("{% if a,b %}X{% else %}Y{% endif %}", {"a": "1", "b": ""}, "Y"),
+    ("{% if a,b %}X{% else %}Y{% endif %}", {"a": "", "b": "2"}, "Y"),
+    ("{% if a,b %}X{% else %}Y{% endif %}", {"a": "1", "b": "Unknown"}, "Y"),
+    # 块内可以放占位符、filter、可选组与嵌套条件块.
+    ("{% if a %}{number}{% endif %}", {"a": "1", "number": "N-1"}, "N-1"),
+    ("{% if a %}[-{b}]{% endif %}", {"a": "1", "b": ""}, ""),
+    ('{% if a %}{number:upper}{% else %}{c:default("z")}{% endif %}', {"a": "", "c": ""}, "z"),
+    ("{% if sub? %}C{% endif %}", {"sub?": "C"}, "C"),
+    ("{% if sub? %}C{% endif %}", {"sub?": ""}, ""),
+    ("{% if a %}A{% if b %}B{% else %}b{% endif %}{% endif %}", {"a": "1", "b": "2"}, "AB"),
+    ("{% if a %}A{% if b %}B{% else %}b{% endif %}{% endif %}", {"a": "1", "b": ""}, "Ab"),
+    ("{% if a %}A{% if b %}B{% else %}b{% endif %}{% endif %}", {"a": ""}, ""),
+    ("[{% if a %}x{% endif %}]", {"a": "1"}, "x"),
+    ("[{% if a %}x{% endif %}]", {"a": ""}, ""),
+]
+
+# 未闭合块、孤立分支、空条件与非法条件名都是解析错误.
+_INVALID_BLOCK_CASES = [
+    "{% if a %}X",
+    "{% if a %}X{% else %}Y",
+    "{% if a %}X{% if b %}Y{% endif %}",
+    "{% if a X",
+    "{% else %}X{% endif %}",
+    "{% endif %}",
+    "{% if %}X{% endif %}",
+    "{% if a b %}X{% endif %}",
+    "{% if a %}X{% else %}Y{% else %}Z{% endif %}",
+    "{% iff a %}X{% endif %}",
+    "{% if a,b, %}X{% endif %}",
+]
+
+
+@pytest.mark.parametrize(("template", "variables", "expected"), _IF_CASES)
+def test_if_block_truthiness(template: str, variables: dict[str, str], expected: str) -> None:
+    assert _render(template, variables) == expected
+
+
+@pytest.mark.parametrize("template", _INVALID_BLOCK_CASES)
+def test_if_block_rejects_invalid(template: str) -> None:
+    with pytest.raises(ValueError, match="路径模板"):
+        _render(template, {})

@@ -1,8 +1,10 @@
 """路径模板折叠空段、按 Windows 创建结果规范化每个路径段, 并约束写出路径. 填值时截断 title / actor / actors / actress / actresses. STRM 正文不折叠、不截断 (保留 `https://`), 不检查 safe_dirs.
 
 自研语法扩展: filter 链 `{name:filter(arg)}` (分隔符是 `:`, `|` 仍只做值映射)、降级链
-`{a:default(b:default("x"))}`. 「有值」判定见 `_has_value`; filter 集合与语义见 `_apply_filter`.
-渲染不校验名字: 未知占位符仍输出 `Unknown`; 保存路径用 `validate_template` 按白名单拒绝."""
+`{a:default(b:default("x"))}`、条件块 `{% if a,b %}…{% else %}…{% endif %}` (条件是逗号分隔的
+变量名, 全部有值才真, 无 elif 与运算符). 「有值」判定见 `_has_value`; filter 集合与语义见
+`_apply_filter`. 渲染不校验名字: 未知占位符仍输出 `Unknown`; 保存路径用 `validate_template`
+按白名单拒绝."""
 
 from __future__ import annotations
 
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
 _UNKNOWN = "Unknown"
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# 条件块的条件名: 占位符同款形状 (标识符字符加 ``?``).
+_CONDITION_NAME = re.compile(r"[\w?]+")
 PATH_FIELD_MAX_BYTES = 200
 PATH_FIELD_ELLIPSIS = "…"
 _CLIP_KEYS = frozenset({"title", "actor", "actors", "actress", "actresses"})
@@ -120,7 +124,30 @@ class _Group:
     wrap: bool
 
 
-type _Node = _Literal | _Placeholder | _Group
+@dataclass(frozen=True, slots=True)
+class _IfBlock:
+    """条件块: 条件变量全部有值时渲染 body, 否则渲染 orelse (无 else 分支时为 None)."""
+
+    condition: tuple[str, ...]
+    body: tuple[_Node, ...]
+    orelse: tuple[_Node, ...] | None
+    pos: int
+
+
+type _Node = _Literal | _Placeholder | _Group | _IfBlock
+
+
+def _parse_condition(text: str) -> tuple[str, ...]:
+    """条件块的变量名列表: 逗号分隔, 每个名字形状与占位符一致."""
+    if not text.strip():
+        raise ValueError("路径模板里的条件块缺少条件")
+    names: list[str] = []
+    for piece in text.split(","):
+        name = piece.strip()
+        if _CONDITION_NAME.fullmatch(name) is None:
+            raise ValueError(f"路径模板里的条件名无效: {name!r}")
+        names.append(name)
+    return tuple(names)
 
 
 def _parse_placeholder_mapping(name: str, spec: str) -> tuple[tuple[str, str], ...]:
@@ -275,7 +302,7 @@ def _parse_bare_arg(text: str, idx: int, base: int) -> tuple[_FilterArg, int]:
 
 
 class Parser:
-    """`{name}` 占位符 + filter 链 + 可选 `|k=v` 值映射 + `[...]` / `[[...]]` 可选组.
+    """`{name}` 占位符 + filter 链 + 可选 `|k=v` 值映射 + `[...]` / `[[...]]` 可选组 + `{% if %}` 条件块.
 
     `[...]` 组界不输出; 组内**直接**占位符全部为空串则整组丢弃, 有一个非空则渲染
     (空的那个输出空串). 嵌套组各自判断, 不并入外层.
@@ -284,16 +311,20 @@ class Parser:
     `{name|原值=输出}` 在查出值之后替换; `{name|=缺省}` 将空源值映成缺省.
     filter 链用 ``:`` 分隔 (``|`` 已被值映射占用), 从左到右应用; 带参 filter 用括号,
     字符串字面量必须加双引号. 值映射先于 filter 应用.
+    条件块 `{% if a,b %}…{% else %}…{% endif %}`: 条件是逗号分隔的变量名, 全部有值才真;
+    无 elif 与运算符, 块可嵌套.
     """
 
     def __init__(self, src: str) -> None:
         self.src = src
         self.i = 0
+        # 条件块正文解析的出口指令 ({% else %} 或 {% endif %}); 由 _parse_if_block 读取.
+        self._block_tag = ""
 
     def parse(self) -> tuple[_Node, ...]:
         return tuple(self._parse_nodes(None))
 
-    def _parse_nodes(self, closer: str | None) -> list[_Node]:
+    def _parse_nodes(self, closer: str | None, block: bool = False) -> list[_Node]:
         nodes: list[_Node] = []
         buf: list[str] = []
 
@@ -307,6 +338,17 @@ class Parser:
                 flush()
                 self.i += len(closer)
                 return nodes
+            if self.src.startswith("{%", self.i):
+                flush()
+                pos = self.i
+                tag = self._read_block_tag()
+                if tag in ("else", "endif"):
+                    if block:
+                        self._block_tag = tag
+                        return nodes
+                    raise ValueError(f"路径模板里的 {{{tag}}} 缺少对应的 {{% if %}}")
+                nodes.append(self._parse_if_block(tag, pos))
+                continue
             if self.src.startswith("[[", self.i):
                 flush()
                 self.i += 2
@@ -328,7 +370,37 @@ class Parser:
         flush()
         if closer is not None:
             raise ValueError("路径模板里的可选组未闭合")
+        if block:
+            raise ValueError("路径模板里的条件块未闭合")
         return nodes
+
+    def _read_block_tag(self) -> str:
+        """读取并跳过 ``{% … %}`` 指令, 返回指令内容; 调用方已确认当前位于 ``{%``."""
+        start = self.i + 2
+        end = self.src.find("%}", start)
+        if end < 0:
+            raise ValueError("路径模板里的条件块指令未闭合")
+        self.i = end + 2
+        return self.src[start:end].strip()
+
+    def _parse_if_block(self, tag: str, pos: int) -> _IfBlock:
+        """``tag`` 是已读取的 if 指令内容; 解析条件、正文与可选 else 分支.
+
+        正文解析在 {% else %} / {% endif %} 处返回并把指令留在 ``_block_tag``;
+        嵌套块由正文里的同一入口递归消费自己的分支.
+        """
+        head, _, cond_text = tag.partition(" ")
+        if head != "if":
+            raise ValueError("路径模板里的条件块指令无效")
+        condition = _parse_condition(cond_text)
+        body = self._parse_nodes(None, block=True)
+        tag_end = self._block_tag
+        orelse: tuple[_Node, ...] | None = None
+        if tag_end == "else":
+            orelse = tuple(self._parse_nodes(None, block=True))
+            if self._block_tag != "endif":
+                raise ValueError("路径模板里出现重复的 {% else %}")
+        return _IfBlock(condition, tuple(body), orelse, pos)
 
     def _parse_placeholder(self) -> _Placeholder:
         self.i += 1
@@ -471,6 +543,11 @@ def _render_nodes(nodes: Sequence[_Node], variables: dict[str, str]) -> str:
             parts.append(node.text)
         elif isinstance(node, _Placeholder):
             parts.append(_resolve(node, variables))
+        elif isinstance(node, _IfBlock):
+            if all(_has_value(_lookup(item, variables)) for item in node.condition):
+                parts.append(_render_nodes(node.body, variables))
+            elif node.orelse is not None:
+                parts.append(_render_nodes(node.orelse, variables))
         else:
             slots = _direct_placeholders(node.children)
             if slots and all(_resolve(item, variables) == "" for item in slots):
@@ -493,6 +570,13 @@ def _nodes_use_placeholder(nodes: Sequence[_Node], name: str) -> bool:
             return True
         if isinstance(node, _Group) and _nodes_use_placeholder(node.children, name):
             return True
+        if isinstance(node, _IfBlock):
+            if name in node.condition:
+                return True
+            if _nodes_use_placeholder(node.body, name):
+                return True
+            if node.orelse is not None and _nodes_use_placeholder(node.orelse, name):
+                return True
     return False
 
 
