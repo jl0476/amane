@@ -263,6 +263,9 @@ class Metadata(SQLModel, table=True):
     series: str | None = Field(default=None, index=True)
     # 长文本存纯文本, 上游 HTML/实体在入库前经 utils.text 归一, 见 docs/dev/data-model.md.
     plot: str | None = None
+    # 源站原文双轨 (通常日文): 与 title / plot 平行, 翻译只改写后者; original_plot 同口径归一.
+    original_title: str | None = None
+    original_plot: str | None = None
     directors: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
     poster_urls: list[str] = Field(default_factory=list, sa_column=Column(JSON))
@@ -276,6 +279,12 @@ class Metadata(SQLModel, table=True):
     external_ids: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     source_urls: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     field_sources: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 逐字段语言声明: 键为字段名, 值为该字段取值语言; 只记录来源声明过的字段, 与 field_sources 平行.
+    field_languages: dict[str, str] = Field(
+        default_factory=dict, sa_column=Column(JSON, server_default=text("'{}'"))
+    )
+    # 主来源详情页地址: 取标题胜出来源的 source_url, 标题来源无地址时留空; 聚合派生, 不接受 PATCH.
+    website: str | None = None
     # 各站原始快照, 供离线重新聚合.
     raw: dict[str, dict[str, Any]] = Field(default_factory=dict, sa_column=Column(JSON))
     # 字段级锁定; 契约见 docs/dev/data-model.md.

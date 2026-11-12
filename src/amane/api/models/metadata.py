@@ -32,6 +32,7 @@ class MetadataResponse(BaseModel):
     number: str
     content_type: ContentType
     title: str | None = None
+    original_title: str | None = None
     actors: list[str] = []
     studio: str | None = None
     publisher: str | None = None
@@ -40,6 +41,7 @@ class MetadataResponse(BaseModel):
     tags: list[str] = []
     series: str | None = None
     plot: str | None = None
+    original_plot: str | None = None
     directors: list[str] = []
     poster_url: str | None = None
     thumb_url: str | None = None
@@ -55,6 +57,8 @@ class MetadataResponse(BaseModel):
     external_ids: dict = {}
     source_urls: dict = {}
     field_sources: dict = {}
+    field_languages: dict = {}
+    website: str | None = None
     raw: dict = {}
     locked_fields: list[MetadataField] = []
 
@@ -75,7 +79,7 @@ class MetadataResponse(BaseModel):
 if TYPE_CHECKING:
     type PartialMetadata = Metadata
 
-# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources 由刮削写入) 与锁列 (经 PUT locks 管理).
+# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources/field_languages 由刮削写入) 与锁列 (经 PUT locks 管理); website 为聚合派生列, 一并排除.
 PartialMetadata = create_partial_model(
     Metadata,
     ignore_fields=(
@@ -86,6 +90,8 @@ PartialMetadata = create_partial_model(
         "updated_at",
         "raw",
         "field_sources",
+        "field_languages",
+        "website",
         "locked_fields",
     ),
     json_schema_extras={

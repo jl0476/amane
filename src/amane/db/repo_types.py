@@ -280,6 +280,7 @@ class ActorBrowseParams(BaseModel):
 
 class MetadataFields(TypedDict, total=False):
     title: str | None
+    original_title: str | None
     actors: list[str]
     studio: str | None
     publisher: str | None
@@ -288,6 +289,7 @@ class MetadataFields(TypedDict, total=False):
     tags: list[str]
     series: str | None
     plot: str | None
+    original_plot: str | None
     directors: list[str]
     poster_urls: list[str]
     thumb_urls: list[str]
@@ -297,6 +299,8 @@ class MetadataFields(TypedDict, total=False):
     external_ids: dict[str, str]
     source_urls: dict[str, str]
     field_sources: dict[str, str]
+    field_languages: dict[str, str]
+    website: str | None
     raw: dict[str, dict[str, object]]
 
 
