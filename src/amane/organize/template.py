@@ -904,6 +904,32 @@ class TemplateEngine:
         return self.clean(self.fill(ctx), ctx)
 
 
+def resolve_rendered(rendered: str, base_path: Path, safe_dirs: Sequence[Path] | None) -> Path:
+    """渲染结果到字面绝对路径, 强制约束在允许的边界内.
+
+    边界规则:
+    - 相对渲染结果: 相对 base_path 解析, 必须是 base_path 的后代 (ALLOW_ALL 也不例外).
+    - 绝对渲染结果: 必须位于 base_path 或 safe_dirs 任一目录之下.
+
+    用字面路径求值, 仅折叠 ``.`` / ``..`` 不跟随链接. 自研与 Jinja 语法的路径后端共用.
+    """
+    path = Path(rendered)
+    if path.is_absolute():
+        candidate = _lexical_abs(path)
+        if safe_dirs is None:
+            return candidate
+        allowed_roots = [base_path, *safe_dirs]
+        if not is_any_descendant(candidate, *allowed_roots):
+            followed = candidate.resolve()
+            raise ValueError(f"路径越界: 渲染结果 {followed} 超出基准目录 {base_path} 与安全目录")
+        return candidate
+    candidate = _lexical_abs(base_path / path)
+    if not is_descendant(candidate, base_path):
+        followed = candidate.resolve()
+        raise ValueError(f"路径越界: 渲染结果 {followed} 超出基准目录 {base_path}")
+    return candidate
+
+
 class PathEngine(TemplateEngine):
     """路径输出: 填值时截断 title / actor / actors / actress / actresses, 按 Windows 创建结果规范化每个路径段, 再按库根目录 / safe_dirs 写成字面绝对路径."""
 
@@ -915,30 +941,8 @@ class PathEngine(TemplateEngine):
         return _normalize_path_segments(filled, keep_absolute=_keeps_absolute(self.tree, ctx.variables))
 
     def resolve(self, ctx: TemplateContext, base_path: Path, safe_dirs: Sequence[Path] | None) -> Path:
-        """渲染并得到字面绝对路径, 强制约束在允许的边界内.
-
-        边界规则:
-        - 相对路径模板: 相对 base_path 解析, 必须是 base_path 的后代 (ALLOW_ALL 也不例外).
-        - 绝对路径模板: 必须位于 base_path 或 safe_dirs 任一目录之下.
-
-        渲染时用字面路径, 仅折叠 ``.`` / ``..`` 不跟随链接.
-        """
-        rendered = self.render(ctx)
-        path = Path(rendered)
-        if path.is_absolute():
-            candidate = _lexical_abs(path)
-            if safe_dirs is None:
-                return candidate
-            allowed_roots = [base_path, *safe_dirs]
-            if not is_any_descendant(candidate, *allowed_roots):
-                followed = candidate.resolve()
-                raise ValueError(f"路径越界: 渲染结果 {followed} 超出基准目录 {base_path} 与安全目录")
-            return candidate
-        candidate = _lexical_abs(base_path / path)
-        if not is_descendant(candidate, base_path):
-            followed = candidate.resolve()
-            raise ValueError(f"路径越界: 渲染结果 {followed} 超出基准目录 {base_path}")
-        return candidate
+        """渲染并得到字面绝对路径, 边界规则见 `resolve_rendered`."""
+        return resolve_rendered(self.render(ctx), base_path, safe_dirs)
 
 
 class StrmEngine(TemplateEngine):
