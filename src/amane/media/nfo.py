@@ -149,7 +149,7 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
                 code.write(f"  <sorttitle>{title}</sorttitle>\n")
 
         if options.mpaa and options.mpaa_value:
-            code.write(f"  <mpaa>{options.mpaa_value}</mpaa>\n")
+            code.write(f"  <mpaa>{_escape_xml(options.mpaa_value)}</mpaa>\n")
 
         if options.actor and metadata.actors:
             for actor in metadata.actors:
@@ -195,6 +195,10 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
                     code.write(f"  <tag>{_escape_xml(tag)}</tag>\n")
                 if options.genre:
                     code.write(f"  <genre>{_escape_xml(tag)}</genre>\n")
+        if options.tag:
+            for tag in options.additional_tags:
+                if tag:
+                    code.write(f"  <tag>{_escape_xml(tag)}</tag>\n")
 
         if options.poster and metadata.poster_url:
             code.write(f"  <poster>{_escape_xml(metadata.poster_url)}</poster>\n")

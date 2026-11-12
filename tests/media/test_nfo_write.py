@@ -232,3 +232,51 @@ def test_unknown_field_rejected() -> None:
 def test_invalid_originaltitle_source_rejected() -> None:
     with pytest.raises(ValidationError):
         NfoOptions.model_validate({"originaltitle_source": "both"})
+
+
+# (NfoOptions, 预期的 <tag> 元素文本序列)
+ADDITIONAL_TAG_CASES: list[tuple[NfoOptions, list[str]]] = [
+    (NfoOptions(), ["Drama", "Romance"]),
+    (NfoOptions(additional_tags=["中文字幕", "1080p"]), ["Drama", "Romance", "中文字幕", "1080p"]),
+    # 空串附加标签跳过, 与元数据标签同口径 (边界)
+    (NfoOptions(additional_tags=["", "中文字幕"]), ["Drama", "Romance", "中文字幕"]),
+    # 关 tag 时元数据标签与附加标签都不出现 (边界)
+    (NfoOptions(tag=False, additional_tags=["中文字幕"]), []),
+]
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_tags"),
+    ADDITIONAL_TAG_CASES,
+    ids=["default", "appended", "skip-empty", "switch-off"],
+)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_additional_tags_appended_as_tag_elements(
+    tmp_path: Path, options: NfoOptions, expected_tags: list[str]
+) -> None:
+    nfo_path = tmp_path / "tags.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, options) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert [element.text for element in root.findall("tag")] == expected_tags
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_additional_tags_do_not_extend_genre(tmp_path: Path) -> None:
+    nfo_path = tmp_path / "genre.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, NfoOptions(additional_tags=["中文字幕"])) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert [element.text for element in root.findall("genre")] == ["Drama", "Romance"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_mpaa_value_escapes_xml_special_chars(tmp_path: Path) -> None:
+    nfo_path = tmp_path / "mpaa.nfo"
+
+    assert await write_nfo(full_metadata(), nfo_path, NfoOptions(mpaa_value="R-15 & <未定>")) is True
+
+    root = ET.fromstring(nfo_path.read_text(encoding="utf-8"))
+    assert root.findtext("mpaa") == "R-15 & <未定>"
