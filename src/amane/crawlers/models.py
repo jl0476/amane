@@ -59,6 +59,8 @@ def film_actors(names: Iterable[str], *, gender: ActorGender = ActorGender.FEMAL
 class MediaMetadata(BaseModel):
     number: str
     title: str | None = None
+    # 源站原文双轨 (通常日文): 独立字段参与聚合, 翻译只改写 title / plot.
+    original_title: str | None = None
     actors: list[FilmActor] = Field(default_factory=list)
     studio: str | None = None
     publisher: str | None = None
@@ -68,12 +70,15 @@ class MediaMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list)
     series: str | None = None
     plot: str | None = None
+    original_plot: str | None = None
     poster_urls: list[str] = Field(default_factory=list)
     thumb_urls: list[str] = Field(default_factory=list)
     trailer_urls: list[str] = Field(default_factory=list)
     score: float | None = None
     external_id: str | None = None
     source_url: str | None = None
+    # 逐字段语言声明: 键为字段名, 值为该字段取值语言; None 表示本源不声明, 未声明的字段不参与原文聚合.
+    field_languages: dict[str, str] | None = None
     directors: list[str] = Field(default_factory=list)
     extrafanart: list[str] = Field(default_factory=list)
 
