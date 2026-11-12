@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, cast
 import structlog
 from fastapi import APIRouter, HTTPException, Response
 
-from ...db.models import TaskType
+from ...db.models import TEMPLATE_OVERRIDE_FIELDS, TaskType
 from ...handlers import RefreshPayload, ScanMode
 from ...utils.model import to_resp
 from ..deps import RepoDep, RuntimeDep
@@ -45,6 +45,10 @@ async def create_library(req: LibraryCreateRequest, repo: RepoDep, runtime: Runt
 
     name = req.name or Path(req.path).name
 
+    # 请求模型由 FastAPI 直接从 JSON 构造, model_fields_set 如实反映请求体里的键;
+    # 显式给出的模板字段 (含显式 null) 追加进名单, 否则建库时自定义的模板会被视为继承.
+    template_overrides = sorted(req.model_fields_set & set(TEMPLATE_OVERRIDE_FIELDS))
+
     try:
         lib = await repo.create_library(
             name=name,
@@ -74,6 +78,7 @@ async def create_library(req: LibraryCreateRequest, repo: RepoDep, runtime: Runt
             trailer_pattern=req.trailer_pattern,
             blacklist_patterns=req.blacklist_patterns,
             min_file_size=req.min_file_size,
+            template_overrides=template_overrides,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -127,6 +132,11 @@ async def update_library(
     updates = cast("LibraryUpdates", req.model_dump(exclude_unset=True))
     if not updates:
         raise HTTPException(status_code=422, detail="没有需要修改的字段")
+
+    # 显式给出的模板字段追加进名单 (repo 侧与既有名单取并集); 判定依据同建库: model_fields_set.
+    explicit_templates = sorted(req.model_fields_set & set(TEMPLATE_OVERRIDE_FIELDS))
+    if explicit_templates:
+        updates["template_overrides"] = explicit_templates
 
     # 仅 path 被显式更新时才校验
     if "path" in updates and updates["path"] is not None:

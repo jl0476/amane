@@ -341,6 +341,8 @@ class LibraryUpdates(TypedDict, total=False):
     subtitle_extensions: list[str]
     write_nfo: bool
     copy_resources: list[DownloadableResource]
+    template_overrides: list[str]
+    """追加进名单的模板字段名; 与既有名单取并集 (名单只增不减), 值域见 TEMPLATE_OVERRIDE_FIELDS."""
     trailer_pattern: str
     blacklist_patterns: list[str]
     min_file_size: int

@@ -23,9 +23,17 @@ from ...organize.path_templates import (
 )
 from ...organize.strm_content import normalize_strm_content_template, validate_strm_content_template
 from ...utils.path import resolved_path
-from ..models import CONFIG_OVERRIDE_SCOPE_LIBRARY, ConfigOverride, Library, MediaFile
+from ..models import CONFIG_OVERRIDE_SCOPE_LIBRARY, TEMPLATE_OVERRIDE_FIELDS, ConfigOverride, Library, MediaFile
 from ..repo_types import LibraryUpdates
 from .base import RepositoryMixinBase
+
+
+def _validated_template_overrides(names: list[str]) -> list[str]:
+    """去重保序; 名单值域之外的字段名拒绝, 不静默忽略."""
+    unknown = set(names) - set(TEMPLATE_OVERRIDE_FIELDS)
+    if unknown:
+        raise ValueError(f"template_overrides 含未知模板字段: {', '.join(sorted(unknown))}")
+    return list(dict.fromkeys(names))
 
 
 def _path_template_or_none(value: str | None) -> str | None:
@@ -90,8 +98,10 @@ class LibrariesRepoMixin(RepositoryMixinBase):
         trailer_pattern: str | None = None,
         blacklist_patterns: list[str] | None = None,
         min_file_size: int = 0,
+        template_overrides: list[str] | None = None,
     ) -> Library:
         min_file_size = validate_min_file_size(min_file_size)
+        pinned_templates = _validated_template_overrides(list(template_overrides or []))
         cloud_path = resolve_ingest_cloud_path(ingest, cloud_path)
         video_template = validate_path_template(video_template)
         link_template = _path_template_or_none(normalize_link_template(link_template))
@@ -139,6 +149,7 @@ class LibrariesRepoMixin(RepositoryMixinBase):
                 ),
                 blacklist_patterns=[validate_blacklist_pattern(p) for p in (blacklist_patterns or [])],
                 min_file_size=min_file_size,
+                template_overrides=pinned_templates,
             )
             session.add(lib)
             await session.commit()
@@ -271,6 +282,11 @@ class LibrariesRepoMixin(RepositoryMixinBase):
             if "copy_resources" in updates:
                 resources = updates["copy_resources"]
                 lib.copy_resources = resources if resources is not None else []
+            if "template_overrides" in updates:
+                # 名单只增不减: 请求中显式给出的模板字段名并入既有名单, 已有标记不移除.
+                lib.template_overrides = _validated_template_overrides(
+                    [*lib.template_overrides, *updates["template_overrides"]]
+                )
             if "trailer_pattern" in updates:
                 lib.trailer_pattern = validate_trailer_pattern(updates["trailer_pattern"])
             if "blacklist_patterns" in updates:

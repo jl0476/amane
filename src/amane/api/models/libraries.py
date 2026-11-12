@@ -75,8 +75,11 @@ class LibraryCreateRequest(BaseModel):
 if TYPE_CHECKING:
     type LibraryUpdateRequest = Library
 
-# 外部可写字段: 除主键 id 外的全部库配置列.
-LibraryUpdateRequest = create_partial_model(Library, ignore_fields=("id",), partial_cls_name="LibraryUpdateRequest")
+# 外部可写字段: 除主键 id 与 template_overrides 名单外的全部库配置列.
+# template_overrides 只能经由请求中显式给出的模板字段追加 (路由按 model_fields_set 计算), 不允许直接改写.
+LibraryUpdateRequest = create_partial_model(
+    Library, ignore_fields=("id", "template_overrides"), partial_cls_name="LibraryUpdateRequest"
+)
 
 
 class LibraryResponse(BaseModel):
@@ -105,6 +108,7 @@ class LibraryResponse(BaseModel):
     subtitle_extensions: list[str]
     write_nfo: bool
     copy_resources: list[DownloadableResource]
+    template_overrides: list[str]
     trailer_pattern: str
     blacklist_patterns: list[str]
     min_file_size: int
