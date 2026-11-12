@@ -821,19 +821,41 @@ class TemplateContext:
         self.variables["raw_srt_name"] = subtitle_source.stem
 
 
-def _template_keeps_absolute(template: str, variables: dict[str, str]) -> bool:
-    """渲染后是否应保留绝对路径 (模板本身以 /、盘符、或绝对占位符开头)."""
-    s = template.lstrip()
-    if s.startswith(("/", "\\")):
-        return True
-    if _DRIVE.match(s):
-        return True
-    if s.startswith("{") and "}" in s:
-        name = s[1 : s.index("}")].split("|", 1)[0].split(":", 1)[0].strip()
-        val = variables.get(name, "")
-        if val.startswith(("/", "\\")) or _DRIVE.match(val):
-            return True
-    return False
+def _is_anchor(text: str) -> bool:
+    return text.startswith(("/", "\\")) or _DRIVE.match(text) is not None
+
+
+def _nodes_start_absolute(nodes: Sequence[_Node], variables: dict[str, str]) -> bool | None:
+    """模板前缀是否产出绝对锚: True 锚 / False 相对 / None 前缀无输出, 需继续看后续节点.
+
+    条件块按实际渲染的分支判定, 分支无输出时看块后节点; 可选组保持保守的相对判定,
+    不因组内占位符的绝对取值改判. 首个占位符取值为空时判相对: 空占位符不能把相对模板变成绝对路径.
+    """
+    for node in nodes:
+        if isinstance(node, _Literal):
+            text = node.text.lstrip()
+            if not text:
+                continue
+            return _is_anchor(text)
+        if isinstance(node, _Placeholder):
+            return _is_anchor(_resolve(node, variables))
+        if isinstance(node, _IfBlock):
+            if all(_has_value(_lookup(item, variables)) for item in node.condition):
+                branch: tuple[_Node, ...] | None = node.body
+            else:
+                branch = node.orelse
+            if branch is not None:
+                branch_result = _nodes_start_absolute(branch, variables)
+                if branch_result is not None:
+                    return branch_result
+            continue
+        return False
+    return None
+
+
+def _keeps_absolute(nodes: Sequence[_Node], variables: dict[str, str]) -> bool:
+    """渲染后是否应保留绝对路径 (模板前缀以 /、盘符、或绝对取值占位符开头); 前缀全部无输出时视为相对."""
+    return _nodes_start_absolute(nodes, variables) is True
 
 
 def _clean_segment(part: str) -> str:
@@ -890,7 +912,7 @@ class PathEngine(TemplateEngine):
         return _render_nodes(self.tree, variables)
 
     def clean(self, filled: str, ctx: TemplateContext) -> str:
-        return _normalize_path_segments(filled, keep_absolute=_template_keeps_absolute(self.source, ctx.variables))
+        return _normalize_path_segments(filled, keep_absolute=_keeps_absolute(self.tree, ctx.variables))
 
     def resolve(self, ctx: TemplateContext, base_path: Path, safe_dirs: Sequence[Path] | None) -> Path:
         """渲染并得到字面绝对路径, 强制约束在允许的边界内.

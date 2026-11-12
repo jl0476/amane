@@ -2,7 +2,7 @@
 
 import pytest
 
-from amane.organize.template import PathEngine, TemplateContext, TemplateEngine, validate_template
+from amane.organize.template import PathEngine, StrmEngine, TemplateContext, TemplateEngine, validate_template
 
 
 def _render(template: str, variables: dict[str, str]) -> str:
@@ -155,6 +155,10 @@ _INVALID_BLOCK_CASES = [
     "{% if a %}X{% else %}Y{% else %}Z{% endif %}",
     "{% iff a %}X{% endif %}",
     "{% if a,b, %}X{% endif %}",
+    "{% elif x %}X{% endif %}",
+    "{% if a == b %}X{% endif %}",
+    "{% if f(x) %}X{% endif %}",
+    "{% if a,,b %}X{% endif %}",
 ]
 
 
@@ -232,3 +236,50 @@ def test_filter_keeps_absolute_anchor() -> None:
     ctx = TemplateContext.from_mapping({"video_dir": "/media/lib/video"})
     engine = PathEngine("{video_dir:trim}/thumb.jpg")
     assert engine.render(ctx) == "/media/lib/video/thumb.jpg"
+
+
+# uses() 必须穿透条件块: 条件名、分支内占位符与 filter 参数表达式都算取用.
+# 消费方: StrmEngine 的 {video_relpath} 检查与剧照文件名的序号 / 路径占位符检查.
+_USES_CASES = [
+    ("{% if a %}X{% endif %}", "a", True),
+    ("{% if a %}{b}{% endif %}", "b", True),
+    ("{% if a %}X{% else %}{b}{% endif %}", "b", True),
+    ("{% if a %}{% if b %}{c}{% endif %}{% endif %}", "c", True),
+    ("{% if a %}{b}{% endif %}", "c", False),
+    ("{a:default(b)}", "b", True),
+    ("{a}", "b", False),
+]
+
+
+@pytest.mark.parametrize(("template", "name", "expected"), _USES_CASES)
+def test_uses_penetrates_condition_block(template: str, name: str, expected: bool) -> None:
+    assert TemplateEngine(template).uses(name) == expected
+
+
+def test_strm_video_relpath_inside_condition_block() -> None:
+    """{video_relpath} 被条件块包裹时, STRM 渲染仍要求 dest 与 library_root."""
+    engine = StrmEngine("{% if x %}{video_relpath}{% endif %}")
+    with pytest.raises(ValueError, match="video_relpath"):
+        engine.render(TemplateContext.from_mapping({"x": "1"}))
+
+
+# 条件块开头的模板: 绝对锚按实际渲染分支的首个占位符判定, 不得剥掉.
+_ANCHOR_CASES = [
+    (
+        "{% if link_dir %}{link_dir}/{video_name}{% endif %}",
+        {"link_dir": "/mnt/lib/x", "video_name": "a"},
+        "/mnt/lib/x/a",
+    ),
+    (
+        "{% if raw_relpath %}{raw_relpath}/{video_name}{% else %}{link_dir}/{video_name}{% endif %}",
+        {"raw_relpath": "", "link_dir": "/mnt/lib/x", "video_name": "a"},
+        "/mnt/lib/x/a",
+    ),
+    ("{% if link_dir %}{link_dir}/{video_name}{% endif %}", {"link_dir": "", "video_name": "a"}, ""),
+    ("{video_dir}/{video_name}", {"video_dir": "/mnt/lib/x", "video_name": "a"}, "/mnt/lib/x/a"),
+]
+
+
+@pytest.mark.parametrize(("template", "variables", "expected"), _ANCHOR_CASES)
+def test_if_block_keeps_absolute_anchor(template: str, variables: dict[str, str], expected: str) -> None:
+    assert PathEngine(template).render(TemplateContext.from_mapping(variables)) == expected
