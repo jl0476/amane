@@ -247,6 +247,10 @@
       "prune_empty_dirs": {
         "label": "Prune emptied directories",
         "description": "Removes directories emptied by this run; no effect on copy / hardlink / symbolic link"
+      },
+      "explicit_fields": {
+        "label": "Explicit Fields",
+        "description": "Template field names given explicitly by the user"
       }
     },
     "scrape": {

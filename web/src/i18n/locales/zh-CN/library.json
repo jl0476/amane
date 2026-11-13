@@ -126,7 +126,8 @@
     "move": "移动",
     "copy": "复制",
     "hardlink": "硬链接",
-    "symlink": "符号链接"
+    "symlink": "符号链接",
+    "inplace": "原地"
   },
   "fieldVideoTemplate": "视频路径模板",
   "fieldVideoTemplateHint": "可使用相对或绝对路径, 可用占位符见下方徽章",

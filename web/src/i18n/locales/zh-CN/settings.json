@@ -12,7 +12,10 @@
     "sr": "图像超分",
     "llm": "LLM 翻译",
     "watermark": "水印",
-    "semantic": "语义检索"
+    "semantic": "语义检索",
+    "common": "整理通用",
+    "naming": "命名模板",
+    "nfo": "NFO 写入"
   },
   "config": {
     "loadError": "加载配置失败"
@@ -666,6 +669,7 @@
         "$": {
           "options": {
             "title": "标题",
+            "original_title": "原标题",
             "actors": "演员",
             "tags": "标签",
             "release": "发行日期",
@@ -675,6 +679,7 @@
             "studio": "制作商",
             "publisher": "发行商",
             "plot": "剧情",
+            "original_plot": "原文简介",
             "poster_urls": "海报",
             "thumb_urls": "封面",
             "trailer_urls": "预告片",
@@ -887,6 +892,214 @@
       "auto_maintain": {
         "label": "自动维护",
         "description": "图片变化后立即重算该条目的向量; 打开时模型常驻内存"
+      }
+    },
+    "common": {
+      "overwrite_video": {
+        "label": "覆写视频",
+        "description": "目标已有视频时覆写源文件; 关闭则冲突即跳过"
+      },
+      "overwrite_image": {
+        "label": "覆写图片",
+        "description": "目标已有图片产物时覆写; 关闭则跳过已存在的产物"
+      }
+    },
+    "naming": {
+      "syntax": {
+        "label": "命名语法",
+        "options": {
+          "native": "内置",
+          "jinja": "Jinja2"
+        }
+      },
+      "video_template": {
+        "label": "视频路径模板"
+      },
+      "link_template": {
+        "label": "链接路径模板"
+      },
+      "link_mode": {
+        "label": "链接方式",
+        "options": {
+          "strm": "STRM 文件",
+          "symlink": "符号链接"
+        }
+      },
+      "strm_content_template": {
+        "label": "STRM 内容模板"
+      },
+      "thumb_template": {
+        "label": "封面模板"
+      },
+      "poster_template": {
+        "label": "海报模板"
+      },
+      "fanart_template": {
+        "label": "背景图模板"
+      },
+      "extrafanart_template": {
+        "label": "剧照模板"
+      },
+      "extrafanart_name_template": {
+        "label": "剧照文件名模板"
+      },
+      "nfo_template": {
+        "label": "NFO 模板"
+      },
+      "trailer_template": {
+        "label": "预告片模板"
+      },
+      "subtitle_template": {
+        "label": "字幕模板"
+      },
+      "subtitle_extensions": {
+        "label": "字幕扩展名"
+      },
+      "write_nfo": {
+        "label": "写入 NFO"
+      },
+      "copy_resources": {
+        "label": "整理时复制",
+        "$": {
+          "options": {
+            "thumb": "封面",
+            "poster": "海报",
+            "extrafanart": "剧照",
+            "trailer": "预告片"
+          }
+        }
+      }
+    },
+    "nfo": {
+      "title": {
+        "label": "标题"
+      },
+      "originaltitle": {
+        "label": "原标题"
+      },
+      "originaltitle_source": {
+        "label": "原标题取值",
+        "options": {
+          "title": "与标题同值",
+          "original": "源站原文"
+        }
+      },
+      "sorttitle": {
+        "label": "排序标题"
+      },
+      "plot": {
+        "label": "剧情"
+      },
+      "outline": {
+        "label": "剧情摘要"
+      },
+      "outline_summary": {
+        "label": "摘要仅取首句"
+      },
+      "originalplot": {
+        "label": "原文剧情"
+      },
+      "actor": {
+        "label": "演员"
+      },
+      "director": {
+        "label": "导演"
+      },
+      "premiered": {
+        "label": "发行日期"
+      },
+      "releasedate": {
+        "label": "发布日期"
+      },
+      "year": {
+        "label": "年份"
+      },
+      "num": {
+        "label": "番号"
+      },
+      "runtime": {
+        "label": "时长"
+      },
+      "votes": {
+        "label": "票数"
+      },
+      "score": {
+        "label": "评分"
+      },
+      "criticrating": {
+        "label": "媒体评分"
+      },
+      "country": {
+        "label": "国家"
+      },
+      "mpaa": {
+        "label": "分级"
+      },
+      "mpaa_value": {
+        "label": "分级值"
+      },
+      "customrating": {
+        "label": "自定义评分"
+      },
+      "series": {
+        "label": "系列 (series)"
+      },
+      "set": {
+        "label": "系列 (set)"
+      },
+      "tag": {
+        "label": "标签 (tag)"
+      },
+      "genre": {
+        "label": "标签 (genre)"
+      },
+      "studio": {
+        "label": "制作商 (studio)"
+      },
+      "maker": {
+        "label": "制作商 (maker)"
+      },
+      "publisher": {
+        "label": "发行商 (publisher)"
+      },
+      "label": {
+        "label": "发行商 (label)"
+      },
+      "poster": {
+        "label": "海报"
+      },
+      "cover": {
+        "label": "封面"
+      },
+      "trailer": {
+        "label": "预告片"
+      },
+      "website": {
+        "label": "官网链接"
+      },
+      "external_ids": {
+        "label": "外部 ID"
+      },
+      "add_part_to_title": {
+        "label": "标题追加分集"
+      },
+      "add_translated_by": {
+        "label": "注明翻译来源"
+      },
+      "tagline_format": {
+        "label": "标语格式"
+      },
+      "set_by_actress": {
+        "label": "合集按演员"
+      },
+      "set_by_serial_name": {
+        "label": "合集按番号序列"
+      },
+      "set_by_series": {
+        "label": "合集按系列"
+      },
+      "additional_tags": {
+        "label": "附加标签"
       }
     }
   }

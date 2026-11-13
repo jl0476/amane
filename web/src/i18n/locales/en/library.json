@@ -128,7 +128,8 @@
     "move": "Move",
     "copy": "Copy",
     "hardlink": "Hard Link",
-    "symlink": "Symbolic Link"
+    "symlink": "Symbolic Link",
+    "inplace": "In Place"
   },
   "fieldVideoTemplate": "Video Path Template",
   "fieldVideoTemplateHint": "Relative or absolute path; see placeholder badges below",
