@@ -763,6 +763,31 @@ async def test_legacy_payload_without_key_uses_non_null_fields(
 
 
 @pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    "explicit",
+    [
+        ["video_template"],
+        ["write_nfo"],
+        ["copy_resources"],
+        ["video_template", "write_nfo", "copy_resources"],
+    ],
+)
+async def test_malformed_explicit_fields_are_dropped(repo: Repository, tmp_path: Path, explicit: list[str]) -> None:
+    """explicit_fields 混入未知键或 None 值 (带外写入的畸形名单) 时被剔除, 生效值跟随全局默认."""
+    lib_root = tmp_path / "lib"
+    lib_root.mkdir()
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+
+    payload = OrganizePayload(library_id=lib.id)
+    payload.explicit_fields = explicit
+    settings = HotSettings()
+    effective = await resolve_effective_config(repo, settings, lib, payload)
+
+    assert effective.naming == settings.naming
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_manual_and_auto_same_effective_config(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:

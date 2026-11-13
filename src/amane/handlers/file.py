@@ -88,9 +88,18 @@ async def resolve_effective_config(
     """四层合成 common / naming / nfo; 第 4 层只读 payload.explicit_fields 列出的字段.
 
     explicit_fields 是入队前持久化的用户显式字段名单 (JSON 往返后 ``model_fields_set`` 不可靠).
+    名单与 payload 字段集及非 None 值取交集后才进入合成层: 带外写入的畸形名单 (未知键或 None 值)
+    在此剔除, 不使合成失败.
     """
     resolver = ConfigResolver(config, repo)
-    explicit = {name: getattr(payload, name) for name in payload.explicit_fields if name in NamingConfig.model_fields}
+    payload_fields = type(payload).model_fields
+    explicit = {
+        name: value
+        for name in payload.explicit_fields
+        if name in payload_fields
+        and name in NamingConfig.model_fields
+        and (value := getattr(payload, name)) is not None
+    }
     naming = await resolver.resolve(NamingConfig, scope=library, library=library, payload=explicit)
     common = await resolver.resolve(OrganizeCommonConfig, scope=library, library=library)
     nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
