@@ -10,6 +10,7 @@ import {
   Select,
   Skeleton,
   Stack,
+  Tabs,
   Text,
   TextInput,
   Title,
@@ -41,6 +42,7 @@ import {
   type LibraryFormState,
 } from "@/components/library/library-form";
 import { LibraryMediaTable } from "@/components/library/library-media-table";
+import { OverridesEditor } from "@/components/library/overrides-editor";
 import { useResettingState } from "@/hooks/use-resetting-state";
 import { useNarrowViewport } from "@/hooks/use-narrow-viewport";
 import { extractErrorMessage } from "@/lib/api-error";
@@ -54,11 +56,16 @@ const libraryDetailSearchSchema = z.object({
   sort_by: z.enum(MEDIA_SORT_FIELDS).optional(),
   order: z.enum(SORT_ORDERS).optional(),
   page: z.coerce.number().int().min(1).catch(1).default(1),
+  tab: z.enum(["files", "overrides"]).optional(),
 });
 
 export const Route = createFileRoute("/libraries/$libraryId")({
   validateSearch: libraryDetailSearchSchema,
-  search: { middlewares: [stripSearchParams({ page: 1, sort_by: "updated_at", order: "desc" })] },
+  search: {
+    middlewares: [
+      stripSearchParams({ page: 1, sort_by: "updated_at", order: "desc", tab: "files" }),
+    ],
+  },
   component: LibraryDetailPage,
 });
 
@@ -290,43 +297,62 @@ function LibraryDetailPage() {
           </Collapse>
         }
       >
-        {search.status != null && (
-          <Group gap="xs">
-            <Group gap={4} wrap="nowrap">
-              <Badge variant="outline">{t(`filters.${search.status}`)}</Badge>
-              <ActionIcon
-                size="sm"
-                variant="subtle"
-                color="gray"
-                onClick={() => setStatusFilter("")}
-                aria-label={t("common:actions.clear")}
-              >
-                <IconX size={14} />
-              </ActionIcon>
-            </Group>
-          </Group>
-        )}
+        <Tabs
+          value={search.tab ?? "files"}
+          onChange={(value) => {
+            const next = value === "overrides" ? "overrides" : "files";
+            void routeNavigate({ search: (prev) => ({ ...prev, tab: next, page: 1 }) });
+          }}
+        >
+          <Tabs.List mb="sm">
+            <Tabs.Tab value="files">{t("tabs.files")}</Tabs.Tab>
+            <Tabs.Tab value="overrides">{t("tabs.overrides")}</Tabs.Tab>
+          </Tabs.List>
 
-        <LibraryMediaTable
-          key={listLimit}
-          libraryId={library.id}
-          libraryPath={library.path}
-          items={mediaQuery.data?.items ?? []}
-          isLoading={mediaQuery.isLoading}
-          total={total}
-          page={search.page}
-          sortBy={search.sort_by}
-          order={search.order}
-          onPageChange={(page) => void routeNavigate({ search: (prev) => ({ ...prev, page }) })}
-          onSort={handleSort}
-          trailing={
-            <LibraryActionButtons
-              library={library}
-              onConfigure={openEdit}
-              onDeleted={() => void navigate({ to: "/libraries" })}
+          <Tabs.Panel value="files">
+            {search.status != null && (
+              <Group gap="xs" mb="sm">
+                <Group gap={4} wrap="nowrap">
+                  <Badge variant="outline">{t(`filters.${search.status}`)}</Badge>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    color="gray"
+                    onClick={() => setStatusFilter("")}
+                    aria-label={t("common:actions.clear")}
+                  >
+                    <IconX size={14} />
+                  </ActionIcon>
+                </Group>
+              </Group>
+            )}
+
+            <LibraryMediaTable
+              key={listLimit}
+              libraryId={library.id}
+              libraryPath={library.path}
+              items={mediaQuery.data?.items ?? []}
+              isLoading={mediaQuery.isLoading}
+              total={total}
+              page={search.page}
+              sortBy={search.sort_by}
+              order={search.order}
+              onPageChange={(page) => void routeNavigate({ search: (prev) => ({ ...prev, page }) })}
+              onSort={handleSort}
+              trailing={
+                <LibraryActionButtons
+                  library={library}
+                  onConfigure={openEdit}
+                  onDeleted={() => void navigate({ to: "/libraries" })}
+                />
+              }
             />
-          }
-        />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="overrides">
+            <OverridesEditor libraryId={library.id} />
+          </Tabs.Panel>
+        </Tabs>
       </BrowsePageShell>
 
       <Modal
@@ -337,7 +363,12 @@ function LibraryDetailPage() {
         centered
       >
         <Stack gap="md">
-          <LibraryFormFields value={editForm} onChange={setEditForm} showCreateOnly={false} />
+          <LibraryFormFields
+            value={editForm}
+            onChange={setEditForm}
+            showCreateOnly={false}
+            libraryId={id}
+          />
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setEditOpen(false)}>
               {t("common:actions.cancel")}

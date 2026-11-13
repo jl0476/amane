@@ -260,5 +260,58 @@
     "noiseHint": "Created by the OS or a sync tool; deleted along with the folder",
     "blocked": "{{count}} more folders were left out: unrecognized files",
     "showNoise": "Show system files"
+  },
+  "tabs": {
+    "files": "Files",
+    "overrides": "Config Overrides"
+  },
+  "overrides": {
+    "hint": "Override global config per section; an empty template box means explicit empty. Untouched keys inherit global",
+    "inheritGlobal": "Inherit Global",
+    "inheritOffHint": "Turning this back on deletes the override row for this section",
+    "inheritHint": "This section inherits global config; turn the switch off to edit overrides",
+    "inheritConfirmTitle": "Inherit Global Again",
+    "inheritConfirmBody": "This deletes the override row; all fields return to global config",
+    "overriding": "Overriding",
+    "saved": "Override saved",
+    "loadFailed": "Failed to load overrides"
+  },
+  "syntax": {
+    "native": "Built-in",
+    "jinja": "Jinja2"
+  },
+  "preview": {
+    "title": "Preview",
+    "syntax": "Syntax",
+    "hint": "Renders with the library's current effective templates and syntax; unsaved edits are not included",
+    "hintGlobal": "Renders with global default templates; save the library to preview its own templates",
+    "number": "Number",
+    "sampleTitle": "Title",
+    "studio": "Studio",
+    "actors": "Actors",
+    "actorsPlaceholder": "Comma separated",
+    "contentType": "Type",
+    "release": "Release Date",
+    "sourcePath": "Source Path",
+    "failed": "Preview failed",
+    "subtitleTag": "Sub {{tag}}",
+    "fields": {
+      "video": "Video",
+      "thumb": "Cover",
+      "poster": "Poster",
+      "fanart": "Fanart",
+      "nfo": "NFO",
+      "trailer": "Trailer",
+      "subtitle": "Subtitle"
+    },
+    "contentTypes": {
+      "censored": "Censored",
+      "uncensored": "Uncensored",
+      "chinese": "Chinese",
+      "western": "Western",
+      "fc2": "FC2",
+      "amateur": "Amateur",
+      "hentai": "Hentai"
+    }
   }
 }

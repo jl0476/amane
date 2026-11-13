@@ -15,11 +15,14 @@ import {
   Tooltip,
 } from "@mantine/core";
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
-import { useMemo, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getPathTemplateSchemaOptions } from "@/client/@tanstack/react-query.gen";
+import {
+  getEffectiveConfigOptions,
+  getPathTemplateSchemaOptions,
+} from "@/client/@tanstack/react-query.gen";
 import { LibraryCreateRequestSchema, LibraryResponseSchema } from "@/client/schemas.gen";
 import type {
   DownloadableResource,
@@ -35,11 +38,13 @@ import { PathPicker } from "@/components/path-picker";
 import { encodeFormBody } from "@/components/schema-form/encode";
 import { EnumToggle } from "@/components/common/enum-toggle";
 import { FieldChrome } from "@/components/schema-form/fields/field-chrome";
+import { NamingPreviewPanel } from "@/components/library/naming-preview-panel";
 import {
   DOWNLOADABLE_RESOURCES,
   LIBRARY_AUTOMATIONS,
   LIBRARY_INGESTS,
   LINK_MODES,
+  type NamingSyntax,
 } from "@/lib/exhaustive-maps";
 import classes from "./library-form.module.css";
 import { templateCatalogFromPlaceholders } from "./template-highlight";
@@ -258,14 +263,28 @@ const TPL_I18N = {
   subtitle_template: "tpl.subtitle",
 } as const satisfies Record<keyof OptionalPathTemplateDefaults, string>;
 
+function syntaxInfo(
+  schema: PathTemplateSchemaResponse | null | undefined,
+  syntax: NamingSyntax,
+): PathTemplateSchemaResponse["syntaxes"][number] | undefined {
+  return schema?.syntaxes.find((info) => info.name === syntax);
+}
+
 interface LibraryFormFieldsProps {
   value: LibraryFormState;
   onChange: (v: LibraryFormState) => void;
   /** true: 创建表单 (显示 automation + 创建后扫描开关); false: 编辑表单 (仅 automation). */
   showCreateOnly: boolean;
+  /** 编辑既有库时传入: 试算面板与语法初值取该库生效配置. */
+  libraryId?: number;
 }
 
-export function LibraryFormFields({ value, onChange, showCreateOnly }: LibraryFormFieldsProps) {
+export function LibraryFormFields({
+  value,
+  onChange,
+  showCreateOnly,
+  libraryId,
+}: LibraryFormFieldsProps) {
   const { t } = useTranslation("library");
   const { data: schema } = useQuery(getPathTemplateSchemaOptions());
   const [sidecarOpen, setSidecarOpen] = useState<string | null>(null);
@@ -276,6 +295,41 @@ export function LibraryFormFields({ value, onChange, showCreateOnly }: LibraryFo
     [schema?.placeholders],
   );
   const optionalDefaults = schema?.optional_defaults;
+
+  // 语法是 naming 配置 (全局/覆盖), 不在库行上: 表单内只维护「编辑视角」的语法.
+  // 初值取该库生效配置, 用户手切后记录在 override (按 libraryId 归属, 换库即失效),
+  // 渲染期推导, 不经 effect 回写 (规格 3.2.3: 切换时未自定义模板换对应默认).
+  const { data: effective } = useQuery({
+    ...getEffectiveConfigOptions({ path: { library_id: libraryId ?? 0 } }),
+    enabled: libraryId != null,
+  });
+  const [syntaxChoice, setSyntaxChoice] = useState<[number | undefined, NamingSyntax] | null>(null);
+  const syntax =
+    syntaxChoice != null && syntaxChoice[0] === libraryId
+      ? syntaxChoice[1]
+      : (effective?.naming.syntax ?? "native");
+
+  function handleSyntaxChange(next: NamingSyntax) {
+    if (next === syntax) {
+      return;
+    }
+    const oldVideoDefault = syntaxInfo(schema, syntax)?.default_video_template;
+    const newVideoDefault = syntaxInfo(schema, next)?.default_video_template;
+    const updates: Partial<LibraryFormState> = {};
+    const video = value.video_template.trim();
+    if (newVideoDefault != null && (video === "" || video === oldVideoDefault)) {
+      updates.video_template = newVideoDefault;
+    }
+    // 附属模板未自定义 (等于默认) 时清空: 后端按生效语法回退各自内建默认,
+    // 空值因此对两套语法都成立; 已自定义的模板原样保留.
+    for (const key of OPTIONAL_TEMPLATE_KEYS) {
+      if (value[key].trim() === "" || value[key] === optionalDefaults?.[key]) {
+        updates[key] = "";
+      }
+    }
+    setSyntaxChoice([libraryId, next]);
+    onChange({ ...value, ...updates });
+  }
 
   const copyPlaceholder = async (name: string) => {
     const text = `{${name}}`;
@@ -437,6 +491,11 @@ export function LibraryFormFields({ value, onChange, showCreateOnly }: LibraryFo
         catalog={catalog}
         value={value.video_template}
         onChange={(e) => onChange({ ...value, video_template: e.currentTarget.value })}
+      />
+      <NamingPreviewPanel
+        libraryId={libraryId ?? null}
+        syntax={syntax}
+        onSyntaxChange={handleSyntaxChange}
       />
       <TemplateInput
         label={t("fieldLinkTemplate")}

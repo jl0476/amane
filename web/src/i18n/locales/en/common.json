@@ -38,6 +38,7 @@
   "nav": {
     "library": "Library",
     "plugins": "Plugins",
+    "parseRules": "Parse Rules",
     "tasks": "Tasks",
     "schedules": "Schedules",
     "settings": "Settings",
