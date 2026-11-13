@@ -254,16 +254,19 @@ async def _takeover_and_cleanup(
         await _record_error(repo, plan.journal_id, error)
         return OverwriteResult(PlaceOutcome.FAILED, target, error)
 
-    takeover_error = await _takeover_index(repo, media_file=media_file, target=target)
-    if takeover_error is not None:
+    try:
+        assert media_file.id is not None
+        # 接管 + journal committed 是同一个数据库事务, 接管成功即已 committed.
+        await repo.takeover_overwrite_target(
+            plan.journal_id,
+            source_file_id=media_file.id,
+            oshash=plan.source_oshash,
+            size=plan.source_size,
+        )
+    except Exception as e:
+        takeover_error = f"索引接管失败: {e}"
         await _record_error(repo, plan.journal_id, takeover_error)
         return OverwriteResult(PlaceOutcome.FAILED, target, takeover_error)
-
-    try:
-        await repo.update_organize_journal(plan.journal_id, phase=OrganizeJournalPhase.COMMITTED)
-    except Exception as e:
-        await _record_error_quietly(repo, plan.journal_id, f"committed 推进失败: {e}")
-        return OverwriteResult(PlaceOutcome.FAILED, target, f"覆写日志推进 committed 失败: {e}")
 
     try:
         await _unlink_residual(plan.backup)
@@ -287,19 +290,6 @@ async def _takeover_and_cleanup(
     await _delete_journal(repo, plan.journal_id)
     logger.info("overwrite completed", source=str(source), target=target_str, mode=str(mode))
     return OverwriteResult(PlaceOutcome.PLACED, target)
-
-
-async def _takeover_index(repo: Repository, *, media_file: MediaFile, target: Path) -> str | None:
-    """索引接管: 删目标旧行 → 源行 path 改目标路径. journal 推进紧随其后, 由恢复扫描兜底中断."""
-    assert media_file.id is not None
-    try:
-        occupant = await repo.get_media_file_by_path(str(target))
-        if occupant is not None and occupant.id is not None and occupant.id != media_file.id:
-            await repo.delete_media_file(occupant.id)
-        await repo.update_media_file(media_file.id, path=str(target))
-        return None
-    except Exception as e:
-        return f"索引接管失败: {e}"
 
 
 async def _verify_fingerprint(path: Path, expected_oshash: str, expected_size: int, *, label: str) -> str | None:

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from amane.enums import MoveMode
+from amane.db.models import MediaFile, MediaFileStatus
+from amane.enums import MoveMode, OrganizeJournalPhase
 from amane.organize import PlaceOutcome
 from amane.organize.overwrite import backup_target_path, overwrite_target, overwrite_tmp_path
 from amane.utils.oshash import compute_oshash
@@ -316,16 +317,16 @@ async def test_source_verification_failure_keeps_source(
 async def test_takeover_failure_keeps_journal(
     repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """接管写库失败 → journal 停在 placed 并写 last_error, 恢复扫描重试接管."""
+    """接管事务失败 → journal 停在 placed 并写 last_error, 恢复扫描重试接管."""
     source = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
     target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
     media = await repo.create_media_file(1, path=str(source))
     assert media.id is not None
 
-    async def vanished(media_id: int, **updates: object) -> None:
+    async def failed(*args: object, **kwargs: object) -> None:
         raise RuntimeError("row vanished")
 
-    monkeypatch.setattr(repo, "update_media_file", vanished)
+    monkeypatch.setattr(repo, "takeover_overwrite_target", failed)
 
     result = await overwrite_target(
         source=source, target=target, mode=MoveMode.COPY, repo=repo, media_file=media, task_id=11
@@ -340,3 +341,184 @@ async def test_takeover_failure_keeps_journal(
     # 接管未完成: 源保留 (copy), 备份保留.
     assert source.read_bytes() == CONTENT_SOURCE * 8
     assert backup_target_path(target, "11").exists()
+
+
+# --- 任务 25: 覆写索引接管 (单事务) ---
+
+
+async def _journal_for(
+    repo: Repository,
+    *,
+    source: MediaFile,
+    target_path: str,
+    oshash: str,
+    size: int,
+    target_file_id: int | None,
+    phase: str = "prepared",
+) -> int:
+    journal = await repo.create_organize_journal(
+        task_id=None,
+        mode=MoveMode.MOVE.value,
+        source_path=str(source.path),
+        source_file_id=int(source.id),
+        source_oshash=oshash,
+        source_size=size,
+        source_metadata_id=source.metadata_id,
+        source_number=source.number,
+        target_path=target_path,
+        target_file_id=target_file_id,
+        backup_path=f"{target_path}.amane-overwrite-1",
+    )
+    assert journal.id is not None
+    if phase != "prepared":
+        await repo.update_organize_journal(journal.id, phase=OrganizeJournalPhase(phase))
+    return journal.id
+
+
+@pytest.mark.asyncio
+async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: Path) -> None:
+    """接管按覆写表更新: metadata_id / number 覆盖而非补空, oshash / size 取核验值,
+    duration / codec 置空待刷新, 相位字段按新路径派生, journal 同事务推进 committed."""
+    src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB-C.mp4", CONTENT_TARGET)
+    meta_old = await repo.upsert_metadata(number="OLD-001")
+    meta_new = await repo.upsert_metadata(number="NSFS-039")
+    assert meta_old.id is not None and meta_new.id is not None
+    # 目标旧行: 已绑定别的条目且刮削字段齐全 (补空分支不会覆盖它们, 接管必须覆盖).
+    occupant = await repo.create_media_file(
+        1,
+        path=str(target),
+        number="OLD-001",
+        status=MediaFileStatus.SCRAPED,
+        metadata_id=meta_old.id,
+        oshash="oldoshasholdoshas",
+        size=1,
+        duration=12.5,
+        codec="h264",
+    )
+    assert occupant.id is not None
+    # 源行: 路径无中字标记, 接管到 -C 路径后相位必须重派生.
+    source = await repo.create_media_file(
+        1, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta_new.id
+    )
+    assert source.id is not None
+    expected_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
+    journal_id = await _journal_for(
+        repo,
+        source=source,
+        target_path=str(target),
+        oshash=expected_oshash,
+        size=src.stat().st_size,
+        target_file_id=occupant.id,
+    )
+
+    await repo.takeover_overwrite_target(
+        journal_id, source_file_id=source.id, oshash=expected_oshash, size=src.stat().st_size
+    )
+
+    assert await repo.get_media_file(occupant.id) is None
+    row = await repo.get_media_file(source.id)
+    assert row is not None
+    assert row.path == str(target)
+    assert row.metadata_id == meta_new.id
+    assert row.number == "NSFS-039"
+    assert row.status is MediaFileStatus.SCRAPED
+    assert row.oshash == expected_oshash
+    assert row.size == src.stat().st_size
+    # 目标内容已变: 时长 / 编码置空待刷新; 相位按新路径派生 (-C 中字标记).
+    assert row.duration is None
+    assert row.codec is None
+    assert row.has_subtitle_in_name is True
+    journal = await repo.get_organize_journal(journal_id)
+    assert journal is not None and journal.phase == "committed"
+
+
+@pytest.mark.asyncio
+async def test_takeover_target_without_index(repo: Repository, tmp_path: Path) -> None:
+    """target_file_id=NULL: 源行 path 改目标路径, 无目标旧行可删."""
+    src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    source = await repo.create_media_file(1, path=str(src), number="NSFS-039")
+    assert source.id is not None
+    expected_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
+    journal_id = await _journal_for(
+        repo,
+        source=source,
+        target_path=str(target),
+        oshash=expected_oshash,
+        size=src.stat().st_size,
+        target_file_id=None,
+    )
+
+    await repo.takeover_overwrite_target(
+        journal_id, source_file_id=source.id, oshash=expected_oshash, size=src.stat().st_size
+    )
+
+    row = await repo.get_media_file(source.id)
+    assert row is not None and row.path == str(target)
+    journal = await repo.get_organize_journal(journal_id)
+    assert journal is not None and journal.phase == "committed"
+    assert len(await repo.list_media_files(limit=None)) == 1
+
+
+@pytest.mark.asyncio
+async def test_takeover_is_single_transaction(
+    repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """事务中途失败 → 四步全部回滚: 目标旧行仍在, 源行 path 不变, journal 未推进."""
+    src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    occupant = await repo.create_media_file(1, path=str(target), number="OLD-001")
+    assert occupant.id is not None
+    source = await repo.create_media_file(1, path=str(src), number="NSFS-039")
+    assert source.id is not None
+    journal_id = await _journal_for(
+        repo,
+        source=source,
+        target_path=str(target),
+        oshash="deadbeefdeadbeef",
+        size=src.stat().st_size,
+        target_file_id=occupant.id,
+    )
+
+    def boom(media: MediaFile) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("amane.db.repos.organize_journal._apply_path_phase", boom)
+
+    with pytest.raises(RuntimeError):
+        await repo.takeover_overwrite_target(
+            journal_id, source_file_id=source.id, oshash="deadbeefdeadbeef", size=src.stat().st_size
+        )
+
+    assert await repo.get_media_file(occupant.id) is not None
+    row = await repo.get_media_file(source.id)
+    assert row is not None and row.path == str(src)
+    journal = await repo.get_organize_journal(journal_id)
+    assert journal is not None and journal.phase == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_takeover_missing_source_row_raises(repo: Repository, tmp_path: Path) -> None:
+    """指纹复验后的源行 id 取不到行 → 抛错, journal 不推进, 由调用方写 last_error."""
+    src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    source = await repo.create_media_file(1, path=str(src))
+    assert source.id is not None
+    journal_id = await _journal_for(
+        repo,
+        source=source,
+        target_path=str(target),
+        oshash="deadbeefdeadbeef",
+        size=src.stat().st_size,
+        target_file_id=None,
+    )
+    await repo.delete_media_file(source.id)
+
+    with pytest.raises(LookupError):
+        await repo.takeover_overwrite_target(
+            journal_id, source_file_id=int(source.id), oshash="deadbeefdeadbeef", size=src.stat().st_size
+        )
+
+    journal = await repo.get_organize_journal(journal_id)
+    assert journal is not None and journal.phase == "prepared"
