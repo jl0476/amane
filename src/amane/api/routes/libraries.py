@@ -317,9 +317,9 @@ async def _validate_naming_override(
 ) -> None:
     """naming 覆盖的语法感知校验 (规格 3.2.2 / 3.2.3).
 
-    PUT 是整体替换: 以「本次 payload 顶掉既有覆盖行」合成生效 naming. 语法未变时只对写入的模板字段
-    做保存校验 (未知占位符 / 未知 filter → 422 + 名称与位置); 语法切换时对生效链全部模板做保存校验
-    加渲染探针, 残留即拒绝切换.
+    PUT 是整体替换: 以「本次 payload 顶掉既有覆盖行」合成生效 naming. 两个分支都执行保存校验
+    (未知占位符 / 未知 filter → 422 + 名称与位置) 加渲染探针 (另一语法的残留同样拒绝):
+    语法切换时对生效链全部模板校验, 语法未变时只对写入的模板字段校验.
     """
     resolver = ConfigResolver(config.hot, repo)
     old_naming = await resolver.resolve(NamingConfig, scope=library, library=library)
@@ -336,7 +336,7 @@ async def _validate_naming_override(
                 probe=True,
             )
         else:
-            validate_naming_templates(new_naming.syntax, written, probe=False)
+            validate_naming_templates(new_naming.syntax, written, probe=True)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

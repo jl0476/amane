@@ -276,6 +276,29 @@ async def test_naming_override_accepts_dir_alias_and_syntax_template(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_naming_override_same_syntax_save_probes_residual(client: AsyncClient, safe_path: Path) -> None:
+    """同语法保存对写入的模板字段执行同一渲染探针: jinja 生效下携带自研占位符模板 → 422 不落库."""
+    library_id = await _create_library(client, safe_path, "residual")
+    base = f"libraries/{library_id}/overrides/naming"
+    assert (await client.put(base, json={"syntax": "jinja", **_JINJA_DEFAULTS})).status_code == 200
+
+    resp = await client.put(base, json={"syntax": "jinja", "video_template": "{studio}/{number}.{ext}"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "video_template" in detail
+    assert "{studio}" in detail
+
+    # 被拒的字段不落库, 生效模板保持切换时的取值; 合法 Jinja 模板仍可保存
+    effective = (await client.get(f"libraries/{library_id}/effective-config")).json()
+    assert effective["naming"]["syntax"] == "jinja"
+    assert effective["naming"]["video_template"] == _JINJA_DEFAULTS["video_template"]
+    ok = await client.put(base, json={"syntax": "jinja", "video_template": "{{ studio }}/{{ number }}.{{ ext }}"})
+    assert ok.status_code == 200
+    effective = (await client.get(f"libraries/{library_id}/effective-config")).json()
+    assert effective["naming"]["video_template"] == "{{ studio }}/{{ number }}.{{ ext }}"
+
+
+@pytest.mark.asyncio
 async def test_schema_endpoint_lists_syntaxes(client: AsyncClient) -> None:
     """path-template-schema 新增 syntaxes: 两套默认视频模板与各自占位符 (含 Jinja 变量映射与 dir 别名)."""
     resp = await client.get("libraries/path-template-schema")
