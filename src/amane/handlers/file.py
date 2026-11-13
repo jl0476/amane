@@ -264,6 +264,12 @@ async def execute_file_operations(
         link_result = await create_video_link(org_result.dest, paths.link, mode, content=strm_content)
         if link_result.outcome is not PlaceOutcome.PLACED:
             return FileOperationsResult(outcome=PlaceOutcome.FAILED, dest=org_result.dest, error=link_result.error)
+        # 链接路径持久化: resolve_paths 每次按当前模板重渲染, 历史落盘位置只能靠该列 (规格 3.4.4).
+        if repo is not None and media_file.id is not None:
+            try:
+                await repo.update_media_file(media_file.id, link_path=str(link_result.dest))
+            except Exception as e:
+                logger.warning("link_path persist failed", dest=str(link_result.dest), error=str(e))
 
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:

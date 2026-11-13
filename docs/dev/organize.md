@@ -37,6 +37,13 @@
 目标有效性用同一份 journal 指纹对目标现场重算判定. 恢复失败一律保留 journal 行写 `last_error`
 交人工处理, 各步幂等, 下次启动或下次整理同一目标时重试.
 
+## 链接路径持久化
+
+`MediaFile.link_path` 记录链接的落盘位置: `execute_file_operations` 在 `create_video_link`
+返回 PLACED 后写入实际落盘路径, 对外经 `api/models/media.py::MediaFileResponse` 暴露.
+`resolve_paths` 每次按当前模板重渲染, 结果不是历史落盘位置, 读取侧 (NFO 重写等) 以该列为准;
+链接文件已不存在时按无链接处理, 不改写该列.
+
 ## 导入边界
 
 `organize/overwrite.py` 不得被 `amane.db` 侧导入: `db.models` 已经导入 organize 包, 反向依赖成环.

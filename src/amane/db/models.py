@@ -200,6 +200,9 @@ class MediaFile(SQLModel, table=True):
     codec: str | None = None
     number: str | None = Field(default=None, index=True)
     status: MediaFileStatus = Field(default=MediaFileStatus.PENDING, index=True)
+    # 链接落盘位置 (link_template 渲染结果): 整理写入链接成功后落库, 不随模板重渲染改写.
+    # 读取侧在链接文件已不存在时按无链接处理, 不改写该列 (规格 3.4.4).
+    link_path: str | None = None
     # 文件相位: path 的投影, 随 path 写入/更新; 不进对外 PATCH.
     mosaic: Mosaic | None = Field(default=None, index=True)
     #: 文件名带中字标记, 只由 path 派生.

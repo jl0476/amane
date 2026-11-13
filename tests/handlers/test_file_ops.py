@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from PIL import Image
 
+from amane.api.models.media import MediaFileResponse, to_media_file_response
 from amane.api.models.tasks import OrganizeSubmission
 from amane.config import HotSettings, WatermarkConfig
 from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
@@ -1159,3 +1160,58 @@ async def test_overwrite_image_toggle_skips_existing_images(
         assert result.skipped_images == 2
         assert _pixel(paths.thumb) == before[0]
         assert _pixel(paths.poster) == before[1]
+
+
+# --- 任务 27: MediaFile.link_path 持久化 ---
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("with_link_template", [True, False])
+async def test_link_path_persisted_after_organize(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path, with_link_template: bool
+) -> None:
+    """配置链接模板整理后 MediaFile.link_path == 链接落盘路径; 未配置链接模板 → None."""
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(b"video")
+    local = tmp_path / "emby"
+    local.mkdir(parents=True)
+
+    overrides: dict[str, Any] = {"video_template": "{number}/{number}.{ext}"}
+    # link_mode 默认 STRM: 链接落盘是 .strm 正文文件, 路径由链接模板渲染.
+    link = local / "NSFS-039" / "NSFS-039.strm"
+    if with_link_template:
+        overrides["link_template"] = str(local / "{number}" / "{number}.{ext}")
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "naming", overrides)
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    media = await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+    assert media.id is not None
+
+    org = OrganizeHandler(repo, HotSettings(), resource_store, safe_dirs=[tmp_path])
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.failed == 0
+
+    updated = await repo.get_media_file(media.id)
+    assert updated is not None
+    if with_link_template:
+        assert updated.link_path == str(link)
+        assert link.is_file()  # strm 正文文件落盘
+    else:
+        assert updated.link_path is None
+
+
+def test_media_file_response_has_link_path() -> None:
+    """MediaFileResponse 是手写字段清单, link_path 必须显式存在并按字段名映射."""
+    media = MediaFile(id=7, path="/lib/NSFS-039.mp4", library_id=1, link_path="/emby/NSFS-039.mp4")
+    response = to_media_file_response(media)
+    assert response.link_path == "/emby/NSFS-039.mp4"
+    assert MediaFileResponse.model_fields["link_path"].annotation == str | None
