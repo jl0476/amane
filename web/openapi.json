@@ -5954,7 +5954,7 @@
           "libraries"
         ],
         "summary": "Preview Naming",
-        "description": "命名模板试算 (规格 3.2.4): 与整理走同一渲染代码路径 (resolve_paths + TemplateContext), 纯计算不落盘.\n\n相对模板以库根为基准; 无 library_id 时以 ``/`` 为基准按全局默认模板试算.",
+        "description": "命名模板试算 (规格 3.2.4): 与整理走同一渲染代码路径 (resolve_paths + TemplateContext), 纯计算不落盘.\n\n相对模板以库根为基准; 无 library_id 时以 ``/`` 为基准按全局默认模板试算.\n模板无法渲染 (语法无效 / 渲染退化到库根) → 422, detail 指明模板与原因.",
         "operationId": "preview_naming",
         "requestBody": {
           "content": {
