@@ -132,6 +132,24 @@ async def test_rewrite_missing_link_file_falls_back_to_video(
 
 
 @pytest.mark.asyncio(loop_scope="function")
+async def test_rewrite_write_failure_enters_failures(client: AsyncClient, repo: Repository, tmp_path: Path) -> None:
+    """NFO 目标位置被同名目录占用导致写盘失败: 该文件进入失败清单而非成功清单."""
+    seeded = await _seed_paired_entry(repo, tmp_path / "files")
+    # 目标位置预置同名目录: aiofiles.open 以写模式打开目录时抛出 IsADirectoryError,
+    # write_nfo 捕获后返回 False, 端点须将其计为该文件的失败.
+    seeded["nfo"].mkdir()
+
+    resp = await client.put(f"metadata/{seeded['metadata_id']}/nfo")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rewritten"] == []
+    assert len(body["failures"]) == 1
+    failure = body["failures"][0]
+    assert failure["path"] == str(seeded["video"])
+    assert "写盘失败" in failure["error"] and str(seeded["nfo"]) in failure["error"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_rewrite_no_local_file_409(client: AsyncClient, repo: Repository) -> None:
     """只有元数据没有本地文件 → 409; 未知条目 → 404."""
     meta = await repo.upsert_metadata("NOFILE-001")

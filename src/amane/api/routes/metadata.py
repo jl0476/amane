@@ -473,7 +473,10 @@ async def _rewrite_media_nfo(
             f"NFO 目标路径与消费文件不配对: 实际 {nfo} (stem {nfo.stem!r}), "
             f"期望与 {consume_path} 同目录同主干 (stem {consume_path.stem!r})"
         )
-    await write_nfo(metadata, nfo, NfoOptions(**nfo_config.model_dump()))
+    if not await write_nfo(metadata, nfo, NfoOptions(**nfo_config.model_dump())):
+        # write_nfo 对写盘异常返回 False 而不抛出: 目录创建失败、权限不足、磁盘满都到不了
+        # 这里的调用方, 必须转成 OSError 才能落入端点的逐文件失败分支.
+        raise OSError(f"NFO 写盘失败: {nfo}")
     return nfo
 
 
