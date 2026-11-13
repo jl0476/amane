@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from ..api.models.tasks import RulesFor
     from ..db.embeddings import EmbeddingKind
     from ..db.models import Library
     from ..semantic import SemanticHit
@@ -44,3 +45,5 @@ class AgentRuntimeBridge:
     cancel_running_task: Callable[[int], Awaitable[bool]] | None = None
     poll_feed: Callable[[int], Awaitable[None]] | None = None
     semantic_search: SemanticSearch | None = None
+    rules_for: RulesFor | None = None
+    """按库取识别词集的提供者 (``AppRuntime.parse_rules_for``); ``submit_task`` 经 ``resolve_submission`` 注入 SCRAPE 番号预解析."""

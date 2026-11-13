@@ -19,6 +19,7 @@
 | API 端点 | [api.md](api.md) |
 | 前端文件索引 (路由 → 文件) | [frontend.md](frontend.md) |
 | 表结构 / 迁移 | [database.md](database.md) |
+| 解析 / 识别词 | [parsing.md](parsing.md) |
 | 翻译 / LLM | [llm.md](llm.md) |
 | 助理 (首页对话) | [agent.md](agent.md) |
 | 语义检索 (向量 sidecar / 索引生命周期) | [semantic.md](semantic.md) |

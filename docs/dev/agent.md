@@ -20,7 +20,7 @@
 | `inspect_result` | 按 `saved_query_id` 取行 (交付或探查视图) |
 | `semantic_search` | 单次整句语义检索; 可传 `saved_query_id` 或返回 `id` 列的只读 SQL, 只在该候选集内排名 |
 
-写操作工具按域分组为 `Capability`, 清单在 `src/amane/agent/capabilities.py`, 内置助理与外部派发共用同一份 (两侧必须一致, 只登记一处才不会漂移). **不做延迟载入**: 每个请求都声明全部工具. 兼容端点 (DeepSeek 等) 没有「声明了但不开放」的通道, 逐次载入只能通过修改 `tools` 实现, 而工具定义渲染在 system 之后、对话之前, 每载入一次即重读整段对话前缀; 全量声明的固定前缀恒定不变, 首轮即命中缓存. 不经由 HTTP 自调用. `AgentDeps.bridge` 提供库路径边界 / watcher / 取消运行中任务 / 语义检索回调.
+写操作工具按域分组为 `Capability`, 清单在 `src/amane/agent/capabilities.py`, 内置助理与外部派发共用同一份 (两侧必须一致, 只登记一处才不会漂移). **不做延迟载入**: 每个请求都声明全部工具. 兼容端点 (DeepSeek 等) 没有「声明了但不开放」的通道, 逐次载入只能通过修改 `tools` 实现, 而工具定义渲染在 system 之后、对话之前, 每载入一次即重读整段对话前缀; 全量声明的固定前缀恒定不变, 首轮即命中缓存. 不经由 HTTP 自调用. `AgentDeps.bridge` 提供库路径边界 / watcher / 取消运行中任务 / 语义检索 / 识别词提供者回调.
 
 | `id` | 覆盖 |
 |------|------|
@@ -100,7 +100,7 @@ MANUAL 写入会把所改字段并入锁集合 (见 [data-model.md](data-model.m
 
 ## 运行时
 
-`AgentService` 挂载于 `AppRuntime`: `_rebuild()` 按 `hot.agent` 重建工厂, **不清除** ResultCache; bootstrap 装配 `bridge` (safe_dirs / watcher / 动态 Worker 取消 / `FeedService.poll_one`).
+`AgentService` 挂载于 `AppRuntime`: `_rebuild()` 按 `hot.agent` 重建工厂, **不清除** ResultCache; bootstrap 装配 `bridge` (safe_dirs / watcher / 动态 Worker 取消 / `FeedService.poll_one` / 识别词提供者).
 
 上游协议由 `hot.agent.api_type` 选择, 模型构造与翻译共用 `llm/model.py::build_model`; `base_url` / `api_key` / `model` 原样交给对应 Provider (Anthropic 需填 Anthropic 端点, 无隐式改写). 身份与规则经 agent `instructions` 注入而**不是** `system_prompt`: Responses 协议把 agent instructions 放在 API 顶层 `instructions` 字段, 服务端插在 `input` 之前; `system_prompt` 会变成 `input` 里的 system 消息, 于是各 capability 的注意事项反而排在身份定位之前. 思考强度: 全局 `hot.agent.thinking` 为默认 (`None` = 不传), 会话覆盖在 `meta.json`; 每回合经由 `model_settings` 注入 thinking 与 `hot.agent.max_tokens`. 运行使用无上限的 `UsageLimits`.
 

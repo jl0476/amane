@@ -18,6 +18,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypedDict
 
+from .rules import ParseRuleSet, apply_rules
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -260,6 +262,7 @@ def parse_file_info(
     text: str | None = None,
     has_external_subtitle: bool = False,
     escape_strings: list[str] | None = None,
+    rules: ParseRuleSet | None = None,
 ) -> FileInfo:
     """有路径则解析路径, 否则解析 ``text``. 两者至少要有一个.
 
@@ -270,6 +273,9 @@ def parse_file_info(
 
     ``has_external_subtitle`` 是路径之外的输入 (库里记录的同目录字幕命中), 只并进 ``has_subtitle``,
     不参与其它相位.
+
+    ``rules`` 非空时在内置判定之后应用识别词 (``rules.apply_rules``): 路径分支用原始路径字符串
+    参与路径段匹配; ``text`` 分支没有路径 (``path=None``), 只应用番号段.
     """
     if path is None and text is None:
         raise ValueError("path or text required")
@@ -294,7 +300,7 @@ def parse_file_info(
         basename = Path(text).stem.upper()
         cd = _detect_cd(basename)
         mosaic = _detect_mosaic(basename)
-    return FileInfo(
+    info = FileInfo(
         number=number,
         content_type=content_type,
         prefix=_prefix(number) if number else "",
@@ -304,6 +310,9 @@ def parse_file_info(
         mosaic=mosaic,
         definition=_detect_definition(basename),
     )
+    if rules is not None:
+        return apply_rules(path, info, rules)
+    return info
 
 
 def extract_number(text: str, escape_strings: list[str] | None = None) -> str | None:

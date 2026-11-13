@@ -7319,6 +7319,120 @@ export const OrganizeSubmissionSchema = {
     title: 'OrganizeSubmission'
 } as const;
 
+export const ParseRuleListResponseSchema = {
+    properties: {
+        items: {
+            items: {
+                $ref: '#/components/schemas/ParseRuleResponse'
+            },
+            type: 'array',
+            title: 'Items'
+        }
+    },
+    type: 'object',
+    required: [
+        'items'
+    ],
+    title: 'ParseRuleListResponse'
+} as const;
+
+export const ParseRuleResponseSchema = {
+    properties: {
+        id: {
+            type: 'integer',
+            title: 'Id'
+        },
+        scope_type: {
+            type: 'string',
+            title: 'Scope Type'
+        },
+        scope_id: {
+            type: 'integer',
+            title: 'Scope Id'
+        },
+        kind: {
+            $ref: '#/components/schemas/RuleKind'
+        },
+        content_type: {
+            $ref: '#/components/schemas/ContentType'
+        },
+        pattern: {
+            type: 'string',
+            title: 'Pattern'
+        },
+        enabled: {
+            type: 'boolean',
+            title: 'Enabled'
+        },
+        created_at: {
+            type: 'string',
+            format: 'date-time',
+            title: 'Created At'
+        },
+        updated_at: {
+            type: 'string',
+            format: 'date-time',
+            title: 'Updated At'
+        }
+    },
+    type: 'object',
+    required: [
+        'id',
+        'scope_type',
+        'scope_id',
+        'kind',
+        'content_type',
+        'pattern',
+        'enabled',
+        'created_at',
+        'updated_at'
+    ],
+    title: 'ParseRuleResponse'
+} as const;
+
+export const ParseRuleUpsertRequestSchema = {
+    properties: {
+        scope_type: {
+            type: 'string',
+            enum: [
+                'global',
+                'library'
+            ],
+            title: 'Scope Type'
+        },
+        scope_id: {
+            type: 'integer',
+            minimum: 0,
+            title: 'Scope Id',
+            default: 0
+        },
+        kind: {
+            $ref: '#/components/schemas/RuleKind'
+        },
+        content_type: {
+            $ref: '#/components/schemas/ContentType'
+        },
+        pattern: {
+            type: 'string',
+            title: 'Pattern'
+        },
+        enabled: {
+            type: 'boolean',
+            title: 'Enabled',
+            default: true
+        }
+    },
+    type: 'object',
+    required: [
+        'scope_type',
+        'kind',
+        'content_type',
+        'pattern'
+    ],
+    title: 'ParseRuleUpsertRequest',
+    description: 'POST 与 PUT 同形 (整体替换); scope_type=global 时 scope_id 恒按 0 落库.\n\n值与 ``PARSE_RULE_SCOPE_GLOBAL`` / ``PARSE_RULE_SCOPE_LIBRARY`` 一致; Literal 不能引用变量.'
+} as const;
+
 export const PathTemplatePlaceholderSchema = {
     properties: {
         name: {
@@ -8204,6 +8318,16 @@ export const RoutineTypeSchema = {
         'semantic_index'
     ],
     title: 'RoutineType'
+} as const;
+
+export const RuleKindSchema = {
+    type: 'string',
+    enum: [
+        'number_keyword',
+        'path_keyword'
+    ],
+    title: 'RuleKind',
+    description: '识别词的两段: 番号关键词先于路径关键词, 是唯一显式优先级.'
 } as const;
 
 export const RuntimePathsSchema = {

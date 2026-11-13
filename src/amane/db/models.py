@@ -17,7 +17,7 @@ from ..library import (
 )
 from ..organize.path_templates import VIDEO_TEMPLATE_DEFAULT, ExtrafanartNameTemplate, PathTemplate
 from ..organize.strm_content import StrmContentTemplate
-from ..parsing import VR_TAGS, ContentType, Mosaic, is_vr
+from ..parsing import VR_TAGS, ContentType, Mosaic, RuleKind, is_vr
 
 
 def _utcnow() -> datetime:
@@ -481,6 +481,49 @@ class ConfigOverride(SQLModel, table=True):
     """配置节名; 只写已实现白名单 (common / naming / nfo), 预留节与 parser 一律拒绝."""
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     """稀疏覆盖; {} 哨兵表示对应模板字段显式取空, 不使用 null."""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+PARSE_RULE_SCOPE_GLOBAL = "global"
+"""parse_rules.scope_type: 全局作用域; scope_id 记 0 而不是 NULL, 见 ParseRule 注释."""
+
+PARSE_RULE_SCOPE_LIBRARY = "library"
+"""parse_rules.scope_type: 库级作用域, scope_id 记 libraries.id."""
+
+RULE_CONTENT_TYPES: tuple[ContentType, ...] = (
+    ContentType.CENSORED,
+    ContentType.UNCENSORED,
+    ContentType.AMATEUR,
+    ContentType.CHINESE,
+    ContentType.WESTERN,
+)
+"""识别词允许判定的类型值域 (规格 §3.1.6); fc2 / hentai 不在识别词值域."""
+
+
+class ParseRule(SQLModel, table=True):
+    """用户自定义识别词: 番号 / 路径关键词按 created_at 顺序覆盖类型判定.
+
+    scope_id 用 0 表示全局而不是 NULL: SQLite 的 UNIQUE 认为 NULL 互不相等,
+    用 NULL 会让「同一全局规则重复插入」不被 UNIQUE 拦截.
+    """
+
+    __tablename__ = "parse_rules"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("scope_type", "scope_id", "kind", "content_type", "pattern", name="uq_parse_rules_scope_rule"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope_type: str = Field(nullable=False)
+    """global (scope_id=0) | library (scope_id=libraries.id)."""
+    scope_id: int = Field(nullable=False)
+    kind: RuleKind = Field(nullable=False)
+    """番号关键词 (匹配识别出的番号) 或路径关键词 (匹配完整路径), 见 parsing.rules.RuleKind."""
+    content_type: ContentType = Field(nullable=False)
+    """命中后判定的类型; 写入值域限 RULE_CONTENT_TYPES."""
+    pattern: str = Field(nullable=False)
+    """字面关键词 (大小写不敏感) 或 r: 前缀的正则; 保存与 ParseRuleSet 构造都经 RE2 编译校验."""
+    enabled: bool = Field(default=True)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

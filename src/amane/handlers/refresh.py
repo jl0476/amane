@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ..db import TaskType
+from ..db.parse_rules import ParseRuleProvider
 from ..library import MEDIA_EXTENSIONS, InventoryStore, LibraryHit, LibraryScan, OrphanScan, scan_inventory
-from ..parsing import parse_file_info
+from ..parsing import ParseRuleSet, parse_file_info
 from ..utils.path import nfc_path
 from ..utils.threads import path_exists, path_is_dir
 from ._common import register_media_file
@@ -30,11 +31,14 @@ class RefreshHandler(TaskHandler[RefreshPayload, RefreshResult]):
         repo: Repository,
         media_extensions: Sequence[str] | None = None,
         inventory_store: InventoryStore | None = None,
+        *,
+        parse_rules: ParseRuleProvider | None = None,
     ):
         super().__init__(payload_t=RefreshPayload, result_t=RefreshResult)
         self._repo = repo
         self._media_extensions = frozenset(media_extensions) if media_extensions else MEDIA_EXTENSIONS
         self._inventory_store = inventory_store
+        self._parse_rules = parse_rules
 
     async def handle(self, payload: RefreshPayload) -> TaskResult[RefreshResult]:
         scan_dir = Path(payload.path)
@@ -133,8 +137,11 @@ class RefreshHandler(TaskHandler[RefreshPayload, RefreshResult]):
 
         # 扇出 SCRAPE; 只描述后继, 由完成事务创建.
         followups = []
+        rules: ParseRuleSet | None = (
+            await self._parse_rules.for_library(payload.library_id) if self._parse_rules is not None else None
+        )
         for f in media_files:
-            parsed = parse_file_info(f.path)
+            parsed = parse_file_info(f.path, rules=rules)
             assert f.id is not None
             assert parsed.number is not None
             followups.append(

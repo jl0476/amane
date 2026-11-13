@@ -37,6 +37,7 @@ from ..models import (
 
 if TYPE_CHECKING:
     from ...db.repository import Repository
+    from ..models.tasks import RulesFor
 
 ResolvedPayload = (
     RefreshPayload
@@ -55,7 +56,10 @@ ResolvedPayload = (
 )
 
 
-async def resolve_submission(req: TaskSubmission, repo: Repository) -> tuple[TaskType, ResolvedPayload]:
+async def resolve_submission(
+    req: TaskSubmission, repo: Repository, *, rules_for: RulesFor | None = None
+) -> tuple[TaskType, ResolvedPayload]:
+    """``rules_for`` 是按库取识别词集的提供者 (Runtime), 只被 SCRAPE 的番号预解析消费."""
     match req:
         case RefreshSubmission():
             await req.resolve(repo)
@@ -69,7 +73,7 @@ async def resolve_submission(req: TaskSubmission, repo: Repository) -> tuple[Tas
             await req.resolve(repo)
             return TaskType.SCAN_INVALID, req
         case ScrapeSubmission():
-            return TaskType.SCRAPE, await req.resolve(repo)
+            return TaskType.SCRAPE, await req.resolve(repo, rules_for=rules_for)
         case CleanupSubmission():
             return TaskType.CLEANUP, CleanupPayload(
                 remove_missing_files=req.remove_missing_files,
