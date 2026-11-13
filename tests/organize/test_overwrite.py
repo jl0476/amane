@@ -356,11 +356,12 @@ async def _journal_for(
     target_file_id: int | None,
     phase: str = "prepared",
 ) -> int:
+    assert source.id is not None
     journal = await repo.create_organize_journal(
         task_id=None,
         mode=MoveMode.MOVE.value,
         source_path=str(source.path),
-        source_file_id=int(source.id),
+        source_file_id=source.id,
         source_oshash=oshash,
         source_size=size,
         source_metadata_id=source.metadata_id,

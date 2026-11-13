@@ -59,6 +59,7 @@ async def _journal_row(
     mode: MoveMode = MoveMode.MOVE,
     source_file_id: int | None = None,
 ) -> int:
+    assert source.id is not None
     journal = await repo.create_organize_journal(
         task_id=None,
         mode=mode.value,
@@ -90,6 +91,7 @@ async def _case_prepared_target_missing_restores_backup(repo: Repository, tmp_pa
     backup = backup_target_path(target, "1")
     _video(backup, CONTENT_TARGET)
     media = await _media_row(repo, source)
+    assert media.id is not None
     await _journal_row(
         repo,
         source=media,
@@ -105,6 +107,7 @@ async def _case_prepared_target_missing_restores_backup(repo: Repository, tmp_pa
     assert target.read_bytes() == CONTENT_TARGET * 8
     assert not backup.exists()
     assert await repo.list_organize_journals() == []
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(source)
 
@@ -119,6 +122,7 @@ async def _case_prepared_target_present_redoes_takeover(repo: Repository, tmp_pa
     size = source.stat().st_size
     # 阶段 A 会把补算指纹写回源行, 恢复的指纹复验以该行为准.
     media = await _media_row(repo, source, number="NSFS-039", oshash=oshash, size=size)
+    assert media.id is not None
     await _journal_row(
         repo,
         source=media,
@@ -134,6 +138,7 @@ async def _case_prepared_target_present_redoes_takeover(repo: Repository, tmp_pa
     assert target.read_bytes() == CONTENT_SOURCE * 8
     assert not backup.exists()
     assert await repo.list_organize_journals() == []
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(target)
 
@@ -143,6 +148,7 @@ async def _case_prepared_backup_missing_cleans_journal(repo: Repository, tmp_pat
     source = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
     target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
     media = await _media_row(repo, source)
+    assert media.id is not None
     await _journal_row(
         repo,
         source=media,
@@ -168,6 +174,7 @@ async def _case_placed_redoes_takeover(repo: Repository, tmp_path: Path) -> None
     oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
     size = source.stat().st_size
     media = await _media_row(repo, source, number="NSFS-039", oshash=oshash, size=size)
+    assert media.id is not None
     await _journal_row(
         repo,
         source=media,
@@ -180,6 +187,7 @@ async def _case_placed_redoes_takeover(repo: Repository, tmp_path: Path) -> None
 
     await recover_organize_journals(repo)
 
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(target)
     assert not backup.exists()
@@ -193,6 +201,7 @@ async def _case_placed_target_missing_restores_backup(repo: Repository, tmp_path
     backup = backup_target_path(target, "1")
     _video(backup, CONTENT_SOURCE)
     media = await _media_row(repo, source)
+    assert media.id is not None
     await _journal_row(
         repo,
         source=media,
@@ -229,6 +238,7 @@ async def _case_committed_cleans_up(repo: Repository, tmp_path: Path) -> None:
         phase=OrganizeJournalPhase.COMMITTED,
     )
     # phase=committed 的前提是接管已提交: 先完成接管 (源行 path 已是目标路径).
+    assert media.id is not None
     await repo.takeover_overwrite_target(journal_id, source_file_id=media.id, oshash=oshash, size=size)
 
     await recover_organize_journals(repo)
@@ -237,6 +247,7 @@ async def _case_committed_cleans_up(repo: Repository, tmp_path: Path) -> None:
     assert not source.exists()
     assert target.read_bytes() == CONTENT_SOURCE * 8
     assert await repo.list_organize_journals() == []
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(target)
 
@@ -293,6 +304,7 @@ async def test_fingerprint_mismatch_blocks_takeover(repo: Repository, tmp_path: 
     assert len(rows) == 1
     assert rows[0].phase == "placed"
     assert rows[0].last_error is not None
+    assert reused.id is not None
     row = await repo.get_media_file(reused.id)
     assert row is not None and row.path != str(target)
 
@@ -301,6 +313,7 @@ async def test_fingerprint_mismatch_blocks_takeover(repo: Repository, tmp_path: 
     await recover_organize_journals(repo)
 
     assert await repo.list_organize_journals() == []
+    assert stand_in.id is not None
     row = await repo.get_media_file(stand_in.id)
     assert row is not None and row.path == str(target)
 
@@ -336,6 +349,7 @@ async def test_target_verification_blocks_cleanup(repo: Repository, tmp_path: Pa
     assert len(rows) == 1 and rows[0].id == placed_id
     assert rows[0].phase == "placed"
     assert rows[0].last_error is not None and "oshash" in rows[0].last_error
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(source)  # 未接管
 
@@ -393,6 +407,7 @@ async def test_takeover_already_done_recovery(repo: Repository, tmp_path: Path) 
 
     assert not backup.exists()
     assert await repo.list_organize_journals() == []
+    assert media.id is not None
     row = await repo.get_media_file(media.id)
     assert row is not None and row.path == str(target)
 
@@ -421,6 +436,7 @@ async def test_cross_fs_source_delete_needs_target_valid(repo: Repository, tmp_p
         phase=OrganizeJournalPhase.COMMITTED,
         mode=mode,
     )
+    assert media.id is not None
     await repo.takeover_overwrite_target(journal_id, source_file_id=media.id, oshash=oshash, size=size)
 
     await recover_organize_journals(repo)
