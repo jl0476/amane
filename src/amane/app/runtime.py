@@ -40,6 +40,7 @@ from ..llm import TranslationCache, TranslationCoalescer, build_translator
 from ..media.watermarks import user_watermark_dir
 from ..net.browser import BrowserPool
 from ..net.http import RateLimiters, WebClient, site_proxy_overrides
+from ..organize import recover_organize_journals
 from ..parsing import ParseRuleSet
 from ..playback import PlaybackFactory, PlaybackState
 from ..plugins.manager import PluginManager
@@ -252,6 +253,7 @@ class AppRuntime:
     _retire_tasks: set[asyncio.Task[None]] = field(default_factory=set, repr=False)
     _closing: bool = field(default=False, repr=False)
     _stopped: bool = field(default=False, repr=False)
+    _journal_recovery_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self._r18_config is None:
@@ -267,6 +269,27 @@ class AppRuntime:
         self._bind_semantic_bridge()
         if self.parse_rules is None:
             self.parse_rules = ParseRuleProvider(self.repo)
+        self._schedule_journal_recovery()
+
+    def _schedule_journal_recovery(self) -> None:
+        """启动恢复扫描: 上次进程中断留下的覆写 journal 行按恢复矩阵处理 (规格 3.4.2).
+
+        构造不在事件循环内 (纯测试构造) 时不安排, 恢复入口可单独调用.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._journal_recovery_task = loop.create_task(self._run_journal_recovery())
+
+    async def _run_journal_recovery(self) -> None:
+        try:
+            recovered = await recover_organize_journals(self.repo)
+        except Exception:
+            logger.warning("organize journal recovery failed", exc_info=True)
+            return
+        if recovered:
+            logger.info("organize journal recovery finished", rows=recovered)
 
     def _parse_rule_provider(self) -> ParseRuleProvider:
         """``parse_rules`` 经 __post_init__ 后不为 None; bootstrap 传入的实例与之同源."""

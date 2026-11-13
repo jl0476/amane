@@ -31,6 +31,7 @@ from ..organize import (
     execute_organize,
     overwrite_target,
     place_subtitles,
+    recover_organize_journals,
     render_extrafanart_names,
     render_strm_content,
     resolve_paths,
@@ -158,6 +159,9 @@ async def execute_file_operations(
     # 读不出目标状态时同样立即返回, 但记为失败而不是冲突.
     # 目标路径必须与 execute_organize 同一算法: 模板写死扩展名时, 模板渲染结果与真实目标不同.
     dest = video_dest(paths.video.parent, paths.video.stem, source_path)
+    # 整理同一目标前就地恢复: 该目标有未完成的覆写时先按恢复矩阵处理, 占用判定基于恢复后的磁盘事实.
+    if repo is not None and await repo.get_organize_journal_by_target(str(dest)) is not None:
+        await recover_organize_journals(repo, target_path=str(dest))
     check = await target_state(source_path, dest)
     if check.state is TargetState.OCCUPIED and not overwrite_video:
         logger.warning("organize target occupied", source=str(source_path), dest=str(dest))

@@ -28,6 +28,15 @@
 - 备份与临时文件名带任务 id (`<目标名>.amane-overwrite-<任务id>` / `.amane-tmp-<任务id>`);
   同一目标同时刻至多一条进行中的覆写, journal 行在案即对后续请求记 `CONFLICT`.
 
+## 中断恢复
+
+恢复入口是 `organize/overwrite.py::recover_organize_journals` (矩阵见模块 docstring), 两处调用:
+`AppRuntime` 初始化时安排一次全量扫描; `execute_file_operations` 在占用判定前对命中 journal 的
+目标就地恢复 —— 占用判定与覆写分派都基于恢复后的磁盘事实. 身份判定用指纹三字段全等
+(按 id → path 次序找候选, 后置复验放行 `path` 已等于 `target_path` 的行, 视为接管已完成);
+目标有效性用同一份 journal 指纹对目标现场重算判定. 恢复失败一律保留 journal 行写 `last_error`
+交人工处理, 各步幂等, 下次启动或下次整理同一目标时重试.
+
 ## 导入边界
 
 `organize/overwrite.py` 不得被 `amane.db` 侧导入: `db.models` 已经导入 organize 包, 反向依赖成环.

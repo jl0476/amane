@@ -32,7 +32,7 @@ from ..utils.threads import in_thread
 from .file import PlaceOutcome
 
 if TYPE_CHECKING:
-    from ..db.models import MediaFile
+    from ..db.models import MediaFile, OrganizeJournal
     from ..db.repository import Repository
 
 logger = structlog.get_logger()
@@ -282,7 +282,7 @@ async def _takeover_and_cleanup(
         return OverwriteResult(PlaceOutcome.FAILED, target, error)
 
     if mode is MoveMode.MOVE:
-        error = await _verify_and_delete_source(source, plan)
+        error = await _verify_and_delete_source(source, plan.source_oshash, plan.source_size)
         if error is not None:
             await _record_error(repo, plan.journal_id, error)
             return OverwriteResult(PlaceOutcome.FAILED, target, error)
@@ -306,12 +306,12 @@ async def _verify_fingerprint(path: Path, expected_oshash: str, expected_size: i
     return None
 
 
-async def _verify_and_delete_source(source: Path, plan: _JournalPlan) -> str | None:
+async def _verify_and_delete_source(source: Path, expected_oshash: str, expected_size: int) -> str | None:
     """mode=move 的源删除: 现场重算指纹全等才删除, 拦下源路径被其它文件占用时误删."""
-    if await _file_size(source) is None:
+    if not await _is_file(source):
         # 源已不在磁盘 (同文件系统 move 在提交点已消失): 无可删除.
         return None
-    error = await _verify_fingerprint(source, plan.source_oshash, plan.source_size, label="源")
+    error = await _verify_fingerprint(source, expected_oshash, expected_size, label="源")
     if error is not None:
         return error
     try:
@@ -319,6 +319,14 @@ async def _verify_and_delete_source(source: Path, plan: _JournalPlan) -> str | N
     except OSError as e:
         return f"源删除失败: {e}"
     return None
+
+
+@in_thread
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 @in_thread
@@ -366,3 +374,247 @@ async def _record_error(repo: Repository, journal_id: int, error: str) -> None:
 async def _record_error_quietly(repo: Repository, journal_id: int, error: str) -> None:
     with suppress(Exception):
         await repo.update_organize_journal(journal_id, last_error=error)
+
+
+# --- 中断恢复 (规格 3.4.2 恢复矩阵) ---
+
+
+async def recover_organize_journals(repo: Repository, *, target_path: str | None = None) -> int:
+    """恢复扫描入口: 逐行按恢复矩阵处理未完成的覆写, 返回处理的行数.
+
+    两处调用: 应用启动时的全量扫描 (AppRuntime 初始化安排), 以及整理同一目标前的就地恢复
+    (``target_path`` 限定该目标). 每行独立处理, 单行失败保留 journal 行写 ``last_error``,
+    不影响其它行; 各步幂等, 下次扫描重试.
+    """
+    rows = await repo.list_organize_journals()
+    if target_path is not None:
+        wanted = nfc_path(target_path)
+        rows = [row for row in rows if row.target_path == wanted]
+    for row in rows:
+        try:
+            await _recover_one(repo, row)
+        except Exception as e:
+            logger.warning("journal recovery failed", journal_id=row.id, target=row.target_path, error=str(e))
+            await _record_error(repo, row.id if row.id is not None else 0, f"恢复失败: {e}")
+    return len(rows)
+
+
+async def _recover_one(repo: Repository, journal: OrganizeJournal) -> None:
+    journal_id = journal.id
+    assert journal_id is not None
+    target = Path(journal.target_path)
+    backup = Path(journal.backup_path)
+    mode = MoveMode(journal.mode)
+    oshash = journal.source_oshash
+    size = journal.source_size
+    if oshash is None or size is None:
+        # 没有指纹无法核验任何磁盘事实, 保留记录交人工处理.
+        await _record_error(repo, journal_id, "恢复失败: journal 缺少源指纹, 无法复验")
+        return
+    phase = OrganizeJournalPhase(journal.phase)
+    if phase is OrganizeJournalPhase.PREPARED:
+        await _recover_prepared(repo, journal, target=target, backup=backup, mode=mode, oshash=oshash, size=size)
+    elif phase is OrganizeJournalPhase.PLACED:
+        await _recover_placed(repo, journal, target=target, backup=backup, mode=mode, oshash=oshash, size=size)
+    else:
+        await _recover_cleanup(
+            repo,
+            journal_id,
+            source=Path(journal.source_path),
+            target=target,
+            backup=backup,
+            mode=mode,
+            oshash=oshash,
+            size=size,
+        )
+
+
+async def _recover_prepared(
+    repo: Repository,
+    journal: OrganizeJournal,
+    *,
+    target: Path,
+    backup: Path,
+    mode: MoveMode,
+    oshash: str,
+    size: int,
+) -> None:
+    journal_id = journal.id
+    assert journal_id is not None
+    target_present = await _is_file(target)
+    backup_present = await _is_file(backup)
+    if not target_present and backup_present:
+        # 回滚: 备份恢复为目标, 清理临时文件, 删 journal.
+        try:
+            await _rename_target_to_backup(backup, target)
+        except OSError as e:
+            await _record_error(repo, journal_id, f"恢复回滚失败: {e}")
+            return
+        await _cleanup_tmp(target, backup)
+        await _delete_journal(repo, journal_id)
+        return
+    if target_present and backup_present:
+        # 目标与备份并存, 磁盘无法区分新旧: 按新内容处理, 目标核验通过后接管.
+        error = await _verify_fingerprint(target, oshash, size, label="目标")
+        if error is not None:
+            await _record_error(repo, journal_id, error)
+            return
+        await _recover_takeover(repo, journal, target=target, backup=backup, mode=mode, oshash=oshash, size=size)
+        return
+    # 备份缺失: 视为回滚已完成或未开始, 清理临时文件与 journal 行.
+    await _cleanup_tmp(target, backup)
+    await _delete_journal(repo, journal_id)
+
+
+async def _recover_placed(
+    repo: Repository,
+    journal: OrganizeJournal,
+    *,
+    target: Path,
+    backup: Path,
+    mode: MoveMode,
+    oshash: str,
+    size: int,
+) -> None:
+    journal_id = journal.id
+    assert journal_id is not None
+    if not await _is_file(target):
+        # 目标被外部删除, 无法接管: 恢复备份为目标, 删除 journal.
+        if await _is_file(backup):
+            try:
+                await _rename_target_to_backup(backup, target)
+            except OSError as e:
+                await _record_error(repo, journal_id, f"恢复备份失败: {e}")
+                return
+        await _delete_journal(repo, journal_id)
+        return
+    error = await _verify_fingerprint(target, oshash, size, label="目标")
+    if error is not None:
+        # 目标内容已与覆写时不一致: 禁止接管与删源, 交人工处理.
+        await _record_error(repo, journal_id, error)
+        return
+    await _recover_takeover(repo, journal, target=target, backup=backup, mode=mode, oshash=oshash, size=size)
+
+
+async def _recover_takeover(
+    repo: Repository,
+    journal: OrganizeJournal,
+    *,
+    target: Path,
+    backup: Path,
+    mode: MoveMode,
+    oshash: str,
+    size: int,
+) -> None:
+    """指纹复验找源行并重做接管; 已完成接管的行 (后置复验) 直接进清理分支."""
+    journal_id = journal.id
+    assert journal_id is not None
+    row, done, mismatch = await _resolve_source_row(repo, journal)
+    if row is None or row.id is None:
+        await _record_error(repo, journal_id, f"恢复失败: 指纹复验全部失败 ({mismatch})")
+        return
+    if not done:
+        try:
+            await repo.takeover_overwrite_target(journal_id, source_file_id=row.id, oshash=oshash, size=size)
+        except Exception as e:
+            await _record_error(repo, journal_id, f"恢复接管失败: {e}")
+            return
+    await _recover_cleanup(
+        repo,
+        journal_id,
+        source=Path(journal.source_path),
+        target=target,
+        backup=backup,
+        mode=mode,
+        oshash=oshash,
+        size=size,
+    )
+
+
+async def _resolve_source_row(repo: Repository, journal: OrganizeJournal) -> tuple[MediaFile | None, bool, str]:
+    """按 id → path 次序找指纹全等的源行; 返回 (行, 是否已完成接管, 复验明细).
+
+    指纹 = (path, oshash, size), 三项全等才命中, 没有 NULL 跳过分支 (journal 指纹恒非空,
+    缺失在 _recover_one 已拦截). 后置复验: 候选行指纹全等且 path 已等于 target_path,
+    视为接管已完成, 交清理分支的目标核验. 复验全部失败返回 (None, False, 明细), journal 保留.
+    """
+    source_path = nfc_path(journal.source_path)
+    target_path = nfc_path(journal.target_path)
+    expected_oshash = journal.source_oshash
+    expected_size = journal.source_size
+    assert expected_oshash is not None and expected_size is not None
+    mismatches: list[str] = []
+    candidates: list[tuple[str, MediaFile | None]] = [
+        (
+            f"id={journal.source_file_id}",
+            await repo.get_media_file(journal.source_file_id) if journal.source_file_id is not None else None,
+        ),
+        (f"path={journal.source_path}", await repo.get_media_file_by_path(source_path)),
+    ]
+    for label, candidate in candidates:
+        if candidate is None or candidate.id is None:
+            mismatches.append(f"{label}: 行不存在")
+            continue
+        if candidate.oshash != expected_oshash or candidate.size != expected_size:
+            mismatches.append(f"{label}: oshash={candidate.oshash!r} size={candidate.size!r} 与期望不等")
+            continue
+        if candidate.path == target_path:
+            return candidate, True, ""
+        if candidate.path == source_path:
+            return candidate, False, ""
+        mismatches.append(f"{label}: path={candidate.path!r} 既非源路径也非目标路径")
+    detail = "; ".join(mismatches)
+    logger.warning("journal fingerprint mismatch", journal_id=journal.id, detail=detail)
+    return None, False, detail
+
+
+async def _recover_cleanup(
+    repo: Repository,
+    journal_id: int,
+    *,
+    source: Path,
+    target: Path,
+    backup: Path,
+    mode: MoveMode,
+    oshash: str,
+    size: int,
+) -> None:
+    """committed 的清理分支: 目标核验 → 删备份 → 再核验目标 → (move) 核验并删源 → 删 journal."""
+    error = await _verify_fingerprint(target, oshash, size, label="目标")
+    if error is not None:
+        # 目标缺失 / 不等 / 不可读: 源与备份可能就是最后的有效副本, 一律保留.
+        await _record_error(repo, journal_id, error)
+        return
+    if await _is_file(backup):
+        try:
+            await _unlink_residual(backup)
+        except OSError as e:
+            await _record_error(repo, journal_id, f"备份删除失败: {e}")
+            return
+    await _cleanup_tmp(target, backup)
+    # 删源前再次核验目标, 覆盖上一步前后目标被外部改写的窗口.
+    error = await _verify_fingerprint(target, oshash, size, label="目标")
+    if error is not None:
+        await _record_error(repo, journal_id, error)
+        return
+    if mode is MoveMode.MOVE:
+        error = await _verify_and_delete_source(source, oshash, size)
+        if error is not None:
+            await _record_error(repo, journal_id, error)
+            return
+    await _delete_journal(repo, journal_id)
+
+
+def _tmp_from_backup(target: Path, backup: Path) -> Path | None:
+    prefix = f"{target.name}{BACKUP_MARK}"
+    if not backup.name.startswith(prefix):
+        return None
+    return overwrite_tmp_path(target, backup.name[len(prefix) :])
+
+
+async def _cleanup_tmp(target: Path, backup: Path) -> None:
+    """清理残留的 .amane-tmp-<任务id> 临时文件; 名字对不上时无从推算, 忽略."""
+    tmp = _tmp_from_backup(target, backup)
+    if tmp is not None:
+        with suppress(OSError):
+            await _unlink_residual(tmp)

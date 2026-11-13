@@ -1067,7 +1067,7 @@ async def test_occupied_dispatch_by_overwrite_video(
 async def test_overwrite_conflict_when_journal_in_flight(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
-    """同一目标已有进行中的覆写 (journal 在案) → 记冲突, 不动磁盘."""
+    """同一目标已有进行中的覆写 (journal 核验不过被保留) → 就地恢复无法收敛, 记冲突, 不动磁盘."""
     lib_root = tmp_path / "lib"
     src_dir = lib_root / "incoming"
     src_dir.mkdir(parents=True)
@@ -1077,6 +1077,8 @@ async def test_overwrite_conflict_when_journal_in_flight(
     dest_dir.mkdir(parents=True)
     target = dest_dir / "NSFS-039.mp4"
     target.write_bytes(OVERWRITE_OCCUPANT * 8)
+    backup = target.parent / f"{target.name}.amane-overwrite-1"
+    backup.write_bytes(OVERWRITE_OCCUPANT * 8)
 
     lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
     assert lib.id is not None
@@ -1087,6 +1089,7 @@ async def test_overwrite_conflict_when_journal_in_flight(
         lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
     )
     assert media.id is not None
+    # 进行中的覆写: journal 指纹与磁盘事实不符, 就地恢复核验不过, 行保留 (转人工).
     await repo.create_organize_journal(
         task_id=None,
         mode=MoveMode.MOVE.value,
@@ -1098,7 +1101,7 @@ async def test_overwrite_conflict_when_journal_in_flight(
         source_number=None,
         target_path=str(target),
         target_file_id=None,
-        backup_path=str(target.parent / f"{target.name}.amane-overwrite-1"),
+        backup_path=str(backup),
     )
 
     org = _organize_handler(repo, resource_store)
@@ -1109,6 +1112,8 @@ async def test_overwrite_conflict_when_journal_in_flight(
     assert result.result.overwritten == 0
     assert target.read_bytes() == OVERWRITE_OCCUPANT * 8
     assert src.read_bytes() == OVERWRITE_SOURCE * 8
+    rows = await repo.list_organize_journals()
+    assert len(rows) == 1 and rows[0].last_error is not None
 
 
 @pytest.mark.parametrize("overwrite_image", [False, True])

@@ -7,6 +7,7 @@ from .overwrite import (
     current_task_id,
     overwrite_target,
     overwrite_tmp_path,
+    recover_organize_journals,
 )
 from .path_templates import (
     ALL_SIDECARS,
@@ -63,6 +64,7 @@ __all__ = [
     "overwrite_target",
     "overwrite_tmp_path",
     "place_subtitles",
+    "recover_organize_journals",
     "render_extrafanart_names",
     "render_path_template",
     "render_strm_content",
