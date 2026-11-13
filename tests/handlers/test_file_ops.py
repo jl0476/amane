@@ -1068,7 +1068,8 @@ async def test_occupied_dispatch_by_overwrite_video(
 async def test_overwrite_conflict_when_journal_in_flight(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
-    """同一目标已有进行中的覆写 (journal 核验不过被保留) → 就地恢复无法收敛, 记冲突, 不动磁盘."""
+    """同一目标已有进行中的覆写 (journal 核验不过被保留) → 恢复无法收敛: 引用的源行受保护
+    跳过本次整理, journal 与磁盘保持原状, 等人工处理 (联合审核 P1 修复后的契约)."""
     lib_root = tmp_path / "lib"
     src_dir = lib_root / "incoming"
     src_dir.mkdir(parents=True)
@@ -1109,8 +1110,13 @@ async def test_overwrite_conflict_when_journal_in_flight(
     result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
     assert result.success is True
     assert result.result is not None
-    assert result.result.conflicted == 1
+    # prune 前的恢复核验不过 → journal 保留; 引用的源行受保护跳过, 不再发起覆写.
+    assert result.result.conflicted == 0
+    assert result.result.skipped >= 1
     assert result.result.overwritten == 0
+    assert target.read_bytes() == OVERWRITE_OCCUPANT * 8
+    rows = await repo.list_organize_journals()
+    assert len(rows) == 1 and rows[0].last_error is not None
     assert target.read_bytes() == OVERWRITE_OCCUPANT * 8
     assert src.read_bytes() == OVERWRITE_SOURCE * 8
     rows = await repo.list_organize_journals()

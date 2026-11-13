@@ -110,7 +110,6 @@ export function OverridesEditor({ libraryId }: { libraryId: number }) {
           section={section}
           rowPayload={rows[section]}
           sectionSchema={resolvedSchema.properties?.[section]}
-          globalValues={globalValuesQuery.data?.[section]}
           effective={effectiveQuery.data?.[section]}
           saving={putMutation.isPending || deleteMutation.isPending}
           onSave={(payload) =>
@@ -129,8 +128,6 @@ interface SectionBlockProps {
   rowPayload: Record<string, unknown> | undefined;
   /** HotSettings schema 中该 section 的 (已解引用) 子 schema. */
   sectionSchema: JSONSchemaObject | undefined;
-  /** 全局配置值 (合成基准: 与全局同值的键不落覆盖行). */
-  globalValues: Record<string, unknown> | undefined;
   /** 三节合成后的生效值 (编辑器初值的无覆盖键来源). */
   effective: unknown;
   saving: boolean;
@@ -142,7 +139,6 @@ function SectionBlock({
   section,
   rowPayload,
   sectionSchema,
-  globalValues,
   effective,
   saving,
   onSave,
@@ -180,12 +176,8 @@ function SectionBlock({
       // 表单把可空模板字段清空编码为 null; 覆盖 payload 以 {} 表达显式取空.
       merged[key] = value === null ? {} : value;
     }
-    // 与全局同值的键不落覆盖行: 继承即得同值, 留在行里只会在全局变化后钉死旧值.
-    for (const key of Object.keys(merged)) {
-      if (deepEqual(merged[key], globalValues?.[key])) {
-        delete merged[key];
-      }
-    }
+    // 显式值全部保留, 与全局同值也不例外 (联合审核 P2): 全局与覆盖行之间还有库行一层,
+    // 「覆盖为全局同值」是钉住当前值的表达, 删键会让生效值回落到库行. 回到继承走继承开关.
     if (Object.keys(merged).length > 0) {
       onSave(merged);
     } else if (rowPayload != null) {

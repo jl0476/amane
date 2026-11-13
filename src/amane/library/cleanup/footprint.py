@@ -34,6 +34,7 @@ from .inventory import (
 )
 
 if TYPE_CHECKING:
+    from ...config import NamingConfig
     from ...db.models import Library, MediaFile, Metadata
 
 logger = structlog.get_logger()
@@ -77,12 +78,15 @@ def build_footprint(
     metas: Mapping[int, Metadata],
     include_work_dir: bool,
     rules: ParseRuleSet | None = None,
+    naming: NamingConfig | None = None,
     limit: int = MAX_INVENTORY_ENTRIES,
 ) -> FootprintOutcome:
     """由选中的媒体文件展开显式来源清单; 只读磁盘, 不访问数据库.
 
     展开含整目录递归与逐项 stat, 因此与其他库内 I/O 一样经 ``in_thread``.
     ``rules`` 是该库的识别词集 (调用方注入), 供模板反解的那次路径解析使用.
+    ``naming`` 是该库的生效命名配置 (调用方注入): 反解必须与整理同一套模板 (联合审核 P2),
+    覆盖配置或继承的全局模板都经它生效; None 维持按库行取值.
     """
     assert library.id is not None
     root = Path(library.path)
@@ -126,7 +130,7 @@ def build_footprint(
 
     for item in items:
         add(Path(item.path), indexed_file=True)
-        _add_products(library, item, metas, add=add, notices=notices, rules=rules)
+        _add_products(library, item, metas, add=add, notices=notices, rules=rules, naming=naming)
         if not include_work_dir:
             _add_subtitles(library, Path(item.path), add=add)
             continue
@@ -189,6 +193,7 @@ def _add_products(
     add: _Add,
     notices: list[FootprintNotice],
     rules: ParseRuleSet | None = None,
+    naming: NamingConfig | None = None,
 ) -> None:
     """按路径模板反解刮削产物: 产物位置由模板决定, 与视频文件名没有对应关系.
 
@@ -208,6 +213,7 @@ def _add_products(
             file_info=parse_file_info(item.path, rules=rules),
             safe_dirs=None,
             move_mode=library.move_mode,
+            naming=naming,
         )
     except ValueError as exc:
         notices.append(FootprintNotice(FootprintNoticeKind.TEMPLATE_ERROR, path=source, detail=str(exc)))

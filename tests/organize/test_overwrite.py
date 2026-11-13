@@ -598,3 +598,35 @@ async def test_takeover_reentry_with_source_at_target(repo: Repository, tmp_path
     assert row is not None and row.path == str(target) and row.number == "NSFS-039"
     journal = await repo.get_organize_journal(journal_id)
     assert journal is not None and journal.phase == "committed"
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_uses_live_content_not_cached(
+    repo: Repository, tmp_path: Path
+) -> None:
+    """行缓存的 oshash/size 过期 (源被外部改写) 时, 阶段 A 按现场内容覆写与核验 (联合审核 P2).
+
+    源与目标等长不同内容: 行里的旧指纹与目标相等, 若按缓存核验会在目标核验处失败;
+    现场读取后按新内容覆写, 接管行的 oshash/size 必须是新指纹.
+    """
+    source = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    stale_oshash = _fingerprint(tmp_path, CONTENT_TARGET)
+    stale_size = target.stat().st_size
+    media = await repo.create_media_file(1, path=str(source), oshash=stale_oshash, size=stale_size)
+    assert media.id is not None
+    live_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
+    live_size = source.stat().st_size
+    assert (stale_oshash, stale_size) != (live_oshash, live_size)
+
+    result = await overwrite_target(
+        source=source, target=target, mode=MoveMode.MOVE, repo=repo, media_file=media, task_id=11
+    )
+
+    assert result.outcome is PlaceOutcome.PLACED
+    assert target.read_bytes() == CONTENT_SOURCE * 8
+    updated = await repo.get_media_file(media.id)
+    assert updated is not None and updated.path == str(target)
+    assert updated.oshash == live_oshash
+    assert updated.size == live_size
+    assert await repo.list_organize_journals() == []

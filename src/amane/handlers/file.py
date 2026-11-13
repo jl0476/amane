@@ -11,7 +11,7 @@ from ..config.overrides import ConfigResolver
 from ..db.models import Library, MediaFile
 from ..db.parse_rules import ParseRuleProvider
 from ..db.repo_types import MediaFileUpdates
-from ..enums import ActorGender, DownloadableResource, LinkMode
+from ..enums import ActorGender, DownloadableResource, LinkMode, OrganizeJournalPhase
 from ..library import MEDIA_EXTENSIONS, LibraryFileKind, LibraryScan, ancestor_dirs, prune_empty_dirs
 from ..library.rules import is_in_trash
 from ..media import NfoOptions, ResourceStore, allows_poster_crop, apply_cover_watermarks_from_info, crop_poster
@@ -730,6 +730,16 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
             min_file_size=library.min_file_size,
             media_extensions=media_extensions,
         )
+        # 清理缺失索引之前先恢复本库的覆写 journal (联合审核 P1): 同文件系统 MOVE 已落位而
+        # 接管失败时, 源路径已消失 —— 若先清理, 源索引行被删, 恢复将永久找不到源行.
+        # 只处理本库目标 (其它库任务正在写入的 journal 不在本次锁保护范围内, 不触碰).
+        await recover_organize_journals(self._repo, library_root=library_root)
+        # 双保险: 仍未完成的 journal (恢复失败保留的行) 引用的源行受保护, 缺失也不清理.
+        protected_source_ids = {
+            row.source_file_id
+            for row in await self._repo.list_organize_journals()
+            if row.phase is not OrganizeJournalPhase.COMMITTED and row.source_file_id is not None
+        }
         live: list[MediaFile] = []
         prune_total = len(indexed)
         if prune_total:
@@ -738,6 +748,11 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                 if mf.id is not None:
                     mf_path = Path(mf.path)
                     missing = await existing_disk_path(mf_path, follow_symlinks=False) is None
+                    if mf.id in protected_source_ids:
+                        # 恢复所需的源行: 缺失也不删, 保留交恢复矩阵; 不进入本次整理.
+                        skipped += 1
+                        await self.report_progress(i, prune_total, "prune")
+                        continue
                     if missing or not is_descendant(mf_path, library_root) or is_in_trash(mf_path):
                         await self._repo.delete_media_file(mf.id)
                     else:

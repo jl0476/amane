@@ -19,6 +19,7 @@ from amane.organize import PlaceOutcome, ResolvedPaths
 from amane.organize.overwrite import backup_target_path, recover_organize_journals
 from amane.parsing import parse_file_info
 from amane.utils.oshash import compute_oshash
+from amane.utils.path import nfc_path
 
 MIN_HASHABLE_SIZE = 128 * 1024
 CONTENT_SOURCE = b"A" * 4096 + bytes(range(256)) * 48 + b"tail-a" + b"x" * 4096
@@ -503,3 +504,81 @@ async def test_in_place_recovery_runs_before_organize(
     assert await repo.list_organize_journals() == []
     assert result.outcome is PlaceOutcome.CONFLICT
     assert result.conflict_target == target
+
+
+def test_bootstrap_recovers_before_worker_claims() -> None:
+    """启动顺序契约 (联合审核 P1): start_app 内恢复必须先于 worker 认领任务.
+
+    后台并发会把正在落盘的新 journal 误当作中断遗留, 令回滚与正常落盘交错.
+    """
+    import ast
+    import inspect
+
+    from amane.app import bootstrap
+
+    tree = ast.parse(inspect.getsource(bootstrap.start_app))
+    recover_line: int | None = None
+    worker_start_line: int | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else getattr(node.func, "attr", None)
+            )
+            if name == "recover_organize_journals" and recover_line is None:
+                recover_line = node.lineno
+            if (
+                name == "start"
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "worker"
+                and worker_start_line is None
+            ):
+                worker_start_line = node.lineno
+    assert recover_line is not None, "start_app 未调用启动恢复扫描"
+    assert worker_start_line is not None, "start_app 未启动 worker"
+    assert recover_line < worker_start_line, "恢复扫描必须先于 worker.start()"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_recovery_library_root_filter(repo: Repository, tmp_path: Path) -> None:
+    """library_root 限定只处理本库目标; 其它库的 journal 行原样保留 (跨库锁外不触碰)."""
+    other_dir = _video(tmp_path / "other" / "T.mp4", CONTENT_TARGET)
+    own_target = tmp_path / "lib" / "own.mp4"
+    own_dir = _video(tmp_path / "lib" / "own-src.mp4", CONTENT_SOURCE)
+    await repo.create_media_file(1, path=str(own_dir))
+    other_media = await repo.create_media_file(2, path=str(other_dir))
+    assert other_media.id is not None
+    await repo.create_organize_journal(
+        task_id=None,
+        mode="move",
+        source_path=str(own_dir),
+        source_file_id=None,
+        source_oshash="0" * 16,
+        source_size=own_dir.stat().st_size,
+        source_metadata_id=None,
+        source_number=None,
+        target_path=str(own_target),
+        target_file_id=None,
+        backup_path=str(own_target.parent / "own.mp4.amane-overwrite-x"),
+    )
+    await repo.create_organize_journal(
+        task_id=None,
+        mode="copy",
+        source_path=str(other_dir),
+        source_file_id=other_media.id,
+        source_oshash="1" * 16,
+        source_size=other_dir.stat().st_size,
+        source_metadata_id=None,
+        source_number=None,
+        target_path=str(tmp_path / "other" / "T2.mp4"),
+        target_file_id=None,
+        backup_path=str(tmp_path / "other" / "T2.mp4.amane-overwrite-x"),
+    )
+
+    recovered = await recover_organize_journals(repo, library_root=tmp_path / "lib")
+
+    assert recovered == 1
+    rows = await repo.list_organize_journals()
+    assert [row.target_path for row in rows] == [nfc_path(str(tmp_path / "other" / "T2.mp4"))]

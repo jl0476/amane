@@ -485,3 +485,37 @@ async def test_default_options_ignore_original_fields(tmp_path: Path) -> None:
     assert await write_nfo(entry, nfo_path, NfoOptions()) is True
 
     assert nfo_path.read_text(encoding="utf-8") == GOLDEN
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("options", "expected_name", "expect_set"),
+    [
+        (NfoOptions(), "Series Y", True),
+        (NfoOptions(set_by_actress=True), "Actor A", True),
+        (NfoOptions(set_by_serial_name=True), "MIDV", True),
+        (NfoOptions(set_by_actress=True, set_by_serial_name=True), "Actor A", True),
+    ],
+)
+async def test_set_collection_source_selection(
+    tmp_path: Path, options: NfoOptions, expected_name: str, expect_set: bool
+) -> None:
+    """<set><name> 按 set_by_* 顺序选来源: 演员首位 → 番号前缀 → 系列 (联合审核 P2)."""
+    meta = full_metadata().model_copy(update={"actors": ["Actor A", "Actor B"]})
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(meta, nfo_path, options) is True
+
+    content = nfo_path.read_text(encoding="utf-8")
+    assert (f"<name>{expected_name}</name>" in content) is expect_set
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_set_sources_all_empty_writes_no_set(tmp_path: Path) -> None:
+    """set_by_actress 开启但无演员、无系列 → 无可用来源, 不写 <set>."""
+    meta = full_metadata().model_copy(update={"actors": [], "series": None})
+    nfo_path = tmp_path / "MIDV-123.nfo"
+
+    assert await write_nfo(meta, nfo_path, NfoOptions(set_by_actress=True)) is True
+
+    assert "<set>" not in nfo_path.read_text(encoding="utf-8")

@@ -8,6 +8,7 @@ import aiofiles
 import structlog
 from pydantic import BaseModel
 
+from ..parsing import split_number
 from ..utils.text import strip_illegal_xml_chars
 
 if TYPE_CHECKING:
@@ -53,6 +54,21 @@ def _title_with_number(number: str, title: str) -> str:
 
 # outline 摘要的分隔符: 句号 / 问号 / 叹号 / 换行, 多个分隔符以最早出现者为准.
 _SUMMARY_SEPARATORS: tuple[str, ...] = ("。", "？", "！", "\n")
+
+
+def _set_collection_name(metadata: Metadata, options: NfoOptions) -> str | None:
+    """``<set><name>`` 的集合来源选择 (规格 3.4.3): 按 set_by_* 顺序取第一个非空来源.
+
+    顺序 演员首位 → 番号前缀 → 系列; 全部未开启或来源为空时回退 ``metadata.series``
+    (默认开关全 False 即现状: 集合名 = 系列, 输出不变). 没有任何可用来源时不写 ``<set>``.
+    """
+    if options.set_by_actress and metadata.actors:
+        return metadata.actors[0]
+    if options.set_by_serial_name and metadata.number:
+        prefix = split_number(metadata.number)[0]
+        if prefix:
+            return prefix
+    return metadata.series or None
 _SUMMARY_MAX_BYTES = 120
 
 # 元素名可用字符: cache_key 里的 ``:`` (多语言站) 与空格等字符会使元素名无法解析, 一律替换为 ``_``.
@@ -226,12 +242,13 @@ async def write_nfo(metadata: Metadata, nfo_path: Path, options: NfoOptions | No
         if options.runtime and metadata.runtime is not None:
             code.write(f"  <runtime>{metadata.runtime}</runtime>\n")
 
-        if metadata.series:
-            if options.series:
-                code.write(f"  <series>{_escape_xml(metadata.series)}</series>\n")
-            if options.set:
+        if metadata.series and options.series:
+            code.write(f"  <series>{_escape_xml(metadata.series)}</series>\n")
+        if options.set:
+            set_name = _set_collection_name(metadata, options)
+            if set_name:
                 code.write("  <set>\n")
-                code.write(f"    <name>{_escape_xml(metadata.series)}</name>\n")
+                code.write(f"    <name>{_escape_xml(set_name)}</name>\n")
                 code.write("  </set>\n")
 
         if metadata.studio:

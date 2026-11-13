@@ -125,7 +125,8 @@ async def test_preview_supports_media_file_id_and_global_default(
         json={"number": "ABC-123", "studio": "StudioX", "source_path": "/media/115/ABC-123-U.mp4"},
     )
     assert resp.status_code == 200
-    assert Path(resp.json()["video"]) == Path(os.path.abspath("/StudioX/ABC-123/ABC-123.mp4"))
+    expected = Path(os.path.abspath("/StudioX/ABC-123/ABC-123.mp4"))  # noqa: PTH100 — 与实现的 lexical abspath 同口径
+    assert Path(resp.json()["video"]) == expected
 
     # 不存在的 media_file_id → 404
     resp = await client.post("libraries/naming/preview", json={"media_file_id": 99999})

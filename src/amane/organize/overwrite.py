@@ -27,7 +27,7 @@ import structlog
 
 from ..enums import MoveMode, OrganizeJournalPhase
 from ..utils.oshash import compute_oshash
-from ..utils.path import nfc_path
+from ..utils.path import is_descendant, nfc_path
 from ..utils.threads import in_thread
 from .file import PlaceOutcome
 
@@ -129,12 +129,11 @@ async def _prepare(
     source_file_id = media_file.id
     if source_file_id is None:
         return OverwriteResult(PlaceOutcome.FAILED, target, "覆写要求源文件已入库")
-    oshash = media_file.oshash
-    size = media_file.size
-    if oshash is None:
-        oshash = await compute_oshash(source)
-    if size is None:
-        size = await _file_size(source)
+    # 指纹一律现场读取, 不使用行缓存 (联合审核 P2): 索引建立后源文件被外部修改时,
+    # 缓存值描述的是旧内容 —— MOVE 会移走改过的源, 再因目标与旧指纹不符而失败,
+    # 恢复也以同一旧指纹复验而持续失败. 现场值才是本次覆写要搬运并核验的内容.
+    oshash = await compute_oshash(source)
+    size = await _file_size(source)
     if oshash is None or size is None:
         # 视频文件不该读不出指纹, 不构成有效覆写对象.
         return OverwriteResult(PlaceOutcome.FAILED, target, f"无法读取源文件指纹, 放弃覆写: {source}")
@@ -379,17 +378,23 @@ async def _record_error_quietly(repo: Repository, journal_id: int, error: str) -
 # --- 中断恢复 (规格 3.4.2 恢复矩阵) ---
 
 
-async def recover_organize_journals(repo: Repository, *, target_path: str | None = None) -> int:
+async def recover_organize_journals(
+    repo: Repository, *, target_path: str | None = None, library_root: Path | None = None
+) -> int:
     """恢复扫描入口: 逐行按恢复矩阵处理未完成的覆写, 返回处理的行数.
 
-    两处调用: 应用启动时的全量扫描 (AppRuntime 初始化安排), 以及整理同一目标前的就地恢复
-    (``target_path`` 限定该目标). 每行独立处理, 单行失败保留 journal 行写 ``last_error``,
-    不影响其它行; 各步幂等, 下次扫描重试.
+    三处调用: 应用启动时的全量扫描 (bootstrap 在 worker 认领前顺序 await), 以及整理同一目标
+    前的就地恢复 (``target_path`` 限定该目标), 整理任务清理缺失索引前 (``library_root``
+    限定本库, 避免触碰其它库任务正在写入的 journal 行). 每行独立处理, 单行失败保留
+    journal 行写 ``last_error``, 不影响其它行; 各步幂等, 下次扫描重试.
     """
     rows = await repo.list_organize_journals()
     if target_path is not None:
         wanted = nfc_path(target_path)
         rows = [row for row in rows if row.target_path == wanted]
+    elif library_root is not None:
+        root = nfc_path(str(library_root))
+        rows = [row for row in rows if is_descendant(row.target_path, root)]
     for row in rows:
         try:
             await _recover_one(repo, row)

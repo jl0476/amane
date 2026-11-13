@@ -340,3 +340,36 @@ class TestFootprint:
         paths = {entry.path for entry in outcome.inventory.entries}
         assert video in paths
         assert not any(path.name == "secret.nfo" for path in paths)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_naming_override_drives_product_paths(self, repo: Repository, tmp_path: Path) -> None:
+        """清理清单反解与整理共用生效命名配置 (联合审核 P2): 覆盖模板改产物目录后清单跟着变."""
+        from amane.config import NamingConfig
+
+        lib, metas, item, _video = await self._seed(repo, tmp_path)
+        naming = NamingConfig(video_template="ov-{number}/{number}.mp4")
+        # 覆盖模板的产物先在磁盘上落位 (清单只登记存在的路径).
+        ov_dir = Path(lib.path) / "ov-NSFS-039"
+        ov_dir.mkdir()
+        (ov_dir / "NSFS-039.nfo").write_text("<movie/>", encoding="utf-8")
+
+        outcome = build_footprint.sync(
+            library=lib,
+            items=[item],
+            indexed=[item],
+            metas=metas,
+            include_work_dir=False,
+            naming=naming,
+        )
+
+        names = sorted(entry.path.as_posix() for entry in outcome.inventory.entries)
+        assert any("ov-NSFS-039/NSFS-039.nfo" in name for name in names), names
+        # 不带 naming 时按库行模板反解, 不出现覆盖目录.
+        baseline = build_footprint.sync(
+            library=lib,
+            items=[item],
+            indexed=[item],
+            metas=metas,
+            include_work_dir=False,
+        )
+        assert all("ov-NSFS-039" not in entry.path.as_posix() for entry in baseline.inventory.entries)

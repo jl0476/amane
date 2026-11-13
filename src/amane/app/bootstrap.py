@@ -24,6 +24,7 @@ from ..library import InventoryStore
 from ..llm import TranslationCache, TranslationCoalescer
 from ..media import ResourceStore
 from ..observability import setup_logging
+from ..organize import recover_organize_journals
 from ..playback import PlaybackFactory, PlaybackState
 from ..plugins.manager import PluginManager
 from ..release import ReleaseChecker
@@ -211,6 +212,9 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         log_dir=cold.log_dir,
         get_hot=lambda: config.hot,
     )
+    # 启动恢复扫描必须先于 worker 认领任务: 后台并发会把正在落盘的新 journal 误当作
+    # 中断遗留, 令回滚 / 清理与正常落盘交错 (联合审核 P1). 完成后才允许任务执行.
+    await recover_organize_journals(repo)
     worker.start()
 
     cron_scheduler = CronScheduler(repo)
