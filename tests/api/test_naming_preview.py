@@ -150,6 +150,59 @@ async def test_preview_respects_library_naming_override(client: AsyncClient, rep
     assert resp.json()["video"] == f"{safe_path}/override/Studio-ov/NSFS-039.mp4"
 
 
+INVALID_PREVIEW_CASES = [
+    pytest.param(
+        {},
+        {"number": ""},
+        200,
+        "video",
+        "Unknown",
+        id="空番号-全局默认模板回退 Unknown",
+    ),
+    pytest.param(
+        {"video_template": "{number}"},
+        {"number": ""},
+        422,
+        "detail",
+        "视频模板解析为库根目录",
+        id="空番号-视频模板退化为库根目录",
+    ),
+    pytest.param(
+        {"override": {"syntax": "jinja", "video_template": "{% if %}"}},
+        {"number": "NSFS-039", "studio": "Studio"},
+        422,
+        "detail",
+        "模板 video_template",
+        id="非法 Jinja 模板语法",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("seed", "body", "expect_status", "expect_field", "expect_needle"), INVALID_PREVIEW_CASES)
+async def test_preview_invalid_inputs(
+    client: AsyncClient,
+    repo: Any,
+    safe_path: Path,
+    seed: dict[str, Any],
+    body: dict[str, Any],
+    expect_status: int,
+    expect_field: str,
+    expect_needle: str,
+) -> None:
+    """空番号按 Unknown 回退渲染 (200); 模板渲染失败统一 422, detail 指明模板与原因."""
+    if seed:
+        library_id = await _create_library(
+            client, safe_path, "invalid", **{k: v for k, v in seed.items() if k != "override"}
+        )
+        if "override" in seed:
+            await repo.upsert_config_override(library_id, "naming", seed["override"])
+        body["library_id"] = library_id
+    resp = await client.post("libraries/naming/preview", json=body)
+    assert resp.status_code == expect_status
+    assert expect_needle in resp.json()[expect_field]
+
+
 @pytest.mark.asyncio
 async def test_preview_reports_parsed_fields(client: AsyncClient, safe_path: Path) -> None:
     """响应带解析结果: 番号 / 类型 / 马赛克 / 中字 / 分辨率."""

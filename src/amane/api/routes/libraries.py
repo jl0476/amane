@@ -53,6 +53,7 @@ async def preview_naming(req: NamingPreviewRequest, repo: RepoDep, config: Confi
     """命名模板试算 (规格 3.2.4): 与整理走同一渲染代码路径 (resolve_paths + TemplateContext), 纯计算不落盘.
 
     相对模板以库根为基准; 无 library_id 时以 ``/`` 为基准按全局默认模板试算.
+    模板无法渲染 (语法无效 / 渲染退化到库根) → 422, detail 指明模板与原因.
     """
     metadata, source_path, library_id = await _preview_inputs(req, repo)
     library = await repo.get_library(library_id) if library_id is not None else None
@@ -66,31 +67,39 @@ async def preview_naming(req: NamingPreviewRequest, repo: RepoDep, config: Confi
         naming = naming.model_copy(update={"syntax": req.syntax})
 
     file_info = parse_file_info(str(source_path) if source_path is not None else req.number)
-    paths = resolve_paths(
-        base_library,
-        metadata,
-        ext=source_path.suffix.lstrip(".") if source_path is not None else "mp4",
-        source_path=source_path,
-        file_info=file_info,
-        safe_dirs=None,
-        naming=naming,
-    )
-    # 字幕按 `{源文件主干}.srt` 的假想字幕源渲染, 与整理时最常见的同名字幕一致.
-    subtitle_source = (source_path if source_path is not None else Path(req.number or metadata.number)).with_suffix(
-        ".srt"
-    )
-    subtitle = resolve_subtitle_path(
-        base_library,
-        metadata,
-        subtitle_source,
-        video_dir=paths.video.parent,
-        video_name=paths.video.stem,
-        video_dest=paths.video,
-        source_path=source_path,
-        file_info=file_info,
-        safe_dirs=None,
-        naming=naming,
-    )
+    try:
+        # 保存校验先行: 语法类错误由 validate_naming_templates 带上模板字段名再抛出.
+        validate_naming_templates(
+            naming.syntax, {field: getattr(naming, field) for field in NAMING_TEMPLATE_FIELDS}, probe=False
+        )
+        paths = resolve_paths(
+            base_library,
+            metadata,
+            ext=source_path.suffix.lstrip(".") if source_path is not None else "mp4",
+            source_path=source_path,
+            file_info=file_info,
+            safe_dirs=None,
+            naming=naming,
+        )
+        # 字幕按 `{源文件主干}.srt` 的假想字幕源渲染, 与整理时最常见的同名字幕一致;
+        # 番号全空时源名回退 Unknown, 与渲染引擎的占位符回退一致, 避免空路径名报错.
+        subtitle_source = (
+            source_path if source_path is not None else Path(req.number or metadata.number or "Unknown")
+        ).with_suffix(".srt")
+        subtitle = resolve_subtitle_path(
+            base_library,
+            metadata,
+            subtitle_source,
+            video_dir=paths.video.parent,
+            video_name=paths.video.stem,
+            video_dest=paths.video,
+            source_path=source_path,
+            file_info=file_info,
+            safe_dirs=None,
+            naming=naming,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return NamingPreviewResponse(
         number=metadata.number,
         content_type=str(metadata.content_type),
