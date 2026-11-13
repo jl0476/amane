@@ -145,7 +145,7 @@
   "fieldStrmContentTemplateHint": "Applies when the link mode is STRM. Default writes the video file absolute path",
   "fieldInitialRefresh": "Refresh on Creation",
   "advancedTemplates": "Sidecar Templates",
-  "advancedTemplatesHint": "Leave empty to use defaults",
+  "advancedTemplatesHint": "Leave empty to use defaults; templates auto-replaced when switching syntax are saved explicitly and no longer follow default updates",
   "optionalTemplateDefault": "Default: {{default}}",
   "placeholders": {
     "label": "Placeholders",
@@ -283,8 +283,8 @@
   "preview": {
     "title": "Preview",
     "syntax": "Syntax",
-    "hint": "Renders with the library's current effective templates and syntax; unsaved edits are not included",
-    "hintGlobal": "Renders with global default templates; save the library to preview its own templates",
+    "hint": "Renders with the library's current effective templates and syntax; unsaved edits are not included; switching syntax replaces uncustomized templates with the new syntax's defaults, which are saved explicitly",
+    "hintGlobal": "Renders with global default templates; save the library to preview its own templates; switching syntax replaces uncustomized templates with the new syntax's defaults, which are saved explicitly",
     "number": "Number",
     "sampleTitle": "Title",
     "studio": "Studio",

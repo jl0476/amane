@@ -143,7 +143,7 @@
   "fieldStrmContentTemplateHint": "链接方式为 STRM 时有效. 默认写入视频文件绝对路径",
   "fieldInitialRefresh": "创建后立即扫描",
   "advancedTemplates": "附属资源模板",
-  "advancedTemplatesHint": "留空使用默认值",
+  "advancedTemplatesHint": "留空使用默认值; 切换语法时自动替换的模板随保存显式生效, 不再跟随后续的默认更新",
   "optionalTemplateDefault": "默认: {{default}}",
   "placeholders": {
     "label": "可用占位符",
@@ -271,8 +271,8 @@
   "preview": {
     "title": "试算",
     "syntax": "语法",
-    "hint": "按此库当前生效的模板与语法实时渲染; 未保存的模板修改不参与",
-    "hintGlobal": "按全局默认模板渲染; 保存库之后才按库模板试算",
+    "hint": "按此库当前生效的模板与语法实时渲染; 未保存的模板修改不参与; 切换语法时未自定义的模板替换为对应语法的默认, 随保存显式生效",
+    "hintGlobal": "按全局默认模板渲染; 保存库之后才按库模板试算; 切换语法时未自定义的模板替换为对应语法的默认, 随保存显式生效",
     "number": "番号",
     "sampleTitle": "标题",
     "studio": "制作商",
