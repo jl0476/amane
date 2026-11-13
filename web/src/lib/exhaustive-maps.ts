@@ -219,7 +219,9 @@ export const FACET_SORT_FIELDS = exhaustiveTuple<FacetSortField>()("name", "coun
 
 export const METADATA_FIELDS = exhaustiveTuple<MetadataField>()(
   "title",
+  "original_title",
   "plot",
+  "original_plot",
   "actors",
   "directors",
   "tags",

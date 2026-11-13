@@ -82,6 +82,7 @@
   "detail": {
     "fields": {
       "title": "Title",
+      "original_title": "Original Title",
       "studio": "Studio",
       "publisher": "Publisher",
       "release": "Release Date",
@@ -93,11 +94,13 @@
       "actors": "Actors",
       "tags": "Tags",
       "plot": "Plot",
+      "original_plot": "Original Plot",
       "trailer": "Trailer",
       "poster": "Poster",
       "thumb": "Cover",
       "extrafanart": "Fanart",
-      "sourceUrls": "Source Links"
+      "sourceUrls": "Source Links",
+      "website": "Website"
     },
     "connections": "Related Files",
     "noFiles": "No related files",
@@ -321,6 +324,9 @@
     "title": {
       "label": "Title"
     },
+    "original_title": {
+      "label": "Original Title"
+    },
     "actors": {
       "label": "Actors"
     },
@@ -345,6 +351,9 @@
     },
     "plot": {
       "label": "Plot"
+    },
+    "original_plot": {
+      "label": "Original Plot"
     },
     "directors": {
       "label": "Directors"
