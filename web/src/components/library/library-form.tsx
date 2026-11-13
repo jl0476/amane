@@ -294,7 +294,6 @@ export function LibraryFormFields({
     () => templateCatalogFromPlaceholders(schema?.placeholders ?? []),
     [schema?.placeholders],
   );
-  const optionalDefaults = schema?.optional_defaults;
 
   // 语法是 naming 配置 (全局/覆盖), 不在库行上: 表单内只维护「编辑视角」的语法.
   // 初值取该库生效配置, 用户手切后记录在 override (按 libraryId 归属, 换库即失效),
@@ -308,23 +307,27 @@ export function LibraryFormFields({
     syntaxChoice != null && syntaxChoice[0] === libraryId
       ? syntaxChoice[1]
       : (effective?.naming.syntax ?? "native");
+  // 附属模板的提示默认值随当前语法: 下发的 per-syntax 默认与渲染回退同源 (规格 3.2.3).
+  const optionalDefaults =
+    syntaxInfo(schema, syntax)?.default_optional_templates ?? schema?.optional_defaults;
 
   function handleSyntaxChange(next: NamingSyntax) {
     if (next === syntax) {
       return;
     }
-    const oldVideoDefault = syntaxInfo(schema, syntax)?.default_video_template;
-    const newVideoDefault = syntaxInfo(schema, next)?.default_video_template;
+    const oldInfo = syntaxInfo(schema, syntax);
+    const newInfo = syntaxInfo(schema, next);
     const updates: Partial<LibraryFormState> = {};
     const video = value.video_template.trim();
-    if (newVideoDefault != null && (video === "" || video === oldVideoDefault)) {
-      updates.video_template = newVideoDefault;
+    if (newInfo != null && (video === "" || video === oldInfo?.default_video_template)) {
+      updates.video_template = newInfo.default_video_template;
     }
-    // 附属模板未自定义 (等于默认) 时清空: 后端按生效语法回退各自内建默认,
-    // 空值因此对两套语法都成立; 已自定义的模板原样保留.
+    // 附属模板未自定义 (为空或等于旧语法默认) 时字面替换为新语法的下发默认;
+    // 已自定义的模板原样保留.
     for (const key of OPTIONAL_TEMPLATE_KEYS) {
-      if (value[key].trim() === "" || value[key] === optionalDefaults?.[key]) {
-        updates[key] = "";
+      const current = value[key].trim();
+      if (current === "" || current === oldInfo?.default_optional_templates?.[key]) {
+        updates[key] = newInfo?.default_optional_templates?.[key] ?? "";
       }
     }
     setSyntaxChoice([libraryId, next]);
