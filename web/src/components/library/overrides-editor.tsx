@@ -2,7 +2,7 @@ import { Alert, Badge, Group, Loader, Paper, Stack, Switch, Text, Title } from "
 import { notifications } from "@mantine/notifications";
 import { IconAlertCircle } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   deleteLibraryOverrideMutation,
@@ -150,6 +150,10 @@ function SectionBlock({
 }: SectionBlockProps) {
   const { t } = useTranslation(["library", "settings", "common"]);
   const inheriting = rowPayload == null;
+  // 覆盖行不存在时无法从 props 区分「继承」与「编辑」: 取消勾选进入本地草稿态渲染
+  // SchemaForm (初值取生效值), PUT 落库后 rowPayload 出现, inheriting 随之转 false.
+  const [drafting, setDrafting] = useState(false);
+  const editing = !inheriting || drafting;
 
   const initialValues = useMemo(() => {
     const values: Record<string, unknown> = {};
@@ -187,6 +191,9 @@ function SectionBlock({
     } else if (rowPayload != null) {
       // 全部键都回到继承: 空覆盖行无意义, 删行恢复继承.
       onInherit();
+    } else {
+      // 草稿全部字段与全局同值: 无覆盖可落, 退回继承显示.
+      setDrafting(false);
     }
   }
 
@@ -200,13 +207,18 @@ function SectionBlock({
       if (!ok) {
         return;
       }
-      onInherit();
+      if (rowPayload != null) {
+        onInherit();
+      }
+      setDrafting(false);
+    } else {
+      setDrafting(true);
     }
   }
 
   return (
     <Paper withBorder p="md">
-      <Group justify="space-between" wrap="nowrap" mb={inheriting ? 0 : "md"}>
+      <Group justify="space-between" wrap="nowrap" mb={editing ? "md" : 0}>
         <Group gap="sm" wrap="nowrap">
           <Title order={4}>{t(`settings:tabs.${section}`)}</Title>
           {!inheriting && (
@@ -217,13 +229,13 @@ function SectionBlock({
         </Group>
         <Switch
           label={t("overrides.inheritGlobal")}
-          description={inheriting ? undefined : t("overrides.inheritOffHint")}
-          checked={inheriting}
+          description={editing ? t("overrides.inheritOffHint") : undefined}
+          checked={!editing}
           disabled={saving}
           onChange={(event) => void handleInheritToggle(event.currentTarget.checked)}
         />
       </Group>
-      {inheriting ? (
+      {!editing ? (
         <Text size="sm" c="dimmed">
           {t("overrides.inheritHint")}
         </Text>

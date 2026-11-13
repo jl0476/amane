@@ -256,10 +256,10 @@
   "overrides": {
     "hint": "按 section 覆盖全局配置; 空模板框表示显式取空. 未覆盖的键继承全局",
     "inheritGlobal": "继承全局",
-    "inheritOffHint": "重新开启将删除该 section 的覆盖行",
-    "inheritHint": "本 section 继承全局配置, 开关关闭后可编辑覆盖",
+    "inheritOffHint": "重新开启将放弃覆盖编辑, 恢复继承全局",
+    "inheritHint": "本 section 继承全局配置; 关闭开关进入编辑, 保存后生成覆盖行",
     "inheritConfirmTitle": "恢复继承全局",
-    "inheritConfirmBody": "将删除该 section 的覆盖行, 全部字段回到全局配置",
+    "inheritConfirmBody": "将放弃该 section 的覆盖编辑, 全部字段回到全局配置",
     "overriding": "覆盖中",
     "saved": "覆盖已保存",
     "loadFailed": "加载覆盖配置失败"

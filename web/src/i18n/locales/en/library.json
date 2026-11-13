@@ -268,10 +268,10 @@
   "overrides": {
     "hint": "Override global config per section; an empty template box means explicit empty. Untouched keys inherit global",
     "inheritGlobal": "Inherit Global",
-    "inheritOffHint": "Turning this back on deletes the override row for this section",
-    "inheritHint": "This section inherits global config; turn the switch off to edit overrides",
+    "inheritOffHint": "Turning this back on discards override edits and restores inheritance",
+    "inheritHint": "This section inherits global config; turn the switch off to edit, and save to create the override row",
     "inheritConfirmTitle": "Inherit Global Again",
-    "inheritConfirmBody": "This deletes the override row; all fields return to global config",
+    "inheritConfirmBody": "This discards override edits; all fields return to global config",
     "overriding": "Overriding",
     "saved": "Override saved",
     "loadFailed": "Failed to load overrides"
