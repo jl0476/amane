@@ -716,13 +716,18 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
             return await self._handle_unlocked(payload, library)
 
     async def _handle_unlocked(self, payload: OrganizePayload, library: Library) -> TaskResult[OrganizeResult]:
+        # 清理缺失索引之前先恢复本库的覆写 journal (联合审核 P1): 恢复会改写索引行的 path
+        # (接管完成) 并删除 journal, 必须发生在加载整理范围**之前** —— 之后再按恢复后的
+        # 数据库事实查询 indexed, 避免旧快照把已接管的源行按缺失路径误删 (复审 P1).
+        # 只处理本库目标 (其它库任务正在写入的 journal 不在本次锁保护范围内, 不触碰).
+        library_root = Path(library.path)
+        await recover_organize_journals(self._repo, library_root=library_root)
         indexed = await self._load_scope(payload, library)
         skipped = 0
         if payload.media_file_ids and not indexed:
             # 勾选快照里的行在本次运行前已消失 (自动整理的单文件范围是主要来源): 不是「空跑」, 记一次跳过.
             logger.warning("organize scope missing", library_id=library.id, media_file_ids=payload.media_file_ids)
             skipped += 1
-        library_root = Path(library.path)
         media_extensions = frozenset(self._config.watcher.media_extensions) or MEDIA_EXTENSIONS
         scan = LibraryScan(
             trailer_pattern=library.trailer_pattern,
@@ -730,10 +735,6 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
             min_file_size=library.min_file_size,
             media_extensions=media_extensions,
         )
-        # 清理缺失索引之前先恢复本库的覆写 journal (联合审核 P1): 同文件系统 MOVE 已落位而
-        # 接管失败时, 源路径已消失 —— 若先清理, 源索引行被删, 恢复将永久找不到源行.
-        # 只处理本库目标 (其它库任务正在写入的 journal 不在本次锁保护范围内, 不触碰).
-        await recover_organize_journals(self._repo, library_root=library_root)
         # 双保险: 仍未完成的 journal (恢复失败保留的行) 引用的源行受保护, 缺失也不清理.
         protected_source_ids = {
             row.source_file_id
