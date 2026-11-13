@@ -5301,6 +5301,17 @@ export const MediaFileResponseSchema = {
             ],
             title: 'Metadata Id'
         },
+        link_path: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Link Path'
+        },
         created_at: {
             anyOf: [
                 {
@@ -7081,6 +7092,50 @@ export const NfoConfigSchema = {
     description: 'NFO 字段开关. 字段清单与默认值见 3.4.3.'
 } as const;
 
+export const NfoRewriteFailureSchema = {
+    properties: {
+        path: {
+            type: 'string',
+            title: 'Path'
+        },
+        error: {
+            type: 'string',
+            title: 'Error'
+        }
+    },
+    type: 'object',
+    required: [
+        'path',
+        'error'
+    ],
+    title: 'NfoRewriteFailure',
+    description: '单份文件重写失败的原因; ``path`` 是该文件的索引路径.'
+} as const;
+
+export const NfoRewriteResponseSchema = {
+    properties: {
+        rewritten: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Rewritten',
+            default: []
+        },
+        failures: {
+            items: {
+                $ref: '#/components/schemas/NfoRewriteFailure'
+            },
+            type: 'array',
+            title: 'Failures',
+            default: []
+        }
+    },
+    type: 'object',
+    title: 'NfoRewriteResponse',
+    description: '逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回.'
+} as const;
+
 export const OptionalPathTemplateDefaultsSchema = {
     properties: {
         thumb_template: {
@@ -7128,7 +7183,7 @@ export const OptionalPathTemplateDefaultsSchema = {
         'subtitle_template'
     ],
     title: 'OptionalPathTemplateDefaults',
-    description: '附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).'
+    description: '附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).\n\n取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验.'
 } as const;
 
 export const OrganizeCommonConfigSchema = {
@@ -7218,6 +7273,11 @@ export const OrganizeResultSchema = {
             },
             type: 'array',
             title: 'Conflicts'
+        },
+        overwritten: {
+            type: 'integer',
+            title: 'Overwritten',
+            default: 0
         }
     },
     type: 'object',
@@ -7508,6 +7568,9 @@ export const PathTemplateSyntaxInfoSchema = {
             type: 'string',
             title: 'Default Video Template'
         },
+        default_optional_templates: {
+            $ref: '#/components/schemas/OptionalPathTemplateDefaults'
+        },
         placeholders: {
             items: {
                 $ref: '#/components/schemas/PathTemplateSyntaxVariable'
@@ -7520,10 +7583,11 @@ export const PathTemplateSyntaxInfoSchema = {
     required: [
         'name',
         'default_video_template',
+        'default_optional_templates',
         'placeholders'
     ],
     title: 'PathTemplateSyntaxInfo',
-    description: '一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认.'
+    description: '一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认.'
 } as const;
 
 export const PathTemplateSyntaxVariableSchema = {

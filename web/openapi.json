@@ -1713,6 +1713,49 @@
         }
       }
     },
+    "/api/metadata/{metadata_id}/nfo": {
+      "put": {
+        "tags": [
+          "metadata"
+        ],
+        "summary": "Rewrite Nfo",
+        "description": "NFO 单独重写 (规格 3.4.4): 以已落盘路径为基准渲染并覆盖写, 供只改模板后修复既有 NFO.\n\n条目的每份文件独立处理: 失败不回滚成功者, 失败清单随响应返回; 全部失败且含配对\n不一致时整体 422 并报出实际与期望配对. 生效配置 (naming / nfo 开关) 按各文件归属库合成.",
+        "operationId": "rewrite_nfo",
+        "parameters": [
+          {
+            "name": "metadata_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Metadata Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NfoRewriteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/metadata/{metadata_id}/merge": {
       "post": {
         "tags": [
@@ -12340,6 +12383,17 @@
             ],
             "title": "Metadata Id"
           },
+          "link_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link Path"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -14093,6 +14147,48 @@
         "title": "NfoConfig",
         "description": "NFO 字段开关. 字段清单与默认值见 3.4.3."
       },
+      "NfoRewriteFailure": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "error"
+        ],
+        "title": "NfoRewriteFailure",
+        "description": "单份文件重写失败的原因; ``path`` 是该文件的索引路径."
+      },
+      "NfoRewriteResponse": {
+        "properties": {
+          "rewritten": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rewritten",
+            "default": []
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/NfoRewriteFailure"
+            },
+            "type": "array",
+            "title": "Failures",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "NfoRewriteResponse",
+        "description": "逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回."
+      },
       "OptionalPathTemplateDefaults": {
         "properties": {
           "thumb_template": {
@@ -14140,7 +14236,7 @@
           "subtitle_template"
         ],
         "title": "OptionalPathTemplateDefaults",
-        "description": "附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染)."
+        "description": "附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).\n\n取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验."
       },
       "OrganizeCommonConfig": {
         "properties": {
@@ -14226,6 +14322,11 @@
             },
             "type": "array",
             "title": "Conflicts"
+          },
+          "overwritten": {
+            "type": "integer",
+            "title": "Overwritten",
+            "default": 0
           }
         },
         "type": "object",
@@ -14509,6 +14610,9 @@
             "type": "string",
             "title": "Default Video Template"
           },
+          "default_optional_templates": {
+            "$ref": "#/components/schemas/OptionalPathTemplateDefaults"
+          },
           "placeholders": {
             "items": {
               "$ref": "#/components/schemas/PathTemplateSyntaxVariable"
@@ -14521,10 +14625,11 @@
         "required": [
           "name",
           "default_video_template",
+          "default_optional_templates",
           "placeholders"
         ],
         "title": "PathTemplateSyntaxInfo",
-        "description": "一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认."
+        "description": "一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认."
       },
       "PathTemplateSyntaxVariable": {
         "properties": {

@@ -2615,6 +2615,10 @@ export type MediaFileResponse = {
      */
     metadata_id?: number | null;
     /**
+     * Link Path
+     */
+    link_path?: string | null;
+    /**
      * Created At
      */
     created_at?: string | null;
@@ -3595,9 +3599,43 @@ export type NfoConfig = {
 };
 
 /**
+ * NfoRewriteFailure
+ *
+ * 单份文件重写失败的原因; ``path`` 是该文件的索引路径.
+ */
+export type NfoRewriteFailure = {
+    /**
+     * Path
+     */
+    path: string;
+    /**
+     * Error
+     */
+    error: string;
+};
+
+/**
+ * NfoRewriteResponse
+ *
+ * 逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回.
+ */
+export type NfoRewriteResponse = {
+    /**
+     * Rewritten
+     */
+    rewritten?: Array<string>;
+    /**
+     * Failures
+     */
+    failures?: Array<NfoRewriteFailure>;
+};
+
+/**
  * OptionalPathTemplateDefaults
  *
  * 附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).
+ *
+ * 取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验.
  */
 export type OptionalPathTemplateDefaults = {
     /**
@@ -3706,6 +3744,10 @@ export type OrganizeResult = {
      * Conflicts
      */
     conflicts: Array<OrganizeConflict>;
+    /**
+     * Overwritten
+     */
+    overwritten?: number;
 };
 
 /**
@@ -3878,7 +3920,7 @@ export type PathTemplateSchemaResponse = {
 /**
  * PathTemplateSyntaxInfo
  *
- * 一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认.
+ * 一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认.
  */
 export type PathTemplateSyntaxInfo = {
     /**
@@ -3889,6 +3931,7 @@ export type PathTemplateSyntaxInfo = {
      * Default Video Template
      */
     default_video_template: string;
+    default_optional_templates: OptionalPathTemplateDefaults;
     /**
      * Placeholders
      */
@@ -7255,6 +7298,36 @@ export type CropPosterFromThumbResponses = {
 };
 
 export type CropPosterFromThumbResponse = CropPosterFromThumbResponses[keyof CropPosterFromThumbResponses];
+
+export type RewriteNfoData = {
+    body?: never;
+    path: {
+        /**
+         * Metadata Id
+         */
+        metadata_id: number;
+    };
+    query?: never;
+    url: '/api/metadata/{metadata_id}/nfo';
+};
+
+export type RewriteNfoErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RewriteNfoError = RewriteNfoErrors[keyof RewriteNfoErrors];
+
+export type RewriteNfoResponses = {
+    /**
+     * Successful Response
+     */
+    200: NfoRewriteResponse;
+};
+
+export type RewriteNfoResponse = RewriteNfoResponses[keyof RewriteNfoResponses];
 
 export type MergeMetadataData = {
     body: MergeRequest;
