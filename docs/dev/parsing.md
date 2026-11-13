@@ -28,4 +28,4 @@
 | 调度 | `src/amane/scheduler/service.py::WatcherService._on_file_found` |
 | agent 提交 | `src/amane/agent/task_ops.py::submit_task` |
 
-字幕配对 (`src/amane/organize/subtitles.py`) 与 Alembic 数据迁移 (一次性重投影) 不注入: 前者走 `text=` 分支本就跳过路径段, 后者保持历史口径.
+字幕配对 (`src/amane/organize/subtitles.py`)、订阅源任务 (`src/amane/handlers/models.py::build_feed_scrape_payload`) 与 Alembic 数据迁移 (一次性重投影) 不注入: 第一者走 `text=` 分支本就跳过路径段; Feed 无库归属字段, 库级规则在该入口无从谈起, 类型取订阅源自身指定 (`feed.content_type`, 未指定时按番号推断); 迁移保持历史口径.

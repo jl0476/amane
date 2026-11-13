@@ -59,6 +59,12 @@ Metadata 列表与 `/media` 文件行的角标与筛选: 有码 / 无码取条�
 
 `raw` 的字段名 / 类型必须与当前 `MediaMetadata` 一致 — 站点级复用会把它直接反序列化. 模型改名或改类型时, 结果列与 raw 是两份数据, 需单独的 data migration (见 [database.md](database.md) Autogenerate 盲区).
 
+### 原文双轨与 `website`
+
+`original_title` / `original_plot` 与 `title` / `plot` 平行聚合, 各自有字段链, 翻译只改写 `title` / `plot`; 原文在聚合阶段落定, 不由翻译层回填. 源经 `MediaMetadata.field_languages` 逐字段声明语言, 聚合记录字段来源 (`field_sources`) 的同时把该语言记入 `Metadata.field_languages`; 未声明语言的字段不参与原文聚合 (留空, 不猜测). 标题与剧情可来自不同语言源, 不存在源级全局语言标记.
+
+`website` 是派生单值列 (只读, 不进 PATCH, 也不是 `MetadataField` 成员): 取标题胜出来源的详情页地址 `source_urls[field_sources[title]]`; 该来源没有地址时为空, 不沿链回退; `source_urls` 本身保留全量.
+
 ## 字段锁定
 
 `Metadata.locked_fields` / `Actor.locked_fields` 是字段级锁集合 (取值 `MetadataField` / `ActorField`, 空集为未锁定); 没有条目级开关, 「全部锁定」由前端写入全集. 可锁集合即各枚举全集; 身份、来源映射与刮削缓存字段不可锁 — 冻结后重刮与手动 merge 都失效. 别名可锁, 但真值在 `actor_aliases` 行: 锁判定落在该行的自动写入点, 不进值对象的锁定回填.
@@ -125,7 +131,7 @@ PATCH 三态: **省略键** = 不更新 (`exclude_unset`); **显式值** = 写�
 
 模板语言在 `organize/template.py`, 只约束以下几点: 占位符分相位注入 (`metadata` → file 相位 → `apply_video` → `apply_link`), file 相位未检出是**空串**不是 `Unknown`; `{index}` / `{index_padded}` 不在这些相位里, 只在剧照文件名模板的写盘渲染中有值 (补零宽度取本轮张数位数), 其它模板输出 `Unknown`, 因此剧照文件名由复制阶段渲染并依赖 `ResolvedPaths.context` 携带同一份取值, 不由 `resolve_paths` 产出; 渲染时把 `{title}` / `{actor}` 等分量截到 200 UTF-8 字节 (不切开多字节字符), 但不截断渲染后的路径分量; 可选组 `[...]` 内直接占位符全空则整段丢弃, 有一个非空时其余输出空串. 普通占位符缺失回退 `Unknown`. **段名按 Windows 创建结果对齐**: 每个路径段去掉段尾的 `.` 与空格, 控制字符替换为空格 — 创建与 `os.path.abspath` 对段尾字符的处理不同, 不对齐会让索引记录磁盘上不存在的名字; `.` / `..` 原样保留给逃逸检查. **逃逸防护**: 校验对渲染结果做 realpath (跟随符号链接), 相对模板的真实写出路径必须在本库内 (`ALLOW_ALL` 也不例外), 绝对模板必须位于本库或 `safe_dirs` 内, 否则 `ValueError`; 多盘分存要求目标盘在 `safe_dirs` 内. 细则见 `organize/path_templates.py`.
 
-命名模板有双语法后端, 接口为 `organize/backend.py::TemplateBackend` (render / validate / describe): native 后端包装 `organize/template.py` 的 PathEngine, validate 委托 `validate_template`; jinja 后端 (`organize/template_jinja.py`) 用 SandboxedEnvironment 渲染, `default` / `truncate` / `split` filter 自建 (原生 default 只对 undefined 生效, 覆盖不了空串与 "Unknown"; 原生 truncate 按字符计数并追加省略号), 其余 filter 用原生, 模板里 `cd?` 等 4 个占位符写作改名后的 Jinja 变量 (`VARIABLE_MAP`), 条件与「有值」判定和 native 一致, 变量缺失渲染为空串而 native 回退 `Unknown` (有意差异). 两后端的路径输出共用段规范化与 `template.py::resolve_rendered` 逃逸防护.
+命名模板的语法分派与双引擎契约见 [organize.md](organize.md#template-engines).
 
 ## Resource (一等存储, 非缓存)
 

@@ -9,6 +9,22 @@
 `execute_file_operations` 依次执行: `target_state` 预检 → 图片 → 落盘 (`execute_organize`) →
 链接 → NFO → 字幕 → `commit_organized_media_file` (索引提交). 路径渲染只有一份实现
 (`organize/path_templates.py::resolve_paths` / `resolve_sidecar_paths`), 落盘与清理清单共用.
+NFO 单独重写端点 (`api/routes/metadata.py::rewrite_nfo`) 消费同一入口 (`artifacts=("nfo",)` 只渲染
+NFO, 其它模板即使无效也不阻断): 以 `MediaFile.path` 与持久化的 `link_path` 为基准, 不重算视频与
+链接位置, 生效配置按各文件归属库合成.
+
+## 模板引擎 {#template-engines}
+
+命名模板按 `naming.syntax` 分派到双语法后端 (规格 3.2.1), 接口为 `organize/backend.py::TemplateBackend`
+(render / validate / describe): native 后端 (自研语法, 占位符 `{name}`) 包装 `organize/template.py`
+的 PathEngine, validate 委托 `validate_template`; jinja 后端 (`organize/template_jinja.py`, 变量
+`{{ var }}` 与语句 `{% if %}`) 用 SandboxedEnvironment 渲染, `default` / `truncate` / `split`
+filter 自建 (原生 default 只对 undefined 生效, 覆盖不了空串与 "Unknown"; 原生 truncate 按字符
+计数并追加省略号), 其余 filter 用原生, `cd?` 等 4 个占位符写作改名后的 Jinja 变量
+(`VARIABLE_MAP`), 条件与「有值」判定和 native 一致, 变量缺失渲染为空串而 native 回退 `Unknown`
+(有意差异). 两后端的路径输出共用段规范化与 `template.py::resolve_rendered` 逃逸防护. 附属模板
+未设置时按生效语法回退各自内建默认 (`path_templates.py::sidecar_template`), schema 下发
+(`api/models/libraries.py::path_template_schema`) 与渲染回退共用 `sidecar_defaults` 一份取值.
 
 ## 覆写协议 (规格 3.4.2)
 
