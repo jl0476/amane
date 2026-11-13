@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from amane.enums import MoveMode
 from amane.library import FootprintNotice, FootprintNoticeKind, InventoryEntryKind, InventoryReason, build_footprint
 from amane.library.cleanup import footprint as footprint_module
 
@@ -225,6 +226,30 @@ class TestFootprint:
         )
 
         assert [entry.path for entry in outcome.inventory.entries] == [video]
+        assert outcome.notices == []
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_inplace_library_lists_products_at_source(self, repo: Repository, tmp_path: Path) -> None:
+        """inplace 库: 反解按库的移动模式执行, 视频模板不参与 — 源目录里的产物进清单, 不误报模板错误."""
+        root = tmp_path / "lib"
+        video_dir = root / "raw"
+        video_dir.mkdir(parents=True)
+        video = video_dir / "NSFS-039.mp4"
+        video.write_bytes(b"v" * 100)
+        (video_dir / "NSFS-039.nfo").write_text("nfo")
+        (video_dir / "thumb.jpg").write_bytes(b"thumb")
+        lib = await repo.create_library(name="t", path=str(root), move_mode=MoveMode.INPLACE, video_template="")
+        assert lib.id is not None
+        meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+        assert meta.id is not None
+        item = await repo.create_media_file(lib.id, path=str(video), number="NSFS-039", metadata_id=meta.id)
+
+        outcome = build_footprint.sync(
+            library=lib, items=[item], indexed=[item], metas={meta.id: meta}, include_work_dir=False
+        )
+
+        names = sorted(entry.path.name for entry in outcome.inventory.entries)
+        assert names == ["NSFS-039.mp4", "NSFS-039.nfo", "thumb.jpg"]
         assert outcome.notices == []
 
     @pytest.mark.asyncio(loop_scope="function")

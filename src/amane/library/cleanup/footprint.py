@@ -187,7 +187,11 @@ def _add_products(
     add: _Add,
     notices: list[FootprintNotice],
 ) -> None:
-    """按路径模板反解刮削产物: 产物位置由模板决定, 与视频文件名没有对应关系."""
+    """按路径模板反解刮削产物: 产物位置由模板决定, 与视频文件名没有对应关系.
+
+    反解与整理执行同一算法, 传入库的移动模式: inplace 库不渲染视频模板,
+    产物随视频 (即源文件) 落在源目录.
+    """
     metadata = metas.get(item.metadata_id) if item.metadata_id is not None else None
     if metadata is None:
         return
@@ -200,6 +204,7 @@ def _add_products(
             source_path=source,
             file_info=parse_file_info(item.path),
             safe_dirs=None,
+            move_mode=library.move_mode,
         )
     except ValueError as exc:
         notices.append(FootprintNotice(FootprintNoticeKind.TEMPLATE_ERROR, path=source, detail=str(exc)))
