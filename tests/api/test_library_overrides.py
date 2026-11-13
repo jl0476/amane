@@ -322,3 +322,20 @@ async def test_schema_endpoint_lists_syntaxes(client: AsyncClient) -> None:
     assert len(native_vars) == len(jinja_vars)
     # 顶层占位符清单补上 dir 别名
     assert "dir" in {p["name"] for p in body["placeholders"]}
+    # 附属模板按语法各自下发内建默认 (裁决 R27), 与渲染回退同源
+    assert syntaxes["native"]["default_optional_templates"] == {
+        "thumb_template": "{link_dir}/thumb.jpg",
+        "poster_template": "{link_dir}/poster.jpg",
+        "fanart_template": "{link_dir}/fanart.jpg",
+        "extrafanart_template": "{link_dir}/extrafanart",
+        "extrafanart_name_template": "{index}.jpg",
+        "nfo_template": "{link_dir}/{video_name}.nfo",
+        "trailer_template": "{link_dir}/trailer.mp4",
+        "subtitle_template": "{link_dir}/{raw_srt_name}.{ext}",
+    }
+    for field, default in _JINJA_DEFAULTS.items():
+        if field == "video_template":
+            continue
+        assert syntaxes["jinja"]["default_optional_templates"][field] == default
+    # 视频模板之外的字段与顶层 optional_defaults 同名同集
+    assert set(syntaxes["native"]["default_optional_templates"]) == set(body["optional_defaults"])

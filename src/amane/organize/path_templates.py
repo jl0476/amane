@@ -102,6 +102,11 @@ def sidecar_template(value: str | None, field: str, syntax: SyntaxName) -> str:
     return jinja if syntax == "jinja" else native
 
 
+def sidecar_defaults(syntax: SyntaxName) -> dict[str, str]:
+    """附属模板字段在该语法下的内建默认 (规格 3.2.3): schema 下发与渲染回退共用同一份."""
+    return {field: sidecar_template(None, field, syntax) for field in _SIDE_CAR_FALLBACKS}
+
+
 def _syntax_of(naming: NamingConfig | None) -> SyntaxName:
     return naming.syntax if naming is not None else "native"
 

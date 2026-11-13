@@ -29,6 +29,7 @@ from ...organize.path_templates import (
     VIDEO_TEMPLATE_DEFAULT,
     ExtrafanartNameTemplate,
     PathTemplate,
+    sidecar_defaults,
 )
 from ...organize.strm_content import StrmContentTemplate
 from ...parsing import ContentType
@@ -144,16 +145,19 @@ class EffectiveConfigResponse(BaseModel):
 
 @subset_of(Library, covariant=True)
 class OptionalPathTemplateDefaults(BaseModel):
-    """附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染)."""
+    """附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).
 
-    thumb_template: PathTemplate
-    poster_template: PathTemplate
-    fanart_template: PathTemplate
-    extrafanart_template: PathTemplate
-    extrafanart_name_template: ExtrafanartNameTemplate
-    nfo_template: PathTemplate
-    trailer_template: PathTemplate
-    subtitle_template: PathTemplate
+    取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验.
+    """
+
+    thumb_template: str
+    poster_template: str
+    fanart_template: str
+    extrafanart_template: str
+    extrafanart_name_template: str
+    nfo_template: str
+    trailer_template: str
+    subtitle_template: str
 
 
 OPTIONAL_TEMPLATE_DEFAULTS = OptionalPathTemplateDefaults(
@@ -184,10 +188,12 @@ class PathTemplateSyntaxVariable(BaseModel):
 
 
 class PathTemplateSyntaxInfo(BaseModel):
-    """一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认."""
+    """一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认."""
 
     name: str
     default_video_template: str
+    default_optional_templates: OptionalPathTemplateDefaults
+    """附属模板在该语法下的内建默认: 与渲染期未设置时的回退同源 (规格 3.2.3)."""
     placeholders: list[PathTemplateSyntaxVariable]
 
 
@@ -214,6 +220,7 @@ def path_template_schema() -> PathTemplateSchemaResponse:
             PathTemplateSyntaxInfo(
                 name=described.name,
                 default_video_template=described.default_video_template,
+                default_optional_templates=OptionalPathTemplateDefaults(**sidecar_defaults(syntax)),
                 placeholders=[
                     PathTemplateSyntaxVariable(name=p.name, variable=p.variable) for p in described.placeholders
                 ],
