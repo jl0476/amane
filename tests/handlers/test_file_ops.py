@@ -998,3 +998,159 @@ async def test_jinja_syntax_drives_real_organize(
         assert "{{" not in produced.name
     updated = await repo.get_media_file(media.id)
     assert updated is not None and updated.path == str(video)
+
+
+# --- 任务 24: OCCUPIED 分派与覆写协议 ---
+
+
+OVERWRITE_SOURCE = b"S" * 4096 + bytes(range(256)) * 48 + b"src-tail" + b"s" * 4096
+OVERWRITE_OCCUPANT = b"O" * 4096 + bytes(range(255, -1, -1)) * 48 + b"occ-tail" + b"o" * 4096
+"""等长不同内容, 且都 ≥ 128 KiB: oshash 对更小的文件返回 None, 协议会在补算后放弃覆写."""
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("overwrite_video", [False, True])
+async def test_occupied_dispatch_by_overwrite_video(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path, overwrite_video: bool
+) -> None:
+    """目标被占: overwrite_video=False 维持冲突跳过; True 走覆写协议, 目标变为源内容."""
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(OVERWRITE_SOURCE * 8)
+    dest_dir = lib_root / "Studio" / "NSFS-039"
+    dest_dir.mkdir(parents=True)
+    target = dest_dir / "NSFS-039.mp4"
+    target.write_bytes(OVERWRITE_OCCUPANT * 8)
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "common", {"overwrite_video": overwrite_video})
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    media = await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+    assert media.id is not None
+    # 目标上已索引的旧文件: 覆写接管后该行删除.
+    occupant = await repo.create_media_file(
+        lib.id, path=str(target), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+    assert occupant.id is not None
+
+    org = _organize_handler(repo, resource_store)
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+
+    if overwrite_video:
+        assert result.result.overwritten == 1
+        assert result.result.conflicted == 0
+        assert result.result.failed == 0
+        assert target.read_bytes() == OVERWRITE_SOURCE * 8
+        assert not src.exists()
+        assert await repo.list_organize_journals() == []
+        updated = await repo.get_media_file(media.id)
+        assert updated is not None and updated.path == str(target)
+        assert await repo.get_media_file(occupant.id) is None
+    else:
+        assert result.result.overwritten == 0
+        assert result.result.conflicted == 1
+        assert target.read_bytes() == OVERWRITE_OCCUPANT * 8
+        assert src.read_bytes() == OVERWRITE_SOURCE * 8
+        updated = await repo.get_media_file(media.id)
+        assert updated is not None and updated.path == str(src)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_overwrite_conflict_when_journal_in_flight(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """同一目标已有进行中的覆写 (journal 在案) → 记冲突, 不动磁盘."""
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(OVERWRITE_SOURCE * 8)
+    dest_dir = lib_root / "Studio" / "NSFS-039"
+    dest_dir.mkdir(parents=True)
+    target = dest_dir / "NSFS-039.mp4"
+    target.write_bytes(OVERWRITE_OCCUPANT * 8)
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "common", {"overwrite_video": True})
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    media = await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+    assert media.id is not None
+    await repo.create_organize_journal(
+        task_id=None,
+        mode=MoveMode.MOVE.value,
+        source_path=str(src),
+        source_file_id=media.id,
+        source_oshash="deadbeefdeadbeef",
+        source_size=src.stat().st_size,
+        source_metadata_id=None,
+        source_number=None,
+        target_path=str(target),
+        target_file_id=None,
+        backup_path=str(target.parent / f"{target.name}.amane-overwrite-1"),
+    )
+
+    org = _organize_handler(repo, resource_store)
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.conflicted == 1
+    assert result.result.overwritten == 0
+    assert target.read_bytes() == OVERWRITE_OCCUPANT * 8
+    assert src.read_bytes() == OVERWRITE_SOURCE * 8
+
+
+@pytest.mark.parametrize("overwrite_image", [False, True])
+@pytest.mark.asyncio
+async def test_overwrite_image_toggle_skips_existing_images(
+    resource_store: ResourceStore, tmp_path: Path, overwrite_image: bool
+) -> None:
+    """overwrite_image=False: 目标已有图片跳过并计 skipped; True (默认) 维持覆盖写."""
+    client = cast("WebClient", FakeClient())
+
+    src = tmp_path / "src" / "MIDV-123.mp4"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"movie")
+    paths = _paths(tmp_path / "out")
+    paths.thumb.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (800, 538), "red").save(paths.thumb)
+    Image.new("RGB", (800, 538), "red").save(paths.poster)
+    before = (_pixel(paths.thumb), _pixel(paths.poster))
+
+    mf = MediaFile(path=str(src), library_id=1)
+    meta = Metadata(number="MIDV-123", thumb_urls=["https://s/t.jpg"], poster_urls=["https://s/p.jpg"])
+
+    result = await execute_file_operations(
+        media_file=mf,
+        metadata=meta,
+        paths=paths,
+        move_mode=MoveMode.COPY,
+        resource_store=resource_store,
+        file_info=parse_file_info(src),
+        web_client=client,
+        config=HotSettings(),
+        overwrite_image=overwrite_image,
+    )
+
+    assert result.outcome is PlaceOutcome.PLACED
+    if overwrite_image:
+        assert result.skipped_images == 0
+        # 下载图是纯蓝: 覆盖后红通道让位给蓝通道.
+        assert _pixel(paths.thumb)[0] < 50 and _pixel(paths.thumb)[2] > 200
+        assert _pixel(paths.poster)[0] < 50 and _pixel(paths.poster)[2] > 200
+    else:
+        # 封面 (thumb+fanart 同源一对) 与海报各计一次跳过, 旧内容原样保留.
+        assert result.skipped_images == 2
+        assert _pixel(paths.thumb) == before[0]
+        assert _pixel(paths.poster) == before[1]

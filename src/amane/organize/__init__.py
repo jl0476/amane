@@ -1,6 +1,13 @@
 from ..enums import MoveMode
 from .file import OrganizeResult, PlaceOutcome, TargetCheck, TargetState, execute_organize, target_state, video_dest
 from .link import create_video_link
+from .overwrite import (
+    OverwriteResult,
+    backup_target_path,
+    current_task_id,
+    overwrite_target,
+    overwrite_tmp_path,
+)
 from .path_templates import (
     ALL_SIDECARS,
     EXTRAFANART_NAME_TEMPLATE_DEFAULT,
@@ -37,6 +44,7 @@ __all__ = [
     "ExtrafanartNameTemplate",
     "MoveMode",
     "OrganizeResult",
+    "OverwriteResult",
     "PathTemplate",
     "PlaceOutcome",
     "ResolvedPaths",
@@ -45,11 +53,15 @@ __all__ = [
     "SubtitleConflict",
     "TargetCheck",
     "TargetState",
+    "backup_target_path",
     "create_video_link",
+    "current_task_id",
     "discover_subtitles",
     "execute_organize",
     "normalize_link_template",
     "normalize_strm_content_template",
+    "overwrite_target",
+    "overwrite_tmp_path",
     "place_subtitles",
     "render_extrafanart_names",
     "render_path_template",

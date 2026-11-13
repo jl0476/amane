@@ -196,6 +196,8 @@ class OrganizeResult(BaseModel):
     pruned_dirs: int
     conflicts: list[OrganizeConflict]
     """未处理的条目, 最多 ORGANIZE_CONFLICT_LIMIT 条; 恒为 conflicted 条目的前缀, 差额只留在任务日志里."""
+    overwritten: int = 0
+    """经覆写协议落盘的条目数; 是 organized 的子集."""
 
 
 # --- SCAN INVALID ---
