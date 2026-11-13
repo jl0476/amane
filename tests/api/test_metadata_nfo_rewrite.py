@@ -36,10 +36,12 @@ async def _seed_paired_entry(repo: Repository, root: Path) -> dict[str, Any]:
         template_overrides=["video_template", "link_template"],
     )
     assert lib.id is not None
-    await repo.create_media_file(lib.id, path=str(video), metadata_id=meta.id, link_path=str(link))
+    media = await repo.create_media_file(lib.id, path=str(video), metadata_id=meta.id, link_path=str(link))
+    assert media.id is not None
     return {
         "metadata_id": meta.id,
         "library_id": lib.id,
+        "media_id": media.id,
         "lib_root": lib_root,
         "out": out,
         "nfo": out / "MIDV-123.nfo",
@@ -75,7 +77,7 @@ async def test_rewrite_after_template_change_stays_paired(
     assert not (out2 / "MIDV-123.nfo").exists()
     assert not (seeded["lib_root"] / "renamed").exists()
     # 端点是只读消费: link_path 列原样保留.
-    media = await repo.get_media_file(1)
+    media = await repo.get_media_file(seeded["media_id"])
     assert media is not None
     assert media.link_path == str(seeded["link"])
 
@@ -124,7 +126,7 @@ async def test_rewrite_missing_link_file_falls_back_to_video(
     assert body["failures"] == []
     assert video_nfo.is_file()
     assert not seeded["nfo"].exists()
-    media = await repo.get_media_file(1)
+    media = await repo.get_media_file(seeded["media_id"])
     assert media is not None
     assert media.link_path == str(seeded["link"])
 
