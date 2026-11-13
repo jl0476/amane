@@ -448,6 +448,26 @@ def test_inplace_is_not_silent_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert calls == []
 
 
+def test_inplace_copies_when_dest_differs_from_source(tmp_path: Path) -> None:
+    """落盘目标与源不同时 (如字幕以源为底改名), inplace 退化为复制: 副本落盘, 源文件保留原位."""
+    src = tmp_path / "MIDV-123.mp4"
+    src.write_bytes(b"video")
+    inode = src.stat().st_ino
+
+    result = execute_organize.sync(
+        source=src, target_dir=tmp_path / "renamed", target_stem="MIDV-123.zh", mode=MoveMode.INPLACE
+    )
+
+    assert result.outcome is PlaceOutcome.PLACED
+    assert result.dest is not None
+    assert result.dest == tmp_path / "renamed" / "MIDV-123.zh.mp4"
+    # 复制而非移动与硬链接: 副本有独立 inode, 源文件保持原 inode.
+    assert result.dest.read_bytes() == b"video"
+    assert result.dest.stat().st_ino != inode
+    assert src.read_bytes() == b"video"
+    assert src.stat().st_ino == inode
+
+
 @pytest.mark.asyncio(loop_scope="function")
 async def test_inplace_keeps_video_and_writes_sidecars_in_source_dir(
     resource_store: ResourceStore, tmp_path: Path
@@ -495,3 +515,10 @@ async def test_inplace_keeps_video_and_writes_sidecars_in_source_dir(
     assert paths.fanart.exists()
     # video_template 指向的位置没有产物
     assert not (tmp_path / "StudioX").exists()
+
+
+def test_inplace_resolve_requires_source_path(tmp_path: Path) -> None:
+    """inplace 的视频目标即源自身: resolve_paths 缺 source_path 时报错, 不按视频模板落盘."""
+    lib = Library(name="t", path=str(tmp_path), video_template="{number}/{number}.{ext}")
+    with pytest.raises(ValueError, match="source_path"):
+        resolve_paths(lib, Metadata(number="MIDV-123"), ext="mp4", move_mode=MoveMode.INPLACE)
