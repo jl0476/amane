@@ -275,7 +275,7 @@ class AppRuntime:
         return self.parse_rules
 
     async def parse_rules_for(self, library_id: int) -> ParseRuleSet:
-        """该库的识别词集 (含全局合成, 经缓存); 五个生产入口注入用."""
+        """该库的识别词集 (含全局合成, 经缓存); 生产入口注入用."""
         return await self._parse_rule_provider().for_library(library_id)
 
     def invalidate_parse_rules(self) -> None:

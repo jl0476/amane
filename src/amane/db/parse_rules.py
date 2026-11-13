@@ -32,7 +32,7 @@ def _spec(row: ParseRule) -> ParseRuleSpec:
 
 
 class ParseRuleProvider:
-    """按库提供 ``ParseRuleSet``; 五个生产入口注入与 API 校验共用一个实例."""
+    """按库提供 ``ParseRuleSet``; 生产入口注入与 API 校验共用一个实例."""
 
     def __init__(self, repo: Repository) -> None:
         self._repo = repo

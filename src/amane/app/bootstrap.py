@@ -280,6 +280,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
     agent_service.bridge.watcher = watcher_service
     agent_service.bridge.cancel_running_task = runtime.cancel_task
     agent_service.bridge.poll_feed = feed_service.poll_one
+    agent_service.bridge.rules_for = runtime.parse_rules_for
 
     logger.info("amane service ready")
     return AppSession(

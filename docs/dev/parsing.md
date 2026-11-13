@@ -26,5 +26,6 @@
 | 任务请求解析 | `src/amane/api/models/tasks.py::ScrapeRequest.build_payload` |
 | 清理清单 | `src/amane/library/cleanup/footprint.py::build_footprint` |
 | 调度 | `src/amane/scheduler/service.py::WatcherService._on_file_found` |
+| agent 提交 | `src/amane/agent/task_ops.py::submit_task` |
 
 字幕配对 (`src/amane/organize/subtitles.py`) 与 Alembic 数据迁移 (一次性重投影) 不注入: 前者走 `text=` 分支本就跳过路径段, 后者保持历史口径.
