@@ -3198,7 +3198,7 @@ export type Mosaic = 'uncensored' | 'cracked' | 'leaked';
  *
  * 整理时将源文件写入模板路径的方式.
  */
-export type MoveMode = 'move' | 'copy' | 'hardlink' | 'symlink';
+export type MoveMode = 'move' | 'copy' | 'hardlink' | 'symlink' | 'inplace';
 
 /**
  * NamingConfig
@@ -3267,6 +3267,110 @@ export type NamingConfig = {
      * Copy Resources
      */
     copy_resources?: Array<DownloadableResource>;
+};
+
+/**
+ * NamingPreviewRequest
+ *
+ * 命名试算入参 (规格 3.2.4): 不落盘, 走与整理相同的 resolve_paths 代码路径.
+ *
+ * ``media_file_id`` 用真实文件与已刮削的元数据; 两者都缺省时用请求字段构造.
+ * ``library_id`` 缺省用全局默认模板; ``syntax`` 缺省用生效语法.
+ */
+export type NamingPreviewRequest = {
+    /**
+     * Library Id
+     */
+    library_id?: number | null;
+    /**
+     * Media File Id
+     */
+    media_file_id?: number | null;
+    /**
+     * Syntax
+     */
+    syntax?: 'native' | 'jinja' | null;
+    /**
+     * Number
+     */
+    number?: string;
+    /**
+     * Source Path
+     */
+    source_path?: string;
+    content_type?: ContentType;
+    /**
+     * Title
+     */
+    title?: string;
+    /**
+     * Actors
+     */
+    actors?: Array<string>;
+    /**
+     * Studio
+     */
+    studio?: string;
+    /**
+     * Release
+     */
+    release?: string;
+};
+
+/**
+ * NamingPreviewResponse
+ *
+ * 解析结果 + 各产物渲染路径; subtitle 按 `{源文件主干}.srt` 的假想字幕渲染.
+ */
+export type NamingPreviewResponse = {
+    /**
+     * Number
+     */
+    number: string;
+    /**
+     * Content Type
+     */
+    content_type: string;
+    /**
+     * Mosaic
+     */
+    mosaic: string;
+    /**
+     * Subtitle Tag
+     */
+    subtitle_tag: string;
+    /**
+     * Definition
+     */
+    definition: string;
+    /**
+     * Video
+     */
+    video: string;
+    /**
+     * Thumb
+     */
+    thumb: string;
+    /**
+     * Poster
+     */
+    poster: string;
+    /**
+     * Fanart
+     */
+    fanart: string;
+    /**
+     * Nfo
+     */
+    nfo: string;
+    /**
+     * Trailer
+     */
+    trailer: string;
+    /**
+     * Subtitle
+     */
+    subtitle: string;
 };
 
 /**
@@ -3633,6 +3737,12 @@ export type OrganizeSubmission = {
      */
     copy_resources?: Array<DownloadableResource> | null;
     /**
+     * Explicit Fields
+     *
+     * 用户显式给出的模板字段名
+     */
+    explicit_fields?: Array<string>;
+    /**
      * Media File Ids
      *
      * 勾选快照; 与 path 不能同时指定. None 表示 path 范围内的全部索引
@@ -3685,6 +3795,46 @@ export type PathTemplateSchemaResponse = {
      * Subtitle Extensions Default
      */
     subtitle_extensions_default: Array<string>;
+    /**
+     * Syntaxes
+     */
+    syntaxes: Array<PathTemplateSyntaxInfo>;
+};
+
+/**
+ * PathTemplateSyntaxInfo
+ *
+ * 一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认.
+ */
+export type PathTemplateSyntaxInfo = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Default Video Template
+     */
+    default_video_template: string;
+    /**
+     * Placeholders
+     */
+    placeholders: Array<PathTemplateSyntaxVariable>;
+};
+
+/**
+ * PathTemplateSyntaxVariable
+ *
+ * 占位符在对应语法下的变量名: Jinja 映射 4 个带 `?` 的占位符, 其余同名.
+ */
+export type PathTemplateSyntaxVariable = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Variable
+     */
+    variable: string;
 };
 
 /**
@@ -9423,6 +9573,31 @@ export type GetPathTemplateSchemaResponses = {
 };
 
 export type GetPathTemplateSchemaResponse = GetPathTemplateSchemaResponses[keyof GetPathTemplateSchemaResponses];
+
+export type PreviewNamingData = {
+    body: NamingPreviewRequest;
+    path?: never;
+    query?: never;
+    url: '/api/libraries/naming/preview';
+};
+
+export type PreviewNamingErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PreviewNamingError = PreviewNamingErrors[keyof PreviewNamingErrors];
+
+export type PreviewNamingResponses = {
+    /**
+     * Successful Response
+     */
+    200: NamingPreviewResponse;
+};
+
+export type PreviewNamingResponse = PreviewNamingResponses[keyof PreviewNamingResponses];
 
 export type ListLibrariesData = {
     body?: never;

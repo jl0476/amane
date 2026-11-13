@@ -6456,7 +6456,8 @@ export const MoveModeSchema = {
         'move',
         'copy',
         'hardlink',
-        'symlink'
+        'symlink',
+        'inplace'
     ],
     title: 'MoveMode',
     description: '整理时将源文件写入模板路径的方式.'
@@ -6616,6 +6617,158 @@ export const NamingConfigSchema = {
     type: 'object',
     title: 'NamingConfig',
     description: '命名模板与语法. 字段与 Library 行的模板类字段一一对应.'
+} as const;
+
+export const NamingPreviewRequestSchema = {
+    properties: {
+        library_id: {
+            anyOf: [
+                {
+                    type: 'integer'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Library Id'
+        },
+        media_file_id: {
+            anyOf: [
+                {
+                    type: 'integer'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Media File Id'
+        },
+        syntax: {
+            anyOf: [
+                {
+                    type: 'string',
+                    enum: [
+                        'native',
+                        'jinja'
+                    ]
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Syntax'
+        },
+        number: {
+            type: 'string',
+            title: 'Number',
+            default: ''
+        },
+        source_path: {
+            type: 'string',
+            title: 'Source Path',
+            default: ''
+        },
+        content_type: {
+            $ref: '#/components/schemas/ContentType',
+            default: 'censored'
+        },
+        title: {
+            type: 'string',
+            title: 'Title',
+            default: ''
+        },
+        actors: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Actors',
+            default: []
+        },
+        studio: {
+            type: 'string',
+            title: 'Studio',
+            default: ''
+        },
+        release: {
+            type: 'string',
+            title: 'Release',
+            default: ''
+        }
+    },
+    type: 'object',
+    title: 'NamingPreviewRequest',
+    description: '命名试算入参 (规格 3.2.4): 不落盘, 走与整理相同的 resolve_paths 代码路径.\n\n``media_file_id`` 用真实文件与已刮削的元数据; 两者都缺省时用请求字段构造.\n``library_id`` 缺省用全局默认模板; ``syntax`` 缺省用生效语法.'
+} as const;
+
+export const NamingPreviewResponseSchema = {
+    properties: {
+        number: {
+            type: 'string',
+            title: 'Number'
+        },
+        content_type: {
+            type: 'string',
+            title: 'Content Type'
+        },
+        mosaic: {
+            type: 'string',
+            title: 'Mosaic'
+        },
+        subtitle_tag: {
+            type: 'string',
+            title: 'Subtitle Tag'
+        },
+        definition: {
+            type: 'string',
+            title: 'Definition'
+        },
+        video: {
+            type: 'string',
+            title: 'Video'
+        },
+        thumb: {
+            type: 'string',
+            title: 'Thumb'
+        },
+        poster: {
+            type: 'string',
+            title: 'Poster'
+        },
+        fanart: {
+            type: 'string',
+            title: 'Fanart'
+        },
+        nfo: {
+            type: 'string',
+            title: 'Nfo'
+        },
+        trailer: {
+            type: 'string',
+            title: 'Trailer'
+        },
+        subtitle: {
+            type: 'string',
+            title: 'Subtitle'
+        }
+    },
+    type: 'object',
+    required: [
+        'number',
+        'content_type',
+        'mosaic',
+        'subtitle_tag',
+        'definition',
+        'video',
+        'thumb',
+        'poster',
+        'fanart',
+        'nfo',
+        'trailer',
+        'subtitle'
+    ],
+    title: 'NamingPreviewResponse',
+    description: '解析结果 + 各产物渲染路径; subtitle 按 `{源文件主干}.srt` 的假想字幕渲染.'
 } as const;
 
 export const NetworkConfigSchema = {
@@ -7122,6 +7275,15 @@ export const OrganizeSubmissionSchema = {
             title: 'Copy Resources',
             description: '覆盖 Library.copy_resources; None 沿用库设置'
         },
+        explicit_fields: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Explicit Fields',
+            description: '用户显式给出的模板字段名',
+            'x-hidden': true
+        },
         media_file_ids: {
             anyOf: [
                 {
@@ -7201,6 +7363,13 @@ export const PathTemplateSchemaResponseSchema = {
             },
             type: 'array',
             title: 'Subtitle Extensions Default'
+        },
+        syntaxes: {
+            items: {
+                $ref: '#/components/schemas/PathTemplateSyntaxInfo'
+            },
+            type: 'array',
+            title: 'Syntaxes'
         }
     },
     type: 'object',
@@ -7208,10 +7377,59 @@ export const PathTemplateSchemaResponseSchema = {
         'video_default',
         'optional_defaults',
         'placeholders',
-        'subtitle_extensions_default'
+        'subtitle_extensions_default',
+        'syntaxes'
     ],
     title: 'PathTemplateSchemaResponse',
     description: '与 ORGANIZE 实际使用的默认值同源; 路径模板由 resolve_paths 解析, 剧照文件名模板由写盘阶段渲染.'
+} as const;
+
+export const PathTemplateSyntaxInfoSchema = {
+    properties: {
+        name: {
+            type: 'string',
+            title: 'Name'
+        },
+        default_video_template: {
+            type: 'string',
+            title: 'Default Video Template'
+        },
+        placeholders: {
+            items: {
+                $ref: '#/components/schemas/PathTemplateSyntaxVariable'
+            },
+            type: 'array',
+            title: 'Placeholders'
+        }
+    },
+    type: 'object',
+    required: [
+        'name',
+        'default_video_template',
+        'placeholders'
+    ],
+    title: 'PathTemplateSyntaxInfo',
+    description: '一套语法的默认视频模板与占位符名 → 变量名映射, 供前端切换语法时替换默认.'
+} as const;
+
+export const PathTemplateSyntaxVariableSchema = {
+    properties: {
+        name: {
+            type: 'string',
+            title: 'Name'
+        },
+        variable: {
+            type: 'string',
+            title: 'Variable'
+        }
+    },
+    type: 'object',
+    required: [
+        'name',
+        'variable'
+    ],
+    title: 'PathTemplateSyntaxVariable',
+    description: '占位符在对应语法下的变量名: Jinja 映射 4 个带 `?` 的占位符, 其余同名.'
 } as const;
 
 export const PlaybackSourceListResponseSchema = {
