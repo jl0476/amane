@@ -21,19 +21,26 @@ from ..net.http import WebClient
 from ..observability.models import OrganizeConflict, OrganizeConflictReason
 from ..organize import (
     MoveMode,
+    OverwriteResult,
     PlaceOutcome,
     ResolvedPaths,
     SubtitleConflict,
     TargetState,
+    current_task_id,
     discover_subtitles,
     execute_organize,
+    overwrite_target,
     place_subtitles,
+    recover_organize_journals,
     render_extrafanart_names,
     render_strm_content,
     resolve_paths,
     sidecar_template,
     target_state,
     video_dest,
+)
+from ..organize import (
+    OrganizeResult as PlacementResult,
 )
 from ..organize.link import create_video_link
 from ..parsing import ContentType, FileInfo, ParseRuleSet, parse_file_info
@@ -69,6 +76,10 @@ class FileOperationsResult:
     """CONFLICT 时被占用的目标路径."""
     subtitle_conflicts: list[SubtitleConflict] = field(default_factory=list)
     error: str | None = None
+    overwritten: bool = False
+    """PLACED 且经覆写协议落盘 (索引接管已在协议内完成), 调用方据此跳过常规提交."""
+    skipped_images: int = 0
+    """overwrite_image=False 时目标已有图片而跳过的张数."""
 
 
 @dataclass
@@ -127,13 +138,17 @@ async def execute_file_operations(
     nfo_options: NfoOptions | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
+    repo: Repository | None = None,
+    task_id: int | None = None,
 ) -> FileOperationsResult:
     """``file_info`` 由渲染路径的那一次 ``parse_file_info`` 产出, 必须带上 ``has_external_subtitle``.
 
     未带库列时函数不报错, 直接少打中字角标 — 调用方负责构造.
     ``naming`` 非 None 时模板类字段 (strm 正文 / 链接模式 / 字幕扩展名 / 剧照文件名) 取自生效配置,
-    不回读库行 (规格 3.1.3). ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关, 覆写协议接入
-    前仅随生效配置同路传递.
+    不回读库行 (规格 3.1.3). ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关:
+    ``overwrite_video`` 接入 OCCUPIED 分派 (False 维持冲突跳过, True 进入覆写协议, 规格 3.4.2),
+    ``overwrite_image`` 接入图片写入. 覆写协议需要 ``repo`` (journal 与索引接管) 与 ``library``
+    (库边界); 缺任一开关即开时按失败处理. ``task_id`` 用于备份 / 临时文件命名与 journal 追查.
     """
     source_path = await existing_disk_path(Path(media_file.path))
     if source_path is None:
@@ -144,19 +159,54 @@ async def execute_file_operations(
     # 读不出目标状态时同样立即返回, 但记为失败而不是冲突.
     # 目标路径必须与 execute_organize 同一算法: 模板写死扩展名时, 模板渲染结果与真实目标不同.
     dest = video_dest(paths.video.parent, paths.video.stem, source_path)
+    # 整理同一目标前就地恢复: 该目标有未完成的覆写时先按恢复矩阵处理, 占用判定基于恢复后的磁盘事实.
+    if repo is not None and await repo.get_organize_journal_by_target(str(dest)) is not None:
+        recovered = await recover_organize_journals(repo, target_path=str(dest))
+        logger.info("organize journal in-place recovery finished", dest=str(dest), rows=recovered)
     check = await target_state(source_path, dest)
-    if check.state is TargetState.OCCUPIED:
+    if check.state is TargetState.OCCUPIED and not overwrite_video:
         logger.warning("organize target occupied", source=str(source_path), dest=str(dest))
         return FileOperationsResult(outcome=PlaceOutcome.CONFLICT, conflict_target=dest)
     if check.state is TargetState.UNKNOWN:
         logger.warning("organize target state unknown", source=str(source_path), dest=str(dest), error=check.error)
         return FileOperationsResult(outcome=PlaceOutcome.FAILED, error=check.error)
 
+    # 发现字幕: 必须在视频移动前检查同目录 (覆写协议在阶段 B 移走源文件).
+    subtitles: list[Path] = []
+    if library is not None:
+        extensions = naming.subtitle_extensions if naming is not None else library.subtitle_extensions
+        subtitles = await discover_subtitles(source_path, extensions, file_info)
+
+    # 覆写协议: 前置检查是该预检的延伸 — 目标必须是库内视频文件且不同于源 (OCCUPIED 已排除同文件).
+    overwrite_result: OverwriteResult | None = None
+    if check.state is TargetState.OCCUPIED:
+        precondition = _overwrite_precondition(dest, library)
+        if precondition is not None:
+            return FileOperationsResult(outcome=PlaceOutcome.FAILED, error=precondition)
+        if repo is None or library is None:
+            return FileOperationsResult(outcome=PlaceOutcome.FAILED, error="覆写需要数据库与媒体库上下文")
+        overwrite_result = await overwrite_target(
+            source=source_path,
+            target=dest,
+            mode=move_mode,
+            repo=repo,
+            media_file=media_file,
+            task_id=task_id,
+        )
+        if overwrite_result.outcome is not PlaceOutcome.PLACED:
+            logger.warning(
+                "overwrite not placed", source=str(source_path), dest=str(dest), outcome=str(overwrite_result.outcome)
+            )
+            if overwrite_result.outcome is PlaceOutcome.CONFLICT:
+                return FileOperationsResult(outcome=PlaceOutcome.CONFLICT, conflict_target=dest)
+            return FileOperationsResult(outcome=PlaceOutcome.FAILED, error=overwrite_result.error)
+
     # 下载图片; 水印打在库路径副本上, 不能修改 Resource 原图.
+    skipped_images = 0
     if web_client and download_images:
         logger.debug("downloading images via store", number=metadata.number)
         kinds = set(copy_resources) if copy_resources is not None else set(DownloadableResource)
-        await _download_images_via_store(
+        skipped_images = await _download_images_via_store(
             metadata,
             resource_store,
             web_client,
@@ -168,20 +218,18 @@ async def execute_file_operations(
             watermark_dir=watermark_dir,
             library=library,
             naming=naming,
+            overwrite_image=overwrite_image,
         )
 
-    # 发现字幕: 必须在视频移动前检查同目录.
-    subtitles: list[Path] = []
-    if library is not None:
-        extensions = naming.subtitle_extensions if naming is not None else library.subtitle_extensions
-        subtitles = await discover_subtitles(source_path, extensions, file_info)
-
-    org_result = await execute_organize(
-        source=source_path,
-        target_dir=paths.video.parent,
-        target_stem=paths.video.stem,
-        mode=move_mode,
-    )
+    if overwrite_result is not None:
+        org_result = PlacementResult(outcome=PlaceOutcome.PLACED, dest=dest)
+    else:
+        org_result = await execute_organize(
+            source=source_path,
+            target_dir=paths.video.parent,
+            target_stem=paths.video.stem,
+            mode=move_mode,
+        )
 
     if org_result.outcome is PlaceOutcome.CONFLICT:
         return FileOperationsResult(outcome=PlaceOutcome.CONFLICT, conflict_target=org_result.dest)
@@ -217,6 +265,12 @@ async def execute_file_operations(
         link_result = await create_video_link(org_result.dest, paths.link, mode, content=strm_content)
         if link_result.outcome is not PlaceOutcome.PLACED:
             return FileOperationsResult(outcome=PlaceOutcome.FAILED, dest=org_result.dest, error=link_result.error)
+        # 链接路径持久化: resolve_paths 每次按当前模板重渲染, 历史落盘位置只能靠该列 (规格 3.4.4).
+        if repo is not None and media_file.id is not None:
+            try:
+                await repo.update_media_file(media_file.id, link_path=str(link_result.dest))
+            except Exception as e:
+                logger.warning("link_path persist failed", dest=str(link_result.dest), error=str(e))
 
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
@@ -243,10 +297,23 @@ async def execute_file_operations(
     if org_result.outcome is PlaceOutcome.PLACED:
         logger.debug("file operations done", number=metadata.number, dest=str(org_result.dest), mode=str(move_mode))
         return FileOperationsResult(
-            outcome=PlaceOutcome.PLACED, dest=org_result.dest, subtitle_conflicts=subtitle_conflicts
+            outcome=PlaceOutcome.PLACED,
+            dest=org_result.dest,
+            subtitle_conflicts=subtitle_conflicts,
+            overwritten=overwrite_result is not None,
+            skipped_images=skipped_images,
         )
     logger.debug("file operations failed", number=metadata.number, error=org_result.error)
     return FileOperationsResult(outcome=PlaceOutcome.FAILED, error=org_result.error)
+
+
+def _overwrite_precondition(target: Path, library: Library | None) -> str | None:
+    """覆写协议的阶段 A 前置检查延伸: 目标必须是库内视频文件; 返回 None 表示通过."""
+    if library is not None and not is_descendant(target, Path(library.path)):
+        return f"覆写目标不在媒体库内, 拒绝覆写: {target}"
+    if target.suffix.lower() not in MEDIA_EXTENSIONS:
+        return f"覆写目标不是视频文件, 拒绝覆写: {target}"
+    return None
 
 
 async def apply_file_operations(
@@ -265,6 +332,7 @@ async def apply_file_operations(
     nfo_options: NfoOptions | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
+    task_id: int | None = None,
     rules: ParseRuleSet | None = None,
 ) -> FileOperationsResult | None:
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
@@ -317,6 +385,8 @@ async def apply_file_operations(
         nfo_options=nfo_options,
         overwrite_video=overwrite_video,
         overwrite_image=overwrite_image,
+        repo=repo,
+        task_id=task_id,
     )
 
 
@@ -418,19 +488,34 @@ def _place_library_images(
     file_info: FileInfo | None,
     content_type: ContentType,
     watermark_dir: Path | None,
-) -> None:
-    # 复制封面 / 海报 / 预告片 / extrafanart 到库路径, 不判断目标上是否已有产物.
-    # fanart 没有刮削来源, 内容取 thumb, 随 thumb 一同重写.
+    overwrite_image: bool = True,
+) -> int:
+    """复制封面 / 海报 / 预告片 / extrafanart 到库路径, 返回因目标已有产物而跳过的张数.
+
+    ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
+    记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
+    水印只作用于本轮写出的图, 跳过的既有图不重编码.
+    """
+    skipped = 0
+    thumb_written = False
+    poster_written = False
     if thumb_local is not None and DownloadableResource.thumb in kinds:
-        paths.thumb.parent.mkdir(parents=True, exist_ok=True)
-        _copy_into_library(thumb_local, paths.thumb)
-        paths.fanart.parent.mkdir(parents=True, exist_ok=True)
-        _copy_into_library(thumb_local, paths.fanart)
+        if not overwrite_image and paths.thumb.exists():
+            skipped += 1
+        else:
+            paths.thumb.parent.mkdir(parents=True, exist_ok=True)
+            _copy_into_library(thumb_local, paths.thumb)
+            paths.fanart.parent.mkdir(parents=True, exist_ok=True)
+            _copy_into_library(thumb_local, paths.fanart)
+            thumb_written = True
 
     if DownloadableResource.poster in kinds:
-        if poster_local is not None:
+        if not overwrite_image and paths.poster.exists():
+            skipped += 1
+        elif poster_local is not None:
             paths.poster.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(poster_local, paths.poster)
+            poster_written = True
         elif (
             thumb_local is not None
             and config is not None
@@ -444,21 +529,30 @@ def _place_library_images(
                 poster_ratio=config.scraping.poster_ratio,
                 jpeg_quality=config.scraping.jpeg_quality,
             )
+            poster_written = True
 
     if trailer_local is not None and DownloadableResource.trailer in kinds:
-        paths.trailer.parent.mkdir(parents=True, exist_ok=True)
-        _copy_into_library(trailer_local, paths.trailer)
+        if not overwrite_image and paths.trailer.exists():
+            skipped += 1
+        else:
+            paths.trailer.parent.mkdir(parents=True, exist_ok=True)
+            _copy_into_library(trailer_local, paths.trailer)
 
     if extrafanart_targets and DownloadableResource.extrafanart in kinds:
         paths.extrafanart_dir.mkdir(parents=True, exist_ok=True)
         for name, p in extrafanart_targets:
-            _copy_into_library(p, paths.extrafanart_dir / name)
+            target = paths.extrafanart_dir / name
+            if not overwrite_image and target.exists():
+                skipped += 1
+                continue
+            _copy_into_library(p, target)
 
-    # 叠加水印 (thumb / poster).
+    # 叠加水印 (thumb / poster); 跳过的产物不重写, 水印也随之不动.
+    # overwrite_image=True 时保持对既有图叠印: 覆盖写路径的产物也算本轮写的.
     wm = config.watermark if config is not None else WatermarkConfig()
     if wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
-        if paths.thumb.exists():
+        if (thumb_written or overwrite_image) and paths.thumb.exists():
             apply_cover_watermarks_from_info(
                 paths.thumb,
                 file_info,
@@ -468,7 +562,7 @@ def _place_library_images(
                 scale=wm.scale,
                 corners=wm.corners,
             )
-        if paths.poster.exists():
+        if (poster_written or overwrite_image) and paths.poster.exists():
             apply_cover_watermarks_from_info(
                 paths.poster,
                 file_info,
@@ -478,6 +572,7 @@ def _place_library_images(
                 scale=wm.scale,
                 corners=wm.corners,
             )
+    return skipped
 
 
 async def _download_images_via_store(
@@ -492,8 +587,9 @@ async def _download_images_via_store(
     watermark_dir: Path | None = None,
     library: Library | None = None,
     naming: NamingConfig | None = None,
-) -> None:
-    """优先用 Resource 已有文件; 缺失则现场 acquire.
+    overwrite_image: bool = True,
+) -> int:
+    """优先用 Resource 已有文件; 缺失则现场 acquire. 返回因目标已有图片而跳过的张数.
 
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     """
@@ -536,7 +632,7 @@ async def _download_images_via_store(
         )
         extrafanart_targets = list(zip(names, extrafanart, strict=True))
 
-    await _place_library_images(
+    return await _place_library_images(
         paths,
         thumb_local=thumb_local,
         poster_local=poster_local,
@@ -547,6 +643,7 @@ async def _download_images_via_store(
         file_info=file_info,
         content_type=content_type,
         watermark_dir=watermark_dir,
+        overwrite_image=overwrite_image,
     )
 
 
@@ -656,12 +753,14 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
             live = indexed
 
         organized = 0
+        overwritten = 0
         conflicted = 0
         conflicts: list[OrganizeConflict] = []
         failed = 0
         total = len(live)
         # 任务入口解析一次生效配置, 向下传参; 下层不得回读库行覆盖已解析结果 (规格 3.1.3).
         effective = await resolve_effective_config(self._repo, self._config, library, payload)
+        task_id = current_task_id()
         # 只有移动方式会移走源文件, 复制 / 硬链接 / 符号链接不腾空目录.
         prune_candidates: set[Path] = set()
         collect_prune = payload.prune_empty_dirs and library.move_mode is MoveMode.MOVE
@@ -703,6 +802,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     nfo_options=effective.nfo_options,
                     overwrite_video=effective.common.overwrite_video,
                     overwrite_image=effective.common.overwrite_image,
+                    task_id=task_id,
                     rules=rules,
                 )
                 if fop_result is None:
@@ -715,6 +815,9 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                 match fop_result.outcome:
                     case PlaceOutcome.PLACED:
                         organized += 1
+                        if fop_result.overwritten:
+                            overwritten += 1
+                        skipped += fop_result.skipped_images
                         if collect_prune:
                             prune_candidates.update(ancestor_dirs(file_path, library_root=library_root))
                         # 字幕冲突的 path 是留在原处的那条字幕, 不是视频源路径.
@@ -759,6 +862,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
             skipped=skipped,
             conflicted=conflicted,
             failed=failed,
+            overwritten=overwritten,
             pruned_dirs=pruned_dirs,
         )
 
@@ -771,6 +875,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                 failed=failed,
                 pruned_dirs=pruned_dirs,
                 conflicts=conflicts,
+                overwritten=overwritten,
             ),
         )
 

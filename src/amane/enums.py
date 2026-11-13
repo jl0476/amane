@@ -84,6 +84,17 @@ class MoveMode(StrEnum):
     """源文件不动, 在源文件所在目录内生成整理结果 (图片 / NFO / 字幕); 视频模板被忽略."""
 
 
+class OrganizeJournalPhase(StrEnum):
+    """organize_journal.phase 的取值 (覆写协议三相位, 规格 3.4.2).
+
+    journal 的 phase / mode 列是普通 TEXT, 落库一律取 value (小写), 不走 Field(Enum) 的成员名口径.
+    """
+
+    PREPARED = "prepared"
+    PLACED = "placed"
+    COMMITTED = "committed"
+
+
 class LinkMode(StrEnum):
     """整理后在 link_template 位置如何指向真实视频."""
 

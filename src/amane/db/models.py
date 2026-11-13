@@ -6,7 +6,15 @@ from sqlalchemy import Boolean, Column, Index, String, Text, UniqueConstraint, e
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import JSON, Field, SQLModel, col, select
 
-from ..enums import ActorGender, DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
+from ..enums import (
+    ActorGender,
+    DownloadableResource,
+    LibraryAutomation,
+    LibraryIngest,
+    LinkMode,
+    MoveMode,
+    OrganizeJournalPhase,
+)
 from ..library import (
     DEFAULT_SUBTITLE_EXTENSIONS,
     DEFAULT_TRAILER_PATTERN,
@@ -192,6 +200,9 @@ class MediaFile(SQLModel, table=True):
     codec: str | None = None
     number: str | None = Field(default=None, index=True)
     status: MediaFileStatus = Field(default=MediaFileStatus.PENDING, index=True)
+    # 链接落盘位置 (link_template 渲染结果): 整理写入链接成功后落库, 不随模板重渲染改写.
+    # 读取侧在链接文件已不存在时按无链接处理, 不改写该列 (规格 3.4.4).
+    link_path: str | None = None
     # 文件相位: path 的投影, 随 path 写入/更新; 不进对外 PATCH.
     mosaic: Mosaic | None = Field(default=None, index=True)
     #: 文件名带中字标记, 只由 path 派生.
@@ -217,6 +228,43 @@ def has_subtitle_predicate() -> ColumnElement[bool]:
     判定中字的查询与筛选一律走这里, 与实例属性口径必须一致.
     """
     return or_(col(MediaFile.has_subtitle_in_name).is_(True), col(MediaFile.has_external_subtitle).is_(True))
+
+
+class OrganizeJournal(SQLModel, table=True):
+    """覆写操作日志 (规格 3.4.2): 阶段 A 独立提交, 行删除只在恢复动作全部成功后.
+
+    分派与前置检查见 `handlers/file.py::execute_file_operations`, 协议本体见
+    `organize/overwrite.py::overwrite_target`, 恢复矩阵见 `organize/overwrite.py::recover_journal`.
+
+    ``source_file_id`` / ``target_file_id`` 只是线索不是身份: SQLite 无 ``AUTOINCREMENT``,
+    删除最大 rowid 后新行会复用该 id. 恢复一律按 (path, oshash, size) 指纹三字段全等复验;
+    阶段 A 现场补算后 ``source_oshash`` / ``source_size`` 恒非空, 不存在「双方都空即跳过」的分支.
+    """
+
+    __tablename__ = "organize_journal"  # type: ignore[assignment]
+    __table_args__ = (UniqueConstraint("source_path", "target_path", name="uq_organize_journal_source_target"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int | None = Field(default=None, index=True)
+    """冗余记录入队任务, 便于按任务追查; 与协议正确性无关."""
+    mode: str
+    """MoveMode 的 value (move / copy / hardlink / symlink); 恢复靠它决定是否删源."""
+    source_path: str
+    """源的库内路径 (整理前, NFC)."""
+    source_file_id: int | None = None
+    source_oshash: str | None = None
+    """覆写前源内容指纹; 协议保证写入前已补算为非空."""
+    source_size: int | None = None
+    source_metadata_id: int | None = None
+    source_number: str | None = None
+    target_path: str
+    target_file_id: int | None = None
+    """目标旧索引的 MediaFile.id; 目标未被索引时为 None, 不能作为恢复的前提."""
+    backup_path: str
+    phase: str = Field(default=OrganizeJournalPhase.PREPARED.value, index=True)
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class _VrProperty(property):

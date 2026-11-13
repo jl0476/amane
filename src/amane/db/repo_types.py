@@ -314,6 +314,7 @@ class MediaFileUpdates(TypedDict, total=False):
     status: MediaFileStatus
     metadata_id: int | None
     has_external_subtitle: bool
+    link_path: str | None
 
 
 class LibraryUpdates(TypedDict, total=False):
