@@ -15,7 +15,7 @@ HTTP 宿主与 DI 在 `app.py` / `deps.py` / `middleware.py` / `spa.py`; `routes
 |------|------|------|
 | `health` | `/` | 就绪探测 |
 | `system` | `/system` | 桌面契约 / 重启 (无监督者 403) / 版本检查 |
-| `libraries` | `/libraries` | 库 CRUD; 覆盖 CRUD 与生效配置; create 可携首刷; 路径模板 schema |
+| `libraries` | `/libraries` | 库 CRUD; 覆盖 CRUD 与生效配置; create 可携首刷; 路径模板 schema 与命名试算 |
 | `webhooks` | `/webhooks` | CloudDrive 回调; 见 [watcher.md](watcher.md) |
 | `feeds` | `/feeds` | 源 CRUD + 立即拉取 + 条目历史检索 / 批量操作 / 重刮削; 见 [feeds.md](feeds.md) |
 | `media` | `/media` | MediaFile + 记录批量删除 |
@@ -52,6 +52,7 @@ OpenAPI 列出参数, 不表达组合语义:
 - 评论正文先去除首尾空白再校验长度, 全空白与超过 10000 字符均为 422. `updated_at` 晚于 `created_at` 表示正文被编辑过: PATCH 提交与库中一致的正文不写库, 也不刷新 `updated_at`, 前端据此判定「已编辑」; 排序由前端在详情响应上完成, 端点不提供 order 参数; 正文按 Markdown 存储与返回, 服务端不解析.
 - `/metadata` 的语义参数: `semantic_query` 出现时接管排序, 整句只编码一次, 封面与剧照共用一次点积; 候选集来自同一套筛选 (含 `search` 与 `saved_query_id`), 无筛选时扫全索引. `semantic_kind=all|cover|still` 选参与排名的图片来源; `sort_by` / `order` 被忽略, `offset` / `limit` (上限 200) 直接分页, `total` 是候选条目总数 (按条目去重). `items` 仍是 `MetadataResponse`, 命中图放在并列的 `semantic_hits` (`id` / `kind` / `resource_url` / `similarity`), 同一条目只保留名次最高的那张图; `similarity` 只在同一次查询内可比, 不设阈值; 同分按条目 id 升序, 翻页稳定. 模型未就绪时仅该参数出现时 503; 索引生命周期见 [semantic.md](semantic.md).
 - `/files`: 路径解析为非严格 (虚拟 / 网络挂载盘无法规范化查询时按字面兜底), 相对 `path` 经 `base` 参数解析 (缺省 = 首个安全目录). 响应含规范 `path` (resolve 后的绝对路径), 前端文件浏览器以它为面包屑的唯一权威形态, 不做分段拼接.
+- 命名试算 `POST /libraries/naming/preview` 与整理共用 `resolve_paths` 渲染路径, 纯计算不落盘; 无 `library_id` 时按全局默认模板、库根 `/` 试算, `syntax` 参数只对该次试算覆盖生效语法. `PUT /libraries/{library_id}/overrides/naming` 在语法未变时只校验写入的模板字段; 切换语法时对合成后的生效链全部模板做渲染探针, 渲染结果含未替换残留 (`{ident}` / `{{` / `{%`) 即 422 拒绝保存.
 
 ## 依赖注入
 
