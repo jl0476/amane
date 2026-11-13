@@ -354,8 +354,11 @@ async def _journal_for(
     oshash: str,
     size: int,
     target_file_id: int | None,
+    source_metadata_id: int | None = None,
+    source_number: str | None = None,
     phase: str = "prepared",
 ) -> int:
+    """身份参数缺省取源行现值; 可显式传入与现值不同的归属 (恢复时复验出的另一行)."""
     assert source.id is not None
     journal = await repo.create_organize_journal(
         task_id=None,
@@ -364,8 +367,8 @@ async def _journal_for(
         source_file_id=source.id,
         source_oshash=oshash,
         source_size=size,
-        source_metadata_id=source.metadata_id,
-        source_number=source.number,
+        source_metadata_id=source_metadata_id if source_metadata_id is not None else source.metadata_id,
+        source_number=source_number if source_number is not None else source.number,
         target_path=target_path,
         target_file_id=target_file_id,
         backup_path=f"{target_path}.amane-overwrite-1",
@@ -379,13 +382,17 @@ async def _journal_for(
 @pytest.mark.asyncio
 async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: Path) -> None:
     """接管按覆写表更新: metadata_id / number 覆盖而非补空, oshash / size 取核验值,
-    duration / codec 置空待刷新, 相位字段按新路径派生, journal 同事务推进 committed."""
+    duration / codec 置空待刷新, 相位字段按新路径派生, journal 同事务推进 committed.
+
+    源行建模恢复时复验出的另一行: 绑定与 journal 记录的归属不同,
+    补空或不赋值都修不回来, 只有覆盖语义能通过.
+    """
     src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
     target = _video(tmp_path / "lib" / "Studio" / "BBB-C.mp4", CONTENT_TARGET)
     meta_old = await repo.upsert_metadata(number="OLD-001")
     meta_new = await repo.upsert_metadata(number="NSFS-039")
     assert meta_old.id is not None and meta_new.id is not None
-    # 目标旧行: 已绑定别的条目且刮削字段齐全 (补空分支不会覆盖它们, 接管必须覆盖).
+    # 目标旧行: 已绑定别的条目且刮削字段齐全, 接管后整行删除.
     occupant = await repo.create_media_file(
         1,
         path=str(target),
@@ -398,9 +405,18 @@ async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: P
         codec="h264",
     )
     assert occupant.id is not None
-    # 源行: 路径无中字标记, 接管到 -C 路径后相位必须重派生.
+    # 源行: 绑定停在旧条目, 刮削字段齐全 (路径无中字标记, 相位须按 -C 目标路径重派生);
+    # journal 记录接管后应有的归属, 行现值 ≠ journal 值, 覆盖语义才可观察.
     source = await repo.create_media_file(
-        1, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta_new.id
+        1,
+        path=str(src),
+        number="OLD-001",
+        status=MediaFileStatus.SCRAPED,
+        metadata_id=meta_old.id,
+        oshash="oldoshasholdoshas",
+        size=1,
+        duration=12.5,
+        codec="h264",
     )
     assert source.id is not None
     expected_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
@@ -411,6 +427,8 @@ async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: P
         oshash=expected_oshash,
         size=src.stat().st_size,
         target_file_id=occupant.id,
+        source_metadata_id=meta_new.id,
+        source_number="NSFS-039",
     )
 
     await repo.takeover_overwrite_target(
@@ -421,12 +439,13 @@ async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: P
     row = await repo.get_media_file(source.id)
     assert row is not None
     assert row.path == str(target)
+    # 归属改写为 journal 记录值: 覆盖, 而非保留现值或仅补空.
     assert row.metadata_id == meta_new.id
     assert row.number == "NSFS-039"
     assert row.status is MediaFileStatus.SCRAPED
     assert row.oshash == expected_oshash
     assert row.size == src.stat().st_size
-    # 目标内容已变: 时长 / 编码置空待刷新; 相位按新路径派生 (-C 中字标记).
+    # 目标内容已变: 原有时长 / 编码清空待刷新; 相位按新路径派生 (-C 中字标记).
     assert row.duration is None
     assert row.codec is None
     assert row.has_subtitle_in_name is True
@@ -434,11 +453,17 @@ async def test_takeover_overwrites_identity_fields(repo: Repository, tmp_path: P
     assert journal is not None and journal.phase == "committed"
 
 
+@pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.asyncio
-async def test_takeover_target_without_index(repo: Repository, tmp_path: Path) -> None:
-    """target_file_id=NULL: 源行 path 改目标路径, 无目标旧行可删."""
+async def test_takeover_target_without_index(repo: Repository, tmp_path: Path, indexed: bool) -> None:
+    """target_file_id=NULL: 源行 path 改目标路径; 目标路径上建 journal 后才入库的行按路径现查现删."""
     src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
     target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    # 目标行晚于建 journal 入库 (扫描并发), id 未记入 journal.
+    occupant: MediaFile | None = None
+    if indexed:
+        occupant = await repo.create_media_file(1, path=str(target), number="OLD-001")
+        assert occupant.id is not None
     source = await repo.create_media_file(1, path=str(src), number="NSFS-039")
     assert source.id is not None
     expected_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
@@ -455,6 +480,9 @@ async def test_takeover_target_without_index(repo: Repository, tmp_path: Path) -
         journal_id, source_file_id=source.id, oshash=expected_oshash, size=src.stat().st_size
     )
 
+    if occupant is not None:
+        assert occupant.id is not None
+        assert await repo.get_media_file(occupant.id) is None
     row = await repo.get_media_file(source.id)
     assert row is not None and row.path == str(target)
     journal = await repo.get_organize_journal(journal_id)
@@ -523,3 +551,50 @@ async def test_takeover_missing_source_row_raises(repo: Repository, tmp_path: Pa
 
     journal = await repo.get_organize_journal(journal_id)
     assert journal is not None and journal.phase == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_takeover_missing_journal_row_raises(repo: Repository, tmp_path: Path) -> None:
+    """journal 行不存在 → 抛错, 源行不被触碰 (接管的前置校验先于一切写)."""
+    src = tmp_path / "lib" / "incoming" / "AAA.mp4"
+    source = await repo.create_media_file(1, path=str(src), number="NSFS-039")
+    assert source.id is not None
+    assert await repo.list_organize_journals() == []
+
+    with pytest.raises(LookupError):
+        await repo.takeover_overwrite_target(1, source_file_id=source.id, oshash="deadbeefdeadbeef", size=4096)
+
+    row = await repo.get_media_file(source.id)
+    assert row is not None and row.path == str(src)
+
+
+@pytest.mark.asyncio
+async def test_takeover_reentry_with_source_at_target(repo: Repository, tmp_path: Path) -> None:
+    """源行已在目标路径时重入接管: 路径查到的占用行即源行自身, 按 id 跳过删除, 幂等收敛."""
+    src = _video(tmp_path / "lib" / "incoming" / "AAA.mp4", CONTENT_SOURCE)
+    target = _video(tmp_path / "lib" / "Studio" / "BBB.mp4", CONTENT_TARGET)
+    source = await repo.create_media_file(1, path=str(src), number="NSFS-039")
+    assert source.id is not None
+    expected_oshash = _fingerprint(tmp_path, CONTENT_SOURCE)
+    journal_id = await _journal_for(
+        repo,
+        source=source,
+        target_path=str(target),
+        oshash=expected_oshash,
+        size=src.stat().st_size,
+        target_file_id=None,
+    )
+
+    await repo.takeover_overwrite_target(
+        journal_id, source_file_id=source.id, oshash=expected_oshash, size=src.stat().st_size
+    )
+    # 二次接管: 不按 id 跳过自身的话, 源行会被当作目标旧行删掉.
+    await repo.takeover_overwrite_target(
+        journal_id, source_file_id=source.id, oshash=expected_oshash, size=src.stat().st_size
+    )
+
+    assert [row.id for row in await repo.list_media_files(limit=None)] == [source.id]
+    row = await repo.get_media_file(source.id)
+    assert row is not None and row.path == str(target) and row.number == "NSFS-039"
+    journal = await repo.get_organize_journal(journal_id)
+    assert journal is not None and journal.phase == "committed"
