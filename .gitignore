@@ -210,5 +210,7 @@ androidapp/*.keystore
 # parley discussion workspaces created by tooling — never track
 .parley/
 
-# 本地逆向调研材料（私人媒体数据与大体积符号表，不入库）
+# 本地逆向调研材料（私人媒体数据、大体积符号表与上游克隆，不入库）
+# 说明文档、总纲与 MDC 自身符号表已整理进 docs/superpowers/mdc-roadmap.md 与
+# docs/superpowers/mdc-research/, 本目录只作原始产物存放处, 不跟踪.
 .research/

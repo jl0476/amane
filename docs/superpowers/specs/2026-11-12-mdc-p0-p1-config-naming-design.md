@@ -3,7 +3,8 @@
 > 日期: 2026-11-12
 > 状态: 待审阅（第 10 版，按实现审核修订 2 项 P1 / 5 项 P2）
 > 范围: MDC 能力迁移的第一阶段（配置基础层 + 命名整理 + 原文双轨字段）
-> 上游总纲: `.research/mdc/migration-roadmap.md`
+> 上游总纲: `docs/superpowers/mdc-roadmap.md`
+> 逆向材料: `docs/superpowers/mdc-research/`
 
 ## 0. 已定决策
 
