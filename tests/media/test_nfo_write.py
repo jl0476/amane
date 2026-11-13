@@ -174,7 +174,7 @@ async def test_default_options_match_golden(tmp_path: Path) -> None:
 
     assert await write_nfo(full_metadata(), nfo_path, NfoOptions()) is True
 
-    assert nfo_path.read_bytes() == GOLDEN.encode("utf-8")
+    assert nfo_path.read_text(encoding="utf-8") == GOLDEN
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -212,7 +212,7 @@ async def test_all_element_switches_off_writes_skeleton(tmp_path: Path) -> None:
 
     assert await write_nfo(full_metadata(), nfo_path, options) is True
 
-    assert nfo_path.read_bytes() == b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n</movie>\n'
+    assert nfo_path.read_text(encoding="utf-8") == '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n</movie>\n'
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -484,4 +484,4 @@ async def test_default_options_ignore_original_fields(tmp_path: Path) -> None:
 
     assert await write_nfo(entry, nfo_path, NfoOptions()) is True
 
-    assert nfo_path.read_bytes() == GOLDEN.encode("utf-8")
+    assert nfo_path.read_text(encoding="utf-8") == GOLDEN

@@ -93,4 +93,4 @@ async def test_default_nfo_matches_golden(tmp_path: Path) -> None:
 
     assert await write_nfo(full_metadata(), nfo_path) is True
 
-    assert nfo_path.read_bytes() == GOLDEN.encode("utf-8")
+    assert nfo_path.read_text(encoding="utf-8") == GOLDEN

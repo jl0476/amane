@@ -1,5 +1,6 @@
 """命名试算端点 (规格 §3.2.4): 与 resolve_paths 同一代码路径, 纯计算不落盘."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -124,7 +125,7 @@ async def test_preview_supports_media_file_id_and_global_default(
         json={"number": "ABC-123", "studio": "StudioX", "source_path": "/media/115/ABC-123-U.mp4"},
     )
     assert resp.status_code == 200
-    assert resp.json()["video"] == "/StudioX/ABC-123/ABC-123.mp4"
+    assert Path(resp.json()["video"]) == Path(os.path.abspath("/StudioX/ABC-123/ABC-123.mp4"))
 
     # 不存在的 media_file_id → 404
     resp = await client.post("libraries/naming/preview", json={"media_file_id": 99999})
@@ -147,7 +148,7 @@ async def test_preview_respects_library_naming_override(client: AsyncClient, rep
         },
     )
     assert resp.status_code == 200
-    assert resp.json()["video"] == f"{safe_path}/override/Studio-ov/NSFS-039.mp4"
+    assert Path(resp.json()["video"]) == Path(safe_path) / "override" / "Studio-ov" / "NSFS-039.mp4"
 
 
 INVALID_PREVIEW_CASES = [
