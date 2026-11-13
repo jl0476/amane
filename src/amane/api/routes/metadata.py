@@ -1,4 +1,5 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import structlog
@@ -6,18 +7,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import TypeAdapter
 
 from ...aggregate import compute_merge_updates
+from ...config import NamingConfig, NfoConfig
+from ...config.overrides import ConfigResolver
 from ...db.embeddings import EmbeddingKind
 from ...db.models import Metadata, MetadataSortField, SavedQueryEntity, SortOrder, TaskType
 from ...db.repo_types import WriteMode
 from ...db.repos.media import file_phase_of
+from ...enums import ActorGender
 from ...handlers import ScrapePayload
-from ...media import manual_crop_image
+from ...media import NfoOptions, manual_crop_image, write_nfo
+from ...organize.path_templates import resolve_sidecar_paths
 from ...parsing import FilePhaseSummary as ParsedFilePhase
-from ...parsing import summarize_file_phases
+from ...parsing import parse_file_info, summarize_file_phases
 from ...semantic import SemanticUnavailable
 from ...utils.dates import normalize_calendar_date
 from ...utils.model import to_resp
-from ..deps import RepoDep, RuntimeDep
+from ..deps import ConfigDep, RepoDep, RuntimeDep
 from ..models import (
     CommentResponse,
     CropPosterRequest,
@@ -33,6 +38,8 @@ from ..models import (
     MetadataMergeEntriesRequest,
     MetadataResponse,
     MetadataUserTagsRequest,
+    NfoRewriteFailure,
+    NfoRewriteResponse,
     PartialMetadata,
     SemanticHitInfo,
     UserTagLinksResponse,
@@ -410,6 +417,107 @@ async def crop_poster_from_thumb(
         poster_url=poster_url,
     )
     return to_resp(MetadataResponse, updated)
+
+
+class _NfoPairingMismatch(ValueError):
+    """重写出的 NFO 与消费文件不同目录或不同主干."""
+
+
+async def _rewrite_media_nfo(
+    metadata: Metadata,
+    media_path: str,
+    link_path: str | None,
+    has_external_subtitle: bool,
+    library_id: int,
+    *,
+    repo: RepoDep,
+    resolver: ConfigResolver,
+    safe_dirs: Sequence[Path] | None,
+    actor_genders: Mapping[str, ActorGender] | None,
+) -> Path:
+    """按已落盘路径重写单份文件的 NFO (规格 3.4.4): 只渲染 NFO, 不重算视频与链接位置.
+
+    消费路径取持久化的 ``link_path``; 链接文件已不在盘上时按无链接处理 (回退视频路径),
+    该列是只读消费, 不改写. ``source_path`` 取落盘路径: 原始路径未持久化, 含 ``raw_*`` 的
+    附属模板在重写时无法还原整理时的取值, 因此本端点只渲染 NFO (默认模板不含 ``raw_*``).
+    """
+    library = await repo.get_library(library_id)
+    if library is None:
+        raise ValueError(f"归属库 {library_id} 不存在")
+    video_path = Path(media_path)
+    consume_path = Path(link_path) if link_path is not None else video_path
+    if link_path is not None and not consume_path.exists():
+        # 链接文件已不存在: 读取侧按无链接处理, 不改写 link_path 列 (规格 3.4.4).
+        consume_path = video_path
+    naming = await resolver.resolve(NamingConfig, scope=library, library=library)
+    nfo_config = await resolver.resolve(NfoConfig, scope=library, library=library)
+    file_info = parse_file_info(media_path, has_external_subtitle=has_external_subtitle)
+    sidecars = resolve_sidecar_paths(
+        library,
+        metadata,
+        consume_path=consume_path,
+        video_path=video_path,
+        source_path=video_path,
+        ext=video_path.suffix.lstrip("."),
+        file_info=file_info,
+        safe_dirs=safe_dirs,
+        actor_genders=actor_genders,
+        artifacts=("nfo",),
+        naming=naming,
+    )
+    nfo = sidecars.nfo
+    if nfo is None:  # artifacts 含 nfo, 理论不可达; 渲染失败以 ValueError 抛出.
+        raise ValueError("NFO 模板未渲染出路径")
+    if nfo.parent != consume_path.parent or nfo.stem != consume_path.stem:
+        raise _NfoPairingMismatch(
+            f"NFO 目标路径与消费文件不配对: 实际 {nfo} (stem {nfo.stem!r}), "
+            f"期望与 {consume_path} 同目录同主干 (stem {consume_path.stem!r})"
+        )
+    await write_nfo(metadata, nfo, NfoOptions(**nfo_config.model_dump()))
+    return nfo
+
+
+@router.put("/{metadata_id}/nfo")
+async def rewrite_nfo(metadata_id: int, repo: RepoDep, config: ConfigDep, runtime: RuntimeDep) -> NfoRewriteResponse:
+    """NFO 单独重写 (规格 3.4.4): 以已落盘路径为基准渲染并覆盖写, 供只改模板后修复既有 NFO.
+
+    条目的每份文件独立处理: 失败不回滚成功者, 失败清单随响应返回; 全部失败且含配对
+    不一致时整体 422 并报出实际与期望配对. 生效配置 (naming / nfo 开关) 按各文件归属库合成.
+    """
+    metadata = await repo.get_metadata(metadata_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="影片不存在")
+    files = await repo.get_media_by_metadata_id(metadata_id)
+    if not files:
+        raise HTTPException(status_code=409, detail="无本地文件，无法重写 NFO")
+    actor_genders = {a.name: a.gender for a in await repo.get_actors_by_names(metadata.actors)}
+    resolver = ConfigResolver(config.hot, repo)
+    rewritten: list[str] = []
+    failures: list[NfoRewriteFailure] = []
+    mismatches: list[str] = []
+    for media in files:
+        try:
+            nfo = await _rewrite_media_nfo(
+                metadata,
+                media.path,
+                media.link_path,
+                media.has_external_subtitle,
+                media.library_id,
+                repo=repo,
+                resolver=resolver,
+                safe_dirs=runtime.safe_dirs,
+                actor_genders=actor_genders,
+            )
+            rewritten.append(str(nfo))
+        except _NfoPairingMismatch as exc:
+            mismatches.append(str(exc))
+            failures.append(NfoRewriteFailure(path=media.path, error=str(exc)))
+        except (ValueError, OSError) as exc:
+            failures.append(NfoRewriteFailure(path=media.path, error=str(exc)))
+    if not rewritten and mismatches:
+        # 配对不一致是模板与落盘状态的契约违背, 不是环境故障: 整体 422, 逐文件报出实际与期望.
+        raise HTTPException(status_code=422, detail="；".join(mismatches))
+    return NfoRewriteResponse(rewritten=rewritten, failures=failures)
 
 
 @router.post("/{metadata_id}/merge")

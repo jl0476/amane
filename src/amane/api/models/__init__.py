@@ -76,6 +76,8 @@ from .metadata import (
     MetadataMergeEntriesRequest,
     MetadataResponse,
     MetadataUserTagsRequest,
+    NfoRewriteFailure,
+    NfoRewriteResponse,
     PartialMetadata,
     SemanticHitInfo,
 )
@@ -206,6 +208,8 @@ __all__ = [
     "MetadataUserTagsRequest",
     "NamingPreviewRequest",
     "NamingPreviewResponse",
+    "NfoRewriteFailure",
+    "NfoRewriteResponse",
     "OptionalPathTemplateDefaults",
     "OrganizeSubmission",
     "ParseRuleListResponse",

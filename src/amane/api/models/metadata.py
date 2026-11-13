@@ -117,6 +117,21 @@ class SemanticHitInfo(BaseModel):
     """同一次查询内的排序分; 跨查询不可比."""
 
 
+class NfoRewriteFailure(BaseModel):
+    """单份文件重写失败的原因; ``path`` 是该文件的索引路径."""
+
+    path: str
+    error: str
+
+
+class NfoRewriteResponse(BaseModel):
+    """逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回."""
+
+    rewritten: list[str] = []
+    """成功重写的 NFO 落盘路径."""
+    failures: list[NfoRewriteFailure] = []
+
+
 class MetadataListResponse(BaseModel):
     items: list[MetadataResponse]
     total: int
