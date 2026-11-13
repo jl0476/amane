@@ -77,7 +77,7 @@ class FileOperationsResult:
     subtitle_conflicts: list[SubtitleConflict] = field(default_factory=list)
     error: str | None = None
     overwritten: bool = False
-    """PLACED 且经覆写协议落盘 (索引接管已在协议内完成), 调用方据此跳过常规提交."""
+    """PLACED 且经覆写协议落盘; 索引接管已在覆写协议内完成, 常规提交对该行是同值幂等重写."""
     skipped_images: int = 0
     """overwrite_image=False 时目标已有图片而跳过的张数."""
 
@@ -270,7 +270,7 @@ async def execute_file_operations(
             try:
                 await repo.update_media_file(media_file.id, link_path=str(link_result.dest))
             except Exception as e:
-                logger.warning("link_path persist failed", dest=str(link_result.dest), error=str(e))
+                logger.warning("link_path persist failed", dest=str(link_result.dest), error=str(e), exc_info=True)
 
     # 写入 NFO.
     if org_result.outcome is PlaceOutcome.PLACED and org_result.dest and write_nfo:
