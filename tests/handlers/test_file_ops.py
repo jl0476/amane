@@ -790,16 +790,20 @@ async def test_manual_and_auto_same_effective_config(
 async def test_override_naming_drives_real_dest_path(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
-    """naming 覆盖驱动真实落盘: 磁盘产物路径按覆盖模板生成, 库行模板被忽略."""
+    """naming 覆盖驱动真实落盘: 视频 (move) 与 NFO (write_nfo) 的磁盘路径都按覆盖模板生成."""
     lib_root = tmp_path / "lib"
     src_dir = lib_root / "incoming"
     src_dir.mkdir(parents=True)
     src = src_dir / "NSFS-039.mp4"
     src.write_bytes(b"video")
 
-    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=True)
     assert lib.id is not None
-    await repo.upsert_config_override(lib.id, "naming", {"video_template": "{number}-moved/{number}.{ext}"})
+    await repo.upsert_config_override(
+        lib.id,
+        "naming",
+        {"video_template": "{number}-moved/{number}.{ext}", "nfo_template": "{video_dir}/{number}-info.nfo"},
+    )
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
     assert meta.id is not None
     await repo.create_media_file(
@@ -815,6 +819,9 @@ async def test_override_naming_drives_real_dest_path(
     dest = lib_root / "NSFS-039-moved" / "NSFS-039.mp4"
     assert dest.exists()
     assert not (lib_root / "Studio" / "NSFS-039" / "NSFS-039.mp4").exists()
+    # NFO 落在覆盖后的 nfo_template 渲染路径; 默认模板同名文件不出现, 证明渲染走的是覆盖值.
+    assert (lib_root / "NSFS-039-moved" / "NSFS-039-info.nfo").exists()
+    assert not (lib_root / "NSFS-039-moved" / "NSFS-039.nfo").exists()
     updated = await repo.list_media_files(library_id=lib.id, limit=None)
     assert any(mf.path == str(dest) for mf in updated)
 
