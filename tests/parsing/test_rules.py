@@ -231,6 +231,30 @@ def test_re2_rejects_unsupported_constructs(case: _RejectCase) -> None:
         compile_rule_pattern(case.pattern)
 
 
+class _CaseSemantics(NamedTuple):
+    pattern: str
+    path: str
+    matched: bool
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # 正则按原始字符串 search, 大小写敏感; 大小写不敏感由 pattern 自行声明 (?i)
+        _CaseSemantics("r:abc", "/data/ABC-123.mp4", False),
+        _CaseSemantics("r:abc", "/data/abc-123.mp4", True),
+        _CaseSemantics("r:(?i)abc", "/data/ABC-123.mp4", True),
+        # 反衬: 字面关键词始终 casefold 不敏感
+        _CaseSemantics("abc", "/data/ABC-123.mp4", True),
+    ],
+)
+def test_regex_case_semantics(case: _CaseSemantics) -> None:
+    """钉定大小写语义: 正则敏感 (需 (?i) 自声明), 字面关键词不敏感; 重构若把正则也 casefold 则此处变红."""
+    rules = ParseRuleSet.from_specs([_path(case.pattern, ContentType.WESTERN, minute=0, id=1)])
+    info = apply_rules(case.path, parse_file_info(text="MIDV-123"), rules)
+    assert (info.content_type is ContentType.WESTERN) is case.matched, case.pattern
+
+
 def test_catastrophic_pattern_is_linear() -> None:
     """(a|aa)+$ 在 RE2 下编译通过且对长近似匹配输入线性时间完成 (Python re 会指数回溯)."""
     pattern = "r:(a|aa)+$"
