@@ -1505,7 +1505,7 @@ async def test_retry_after_failed_takeover_recovers_before_prune(
     """
     lib_root = tmp_path / "lib"
     source_path = lib_root / "incoming" / "AAA.mp4"
-    target_path = lib_root / "Studio" / "BBB.mp4"
+    target_path = lib_root / "Studio" / "NSFS-039" / "NSFS-039.mp4"
     content = b"C" * 4096 + bytes(range(256)) * 48 + b"tail-c" + b"z" * 4096
     target_path.parent.mkdir(parents=True)
     target_path.write_bytes(content * 8)
@@ -1527,7 +1527,7 @@ async def test_retry_after_failed_takeover_recovers_before_prune(
         size=size,
     )
     occupant = await repo.create_media_file(
-        lib.id, path=str(target_path), number="BBB", status=MediaFileStatus.SCRAPED
+        lib.id, path=str(target_path), number="NSFS-039", status=MediaFileStatus.SCRAPED
     )
     assert source.id is not None and occupant.id is not None
     source_id = source.id
@@ -1535,7 +1535,7 @@ async def test_retry_after_failed_takeover_recovers_before_prune(
     oshash = compute_oshash.sync(target_path)
     assert oshash is not None
     size = target_path.stat().st_size
-    backup = target_path.parent / "BBB.mp4.amane-overwrite-42"
+    backup = target_path.parent / "NSFS-039.mp4.amane-overwrite-42"
     backup.write_bytes(content * 8)
     assert backup.stat().st_size >= 128 * 1024
     await repo.create_organize_journal(
@@ -1552,8 +1552,10 @@ async def test_retry_after_failed_takeover_recovers_before_prune(
         backup_path=str(backup),
     )
 
+    payload = OrganizePayload(library_id=lib.id)
+    await payload.resolve(repo)  # 真实提交路径: path 空回落库根, 整理范围覆盖全库索引
     org = OrganizeHandler(repo, HotSettings(), resource_store)
-    result = await org.handle(OrganizePayload(library_id=lib.id))
+    result = await org.handle(payload)
 
     assert result.success is True
     # 恢复接管在本轮完成: 源行归属目标路径, 目标旧行删除, journal 清空.
@@ -1562,4 +1564,7 @@ async def test_retry_after_failed_takeover_recovers_before_prune(
     assert taken.metadata_id == meta.id
     assert await repo.get_media_file(occupant.id) is None
     assert await repo.list_organize_journals() == []
+    # 恢复后的源行进入整理范围: 渲染目标 == 现路径 → SAME → PLACED, prune 真正执行过
+    assert result.result is not None and result.result.organized == 1
+    assert target_path.read_bytes() == content * 8
     assert target_path.read_bytes() == content * 8
