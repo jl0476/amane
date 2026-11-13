@@ -827,6 +827,42 @@ async def test_override_naming_drives_real_dest_path(
 
 
 @pytest.mark.asyncio(loop_scope="function")
+async def test_new_library_without_copy_resources_still_copies_trailer(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """未显式设置 copy_resources 的新库, 整理复制 trailer.
+
+    create_library 未显式接收该字段时落库全量清单 (含 trailer); 字段未列入 template_overrides
+    时生效值取全局默认, 亦为全量清单 — 两处默认一致, 缺省行为即复制 trailer.
+    """
+    lib_root = tmp_path / "lib"
+    src_dir = lib_root / "incoming"
+    src_dir.mkdir(parents=True)
+    src = src_dir / "NSFS-039.mp4"
+    src.write_bytes(b"video")
+
+    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False)
+    assert lib.id is not None
+    assert lib.template_overrides == []
+    assert DownloadableResource.trailer in lib.copy_resources
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio", trailer_urls=["https://s/trailer.mp4"])
+    assert meta.id is not None
+    await repo.create_media_file(
+        lib.id, path=str(src), number="NSFS-039", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+    )
+
+    org = OrganizeHandler(
+        repo, HotSettings(), resource_store, web_client=cast("WebClient", FakeClient()), safe_dirs=[tmp_path]
+    )
+    result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
+    assert result.success is True
+    assert result.result is not None
+    assert result.result.failed == 0
+
+    assert (lib_root / "Studio" / "NSFS-039" / "trailer.mp4").read_bytes() == b"video"
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_override_subtitle_template_drives_real_subtitle_path(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
