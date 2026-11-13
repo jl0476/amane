@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -33,7 +34,10 @@ from ...handlers import (
     UpscalePayload,
     UpscaleResult,
 )
-from ...parsing import ContentType, infer_content_type, parse_file_info
+from ...parsing import ContentType, ParseRuleSet, infer_content_type, parse_file_info
+
+RulesFor = Callable[[int], Awaitable[ParseRuleSet]]
+"""按库取识别词集的提供者 (``AppRuntime.parse_rules_for``); 任务请求解析注入用."""
 
 
 class TaskChildStatusCounts(BaseModel):
@@ -182,15 +186,19 @@ class ScrapeRequest(BaseModel):
             raise ValueError("Either 'number' or 'media_id' must be provided")
         return self
 
-    async def resolve(self, repo: Repository) -> ScrapePayload:
-        """media 不存在时抛 HTTPException(404)."""
+    async def resolve(self, repo: Repository, *, rules_for: RulesFor | None = None) -> ScrapePayload:
+        """media 不存在时抛 HTTPException(404).
+
+        ``rules_for`` 非空时按 media 所属库取识别词集, 注入番号预解析 (该库 ParseRuleSet).
+        """
         media = await repo.get_media_file(self.media_id) if self.media_id is not None else None
-        payload = self.build_payload(media)
+        rules = await rules_for(media.library_id) if rules_for is not None and media is not None else None
+        payload = self.build_payload(media, rules=rules)
         if payload is None:
             raise HTTPException(status_code=404, detail=f"媒体文件 {self.media_id} 不存在")
         return payload
 
-    def build_payload(self, media: MediaFile | None) -> ScrapePayload | None:
+    def build_payload(self, media: MediaFile | None, rules: ParseRuleSet | None = None) -> ScrapePayload | None:
         """``media_id`` 非空时用调用方查到的行组装; 该行为 None 时返回 None, 由调用方决定计入 missing 还是 404."""
         if self.media_id is not None:
             if media is None:
@@ -198,11 +206,11 @@ class ScrapeRequest(BaseModel):
             if self.number is not None:
                 return ScrapePayload(
                     number=self.number,
-                    content_type=self.content_type or infer_content_type(self.number),
+                    content_type=self.content_type or parse_file_info(text=self.number, rules=rules).content_type,
                     media_file_id=self.media_id,
                     use_cache=self.use_cache,
                 )
-            parsed = parse_file_info(media.path)
+            parsed = parse_file_info(media.path, rules=rules)
             assert parsed.number is not None
             return ScrapePayload(
                 number=parsed.number,
@@ -224,6 +232,15 @@ class RefreshSubmission(RefreshPayload):
 
 class OrganizeSubmission(OrganizePayload):
     type: Literal["organize"]
+
+    async def resolve(self, repo: Repository) -> None:
+        """在库值回填之前记录用户显式给出的字段: 两者都落库的库值不得冒充用户显式值压掉覆盖表."""
+        self.explicit_fields = [
+            name
+            for name in ("write_nfo", "copy_resources")
+            if name in self.model_fields_set and getattr(self, name) is not None
+        ]
+        await super().resolve(repo)
 
 
 class ScanInvalidSubmission(ScanInvalidPayload):

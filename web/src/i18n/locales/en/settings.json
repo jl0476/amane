@@ -12,7 +12,10 @@
     "sr": "Super Resolution",
     "llm": "LLM Translation",
     "watermark": "Watermark",
-    "semantic": "Semantic Search"
+    "semantic": "Semantic Search",
+    "common": "Organize",
+    "naming": "Naming",
+    "nfo": "NFO"
   },
   "config": {
     "loadError": "Failed to load configuration"
@@ -666,6 +669,7 @@
         "$": {
           "options": {
             "title": "Title",
+            "original_title": "Original Title",
             "actors": "Actors",
             "tags": "Tags",
             "release": "Release Date",
@@ -675,6 +679,7 @@
             "studio": "Studio",
             "publisher": "Publisher",
             "plot": "Plot",
+            "original_plot": "Original Plot",
             "poster_urls": "Poster",
             "thumb_urls": "Cover",
             "trailer_urls": "Trailer",
@@ -887,6 +892,214 @@
       "auto_maintain": {
         "label": "Auto-maintain",
         "description": "Recompute an entry's vectors as soon as its images change; keeps the model resident"
+      }
+    },
+    "common": {
+      "overwrite_video": {
+        "label": "Overwrite Video",
+        "description": "Overwrite the existing video on conflict; skip when off"
+      },
+      "overwrite_image": {
+        "label": "Overwrite Images",
+        "description": "Overwrite existing image artifacts; skip existing files when off"
+      }
+    },
+    "naming": {
+      "syntax": {
+        "label": "Naming Syntax",
+        "options": {
+          "native": "Built-in",
+          "jinja": "Jinja2"
+        }
+      },
+      "video_template": {
+        "label": "Video Template"
+      },
+      "link_template": {
+        "label": "Link Template"
+      },
+      "link_mode": {
+        "label": "Link Mode",
+        "options": {
+          "strm": "STRM file",
+          "symlink": "Symbolic Link"
+        }
+      },
+      "strm_content_template": {
+        "label": "STRM Content Template"
+      },
+      "thumb_template": {
+        "label": "Cover Template"
+      },
+      "poster_template": {
+        "label": "Poster Template"
+      },
+      "fanart_template": {
+        "label": "Fanart Template"
+      },
+      "extrafanart_template": {
+        "label": "Extrafanart Template"
+      },
+      "extrafanart_name_template": {
+        "label": "Extrafanart Name Template"
+      },
+      "nfo_template": {
+        "label": "NFO Template"
+      },
+      "trailer_template": {
+        "label": "Trailer Template"
+      },
+      "subtitle_template": {
+        "label": "Subtitle Template"
+      },
+      "subtitle_extensions": {
+        "label": "Subtitle Extensions"
+      },
+      "write_nfo": {
+        "label": "Write NFO"
+      },
+      "copy_resources": {
+        "label": "Copy on Organize",
+        "$": {
+          "options": {
+            "thumb": "Cover",
+            "poster": "Poster",
+            "extrafanart": "Extrafanart",
+            "trailer": "Trailer"
+          }
+        }
+      }
+    },
+    "nfo": {
+      "title": {
+        "label": "Title"
+      },
+      "originaltitle": {
+        "label": "Original Title"
+      },
+      "originaltitle_source": {
+        "label": "Original Title Source",
+        "options": {
+          "title": "Same as Title",
+          "original": "Site Original"
+        }
+      },
+      "sorttitle": {
+        "label": "Sort Title"
+      },
+      "plot": {
+        "label": "Plot"
+      },
+      "outline": {
+        "label": "Plot Outline"
+      },
+      "outline_summary": {
+        "label": "Outline First Sentence Only"
+      },
+      "originalplot": {
+        "label": "Original Plot"
+      },
+      "actor": {
+        "label": "Actors"
+      },
+      "director": {
+        "label": "Directors"
+      },
+      "premiered": {
+        "label": "Premiered"
+      },
+      "releasedate": {
+        "label": "Release Date"
+      },
+      "year": {
+        "label": "Year"
+      },
+      "num": {
+        "label": "Number"
+      },
+      "runtime": {
+        "label": "Runtime"
+      },
+      "votes": {
+        "label": "Votes"
+      },
+      "score": {
+        "label": "Score"
+      },
+      "criticrating": {
+        "label": "Critic Rating"
+      },
+      "country": {
+        "label": "Country"
+      },
+      "mpaa": {
+        "label": "MPAA"
+      },
+      "mpaa_value": {
+        "label": "MPAA Value"
+      },
+      "customrating": {
+        "label": "Custom Rating"
+      },
+      "series": {
+        "label": "Series (series)"
+      },
+      "set": {
+        "label": "Series (set)"
+      },
+      "tag": {
+        "label": "Tags (tag)"
+      },
+      "genre": {
+        "label": "Tags (genre)"
+      },
+      "studio": {
+        "label": "Studio (studio)"
+      },
+      "maker": {
+        "label": "Studio (maker)"
+      },
+      "publisher": {
+        "label": "Publisher (publisher)"
+      },
+      "label": {
+        "label": "Publisher (label)"
+      },
+      "poster": {
+        "label": "Poster"
+      },
+      "cover": {
+        "label": "Cover"
+      },
+      "trailer": {
+        "label": "Trailer"
+      },
+      "website": {
+        "label": "Website"
+      },
+      "external_ids": {
+        "label": "External IDs"
+      },
+      "add_part_to_title": {
+        "label": "Append Part to Title"
+      },
+      "add_translated_by": {
+        "label": "Credit Translation"
+      },
+      "tagline_format": {
+        "label": "Tagline Format"
+      },
+      "set_by_actress": {
+        "label": "Set by Actress"
+      },
+      "set_by_serial_name": {
+        "label": "Set by Serial Name"
+      },
+      "set_by_series": {
+        "label": "Set by Series"
+      },
+      "additional_tags": {
+        "label": "Additional Tags"
       }
     }
   }

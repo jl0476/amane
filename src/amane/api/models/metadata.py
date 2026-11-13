@@ -32,6 +32,7 @@ class MetadataResponse(BaseModel):
     number: str
     content_type: ContentType
     title: str | None = None
+    original_title: str | None = None
     actors: list[str] = []
     studio: str | None = None
     publisher: str | None = None
@@ -40,6 +41,7 @@ class MetadataResponse(BaseModel):
     tags: list[str] = []
     series: str | None = None
     plot: str | None = None
+    original_plot: str | None = None
     directors: list[str] = []
     poster_url: str | None = None
     thumb_url: str | None = None
@@ -55,6 +57,8 @@ class MetadataResponse(BaseModel):
     external_ids: dict = {}
     source_urls: dict = {}
     field_sources: dict = {}
+    field_languages: dict = {}
+    website: str | None = None
     raw: dict = {}
     locked_fields: list[MetadataField] = []
 
@@ -75,7 +79,7 @@ class MetadataResponse(BaseModel):
 if TYPE_CHECKING:
     type PartialMetadata = Metadata
 
-# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources 由刮削写入) 与锁列 (经 PUT locks 管理).
+# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources/field_languages 由刮削写入) 与锁列 (经 PUT locks 管理); website 为聚合派生列, 一并排除.
 PartialMetadata = create_partial_model(
     Metadata,
     ignore_fields=(
@@ -86,6 +90,8 @@ PartialMetadata = create_partial_model(
         "updated_at",
         "raw",
         "field_sources",
+        "field_languages",
+        "website",
         "locked_fields",
     ),
     json_schema_extras={
@@ -109,6 +115,21 @@ class SemanticHitInfo(BaseModel):
     """命中图片的资源定位串; 剧照由前端经资源代理渲染."""
     similarity: float
     """同一次查询内的排序分; 跨查询不可比."""
+
+
+class NfoRewriteFailure(BaseModel):
+    """单份文件重写失败的原因; ``path`` 是该文件的索引路径."""
+
+    path: str
+    error: str
+
+
+class NfoRewriteResponse(BaseModel):
+    """逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回."""
+
+    rewritten: list[str] = []
+    """成功重写的 NFO 落盘路径."""
+    failures: list[NfoRewriteFailure] = []
 
 
 class MetadataListResponse(BaseModel):

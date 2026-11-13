@@ -5,6 +5,7 @@ import { assertExhaustive, exhaustiveRecord } from "@/lib/exhaustive";
 /** 顺序即锁菜单显示顺序. */
 export const LOCKABLE_FIELDS = [
   "title",
+  "original_title",
   "actors",
   "studio",
   "publisher",
@@ -13,6 +14,7 @@ export const LOCKABLE_FIELDS = [
   "tags",
   "series",
   "plot",
+  "original_plot",
   "directors",
   "poster_urls",
   "thumb_urls",
@@ -26,7 +28,9 @@ assertExhaustive<MetadataField>()(LOCKABLE_FIELDS);
 /** MetadataField → metadata 命名空间下的字段标签 key. */
 export const FIELD_LABEL_KEY = exhaustiveRecord<MetadataField>()({
   title: "detail.fields.title",
+  original_title: "detail.fields.original_title",
   plot: "detail.fields.plot",
+  original_plot: "detail.fields.original_plot",
   actors: "detail.fields.actors",
   directors: "detail.fields.directors",
   tags: "detail.fields.tags",

@@ -20,6 +20,7 @@ from amane.handlers.models import ORGANIZE_CONFLICT_LIMIT
 from amane.library import DeleteOutcome, InventoryStore, LibraryScan, scan_inventory
 from amane.media import apply_cover_watermarks_from_info
 from amane.observability.models import OrganizeConflict, OrganizeConflictReason
+from amane.utils.oshash import compute_oshash
 
 if TYPE_CHECKING:
     from amane.db.repository import Repository
@@ -389,6 +390,7 @@ async def test_organize_custom_cd_suffix(repo: Repository, resource_store: Resou
         path=str(lib_root),
         write_nfo=False,
         video_template="{studio}/{number}/{number}[-第{cd?}集].{ext}",
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -537,7 +539,13 @@ async def test_organize_stamps_uncensored_from_entry_type(
     src = src_dir / f"{number}.mp4"
     src.write_bytes(b"video")
 
-    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, video_template="{number}.{ext}")
+    lib = await repo.create_library(
+        name="t",
+        path=str(lib_root),
+        write_nfo=False,
+        video_template="{number}.{ext}",
+        template_overrides=["video_template"],
+    )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number=number, thumb_urls=["https://s/t.jpg"])
     assert meta.id is not None
@@ -958,7 +966,13 @@ async def test_organize_empty_subtitle_extensions_leaves_subs(
     sub = src_dir / "chs.srt"
     sub.write_text("keep")
 
-    lib = await repo.create_library(name="t", path=str(lib_root), write_nfo=False, subtitle_extensions=[])
+    lib = await repo.create_library(
+        name="t",
+        path=str(lib_root),
+        write_nfo=False,
+        subtitle_extensions=[],
+        template_overrides=["subtitle_extensions"],
+    )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
     assert meta.id is not None
@@ -1092,6 +1106,7 @@ async def test_organize_writes_strm_and_nfo_next_to_link(
         link_template=str(local / "{studio}" / "{number}" / "{number}.{ext}"),
         link_mode=LinkMode.STRM,
         copy_resources=[],
+        template_overrides=["link_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -1141,6 +1156,7 @@ async def test_organize_strm_content_template_uses_actual_dest(
         strm_content_template="/{video_relpath}",
         copy_resources=[],
         write_nfo=False,
+        template_overrides=["link_template", "strm_content_template"],
     )
     assert lib.id is not None
     meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
@@ -1332,6 +1348,7 @@ async def test_organize_placed_outside_library(
         copy_resources=[],
         move_mode=mode,
         video_template=f"{other.as_posix()}/{{studio}}/{{number}}/{{number}}.{{ext}}",
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     store_lib = await repo.create_library(name="store", path=str(other), write_nfo=False)
@@ -1474,3 +1491,80 @@ async def test_organize_other_modes_leave_source_dir(
     assert result.result.pruned_dirs == 0
     assert src.exists()
     assert src_dir.is_dir()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_retry_after_failed_takeover_recovers_before_prune(
+    repo, tmp_path: Path, resource_store
+) -> None:
+    """接管失败中断后重试整理 (联合审核 P1): prune 不得删除恢复所需的源行, 且本轮完成接管.
+
+    同文件系统 MOVE 已落位 (源路径消失, 目标上是源内容) 而索引接管未提交时中断:
+    重试整理的 prune 若先删缺失的源行, 恢复将永久找不到源行. 修复后 prune 前先恢复
+    本库 journal, 接管在本轮完成, 目标归属源条目.
+    """
+    lib_root = tmp_path / "lib"
+    source_path = lib_root / "incoming" / "AAA.mp4"
+    target_path = lib_root / "Studio" / "NSFS-039" / "NSFS-039.mp4"
+    content = b"C" * 4096 + bytes(range(256)) * 48 + b"tail-c" + b"z" * 4096
+    target_path.parent.mkdir(parents=True)
+    target_path.write_bytes(content * 8)
+
+    lib = await repo.create_library(name="t", path=str(lib_root))
+    assert lib.id is not None
+    meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+    assert meta.id is not None
+    oshash = compute_oshash.sync(target_path)
+    assert oshash is not None
+    size = target_path.stat().st_size
+    source = await repo.create_media_file(
+        lib.id,
+        path=str(source_path),
+        number="NSFS-039",
+        status=MediaFileStatus.SCRAPED,
+        metadata_id=meta.id,
+        oshash=oshash,
+        size=size,
+    )
+    occupant = await repo.create_media_file(
+        lib.id, path=str(target_path), number="NSFS-039", status=MediaFileStatus.SCRAPED
+    )
+    assert source.id is not None and occupant.id is not None
+    source_id = source.id
+
+    oshash = compute_oshash.sync(target_path)
+    assert oshash is not None
+    size = target_path.stat().st_size
+    backup = target_path.parent / "NSFS-039.mp4.amane-overwrite-42"
+    backup.write_bytes(content * 8)
+    assert backup.stat().st_size >= 128 * 1024
+    await repo.create_organize_journal(
+        task_id=None,
+        mode="move",
+        source_path=str(source_path),
+        source_file_id=source_id,
+        source_oshash=oshash,
+        source_size=size,
+        source_metadata_id=meta.id,
+        source_number="NSFS-039",
+        target_path=str(target_path),
+        target_file_id=occupant.id,
+        backup_path=str(backup),
+    )
+
+    payload = OrganizePayload(library_id=lib.id)
+    await payload.resolve(repo)  # 真实提交路径: path 空回落库根, 整理范围覆盖全库索引
+    org = OrganizeHandler(repo, HotSettings(), resource_store)
+    result = await org.handle(payload)
+
+    assert result.success is True
+    # 恢复接管在本轮完成: 源行归属目标路径, 目标旧行删除, journal 清空.
+    taken = await repo.get_media_file(source_id)
+    assert taken is not None and taken.path == str(target_path)
+    assert taken.metadata_id == meta.id
+    assert await repo.get_media_file(occupant.id) is None
+    assert await repo.list_organize_journals() == []
+    # 恢复后的源行进入整理范围: 渲染目标 == 现路径 → SAME → PLACED, prune 真正执行过
+    assert result.result is not None and result.result.organized == 1
+    assert target_path.read_bytes() == content * 8
+    assert target_path.read_bytes() == content * 8

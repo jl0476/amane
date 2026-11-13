@@ -6,7 +6,15 @@ from sqlalchemy import Boolean, Column, Index, String, Text, UniqueConstraint, e
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import JSON, Field, SQLModel, col, select
 
-from ..enums import ActorGender, DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
+from ..enums import (
+    ActorGender,
+    DownloadableResource,
+    LibraryAutomation,
+    LibraryIngest,
+    LinkMode,
+    MoveMode,
+    OrganizeJournalPhase,
+)
 from ..library import (
     DEFAULT_SUBTITLE_EXTENSIONS,
     DEFAULT_TRAILER_PATTERN,
@@ -17,7 +25,7 @@ from ..library import (
 )
 from ..organize.path_templates import VIDEO_TEMPLATE_DEFAULT, ExtrafanartNameTemplate, PathTemplate
 from ..organize.strm_content import StrmContentTemplate
-from ..parsing import VR_TAGS, ContentType, Mosaic, is_vr
+from ..parsing import VR_TAGS, ContentType, Mosaic, RuleKind, is_vr
 
 
 def _utcnow() -> datetime:
@@ -192,6 +200,9 @@ class MediaFile(SQLModel, table=True):
     codec: str | None = None
     number: str | None = Field(default=None, index=True)
     status: MediaFileStatus = Field(default=MediaFileStatus.PENDING, index=True)
+    # 链接落盘位置 (link_template 渲染结果): 整理写入链接成功后落库, 不随模板重渲染改写.
+    # 读取侧在链接文件已不存在时按无链接处理, 不改写该列 (规格 3.4.4).
+    link_path: str | None = None
     # 文件相位: path 的投影, 随 path 写入/更新; 不进对外 PATCH.
     mosaic: Mosaic | None = Field(default=None, index=True)
     #: 文件名带中字标记, 只由 path 派生.
@@ -217,6 +228,43 @@ def has_subtitle_predicate() -> ColumnElement[bool]:
     判定中字的查询与筛选一律走这里, 与实例属性口径必须一致.
     """
     return or_(col(MediaFile.has_subtitle_in_name).is_(True), col(MediaFile.has_external_subtitle).is_(True))
+
+
+class OrganizeJournal(SQLModel, table=True):
+    """覆写操作日志 (规格 3.4.2): 阶段 A 独立提交, 行删除只在恢复动作全部成功后.
+
+    分派与前置检查见 `handlers/file.py::execute_file_operations`, 协议本体见
+    `organize/overwrite.py::overwrite_target`, 恢复矩阵见 `organize/overwrite.py::recover_journal`.
+
+    ``source_file_id`` / ``target_file_id`` 只是线索不是身份: SQLite 无 ``AUTOINCREMENT``,
+    删除最大 rowid 后新行会复用该 id. 恢复一律按 (path, oshash, size) 指纹三字段全等复验;
+    阶段 A 现场补算后 ``source_oshash`` / ``source_size`` 恒非空, 不存在「双方都空即跳过」的分支.
+    """
+
+    __tablename__ = "organize_journal"  # type: ignore[assignment]
+    __table_args__ = (UniqueConstraint("source_path", "target_path", name="uq_organize_journal_source_target"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int | None = Field(default=None, index=True)
+    """冗余记录入队任务, 便于按任务追查; 与协议正确性无关."""
+    mode: str
+    """MoveMode 的 value (move / copy / hardlink / symlink); 恢复靠它决定是否删源."""
+    source_path: str
+    """源的库内路径 (整理前, NFC)."""
+    source_file_id: int | None = None
+    source_oshash: str | None = None
+    """覆写前源内容指纹; 协议保证写入前已补算为非空."""
+    source_size: int | None = None
+    source_metadata_id: int | None = None
+    source_number: str | None = None
+    target_path: str
+    target_file_id: int | None = None
+    """目标旧索引的 MediaFile.id; 目标未被索引时为 None, 不能作为恢复的前提."""
+    backup_path: str
+    phase: str = Field(default=OrganizeJournalPhase.PREPARED.value, index=True)
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class _VrProperty(property):
@@ -263,6 +311,9 @@ class Metadata(SQLModel, table=True):
     series: str | None = Field(default=None, index=True)
     # 长文本存纯文本, 上游 HTML/实体在入库前经 utils.text 归一, 见 docs/dev/data-model.md.
     plot: str | None = None
+    # 源站原文双轨 (通常日文): 与 title / plot 平行, 翻译只改写后者; original_plot 同口径归一.
+    original_title: str | None = None
+    original_plot: str | None = None
     directors: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
     poster_urls: list[str] = Field(default_factory=list, sa_column=Column(JSON))
@@ -276,6 +327,10 @@ class Metadata(SQLModel, table=True):
     external_ids: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     source_urls: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     field_sources: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 逐字段语言声明: 键为字段名, 值为该字段取值语言; 只记录来源声明过的字段, 与 field_sources 平行.
+    field_languages: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON, server_default=text("'{}'")))
+    # 主来源详情页地址: 取标题胜出来源的 source_url, 标题来源无地址时留空; 聚合派生, 不接受 PATCH.
+    website: str | None = None
     # 各站原始快照, 供离线重新聚合.
     raw: dict[str, dict[str, Any]] = Field(default_factory=dict, sa_column=Column(JSON))
     # 字段级锁定; 契约见 docs/dev/data-model.md.
@@ -414,6 +469,12 @@ class Library(SQLModel, table=True):
         default_factory=lambda: [r for r in DownloadableResource if r != DownloadableResource.trailer],
         sa_column=Column(JSON, nullable=False),
     )
+    template_overrides: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    """显式设置的模板字段名名单 (值域见 TEMPLATE_OVERRIDE_FIELDS).
+
+    名单内字段参与生效配置合成的库层 (None 也是显式值); 名单外视为继承全局. 该列只增不减:
+    建库 / 改库请求中显式给出的模板字段名由 API 路由追加; 新建库为空, 全部模板字段跟随全局.
+    """
     trailer_pattern: TrailerPattern = Field(default=DEFAULT_TRAILER_PATTERN, sa_column=Column(String, nullable=False))
     """匹配文件名 (含扩展名) 的正则; 命中则扫描/监控跳过. 空串关闭."""
     blacklist_patterns: list[BlacklistPattern] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
@@ -424,6 +485,95 @@ class Library(SQLModel, table=True):
     只对扫描视频扩展名生效 (与 watcher.media_extensions / MEDIA_EXTENSIONS 同一套);
     图片、NFO、字幕、`.strm` 指针都不参与.
     """
+
+
+CONFIG_OVERRIDE_SCOPE_LIBRARY = "library"
+"""config_overrides.scope_type 当前唯一取值; watch_dir 预留 (写入被拒), 见覆盖层规格 §3.1.1."""
+
+# Library 行中与 naming section 同名的模板类字段 (规格 §3.1.3 字段分类表); template_overrides 名单的值域.
+TEMPLATE_OVERRIDE_FIELDS = (
+    "video_template",
+    "link_template",
+    "link_mode",
+    "strm_content_template",
+    "thumb_template",
+    "poster_template",
+    "fanart_template",
+    "extrafanart_template",
+    "extrafanart_name_template",
+    "nfo_template",
+    "trailer_template",
+    "subtitle_template",
+    "subtitle_extensions",
+    "write_nfo",
+    "copy_resources",
+)
+
+
+class ConfigOverride(SQLModel, table=True):
+    """库级配置覆盖. payload 是稀疏 JSON: 键缺失 = 继承, 键存在 = 覆盖.
+
+    禁止 JSON null (「继承」与「显式关闭」无法同时表达); 可空模板字段的「显式取空」写作空对象 {},
+    由 `amane.config.overrides` 在解析期映射为 None. 校验契约与 section 白名单也在该模块.
+    """
+
+    __tablename__ = "config_overrides"  # type: ignore[assignment]
+    __table_args__ = (UniqueConstraint("scope_type", "scope_id", "section", name="uq_config_overrides_scope_section"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope_type: str = Field(nullable=False)
+    """作用域类型; 本阶段只写 library."""
+    scope_id: int = Field(nullable=False)
+    """作用域行 id; library 作用域时为 libraries.id."""
+    section: str = Field(nullable=False)
+    """配置节名; 只写已实现白名单 (common / naming / nfo), 预留节与 parser 一律拒绝."""
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    """稀疏覆盖; {} 哨兵表示对应模板字段显式取空, 不使用 null."""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+PARSE_RULE_SCOPE_GLOBAL = "global"
+"""parse_rules.scope_type: 全局作用域; scope_id 记 0 而不是 NULL, 见 ParseRule 注释."""
+
+PARSE_RULE_SCOPE_LIBRARY = "library"
+"""parse_rules.scope_type: 库级作用域, scope_id 记 libraries.id."""
+
+RULE_CONTENT_TYPES: tuple[ContentType, ...] = (
+    ContentType.CENSORED,
+    ContentType.UNCENSORED,
+    ContentType.AMATEUR,
+    ContentType.CHINESE,
+    ContentType.WESTERN,
+)
+"""识别词允许判定的类型值域 (规格 §3.1.6); fc2 / hentai 不在识别词值域."""
+
+
+class ParseRule(SQLModel, table=True):
+    """用户自定义识别词: 番号 / 路径关键词按 created_at 顺序覆盖类型判定.
+
+    scope_id 用 0 表示全局而不是 NULL: SQLite 的 UNIQUE 认为 NULL 互不相等,
+    用 NULL 会让「同一全局规则重复插入」不被 UNIQUE 拦截.
+    """
+
+    __tablename__ = "parse_rules"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("scope_type", "scope_id", "kind", "content_type", "pattern", name="uq_parse_rules_scope_rule"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope_type: str = Field(nullable=False)
+    """global (scope_id=0) | library (scope_id=libraries.id)."""
+    scope_id: int = Field(nullable=False)
+    kind: RuleKind = Field(nullable=False)
+    """番号关键词 (匹配识别出的番号) 或路径关键词 (匹配完整路径), 见 parsing.rules.RuleKind."""
+    content_type: ContentType = Field(nullable=False)
+    """命中后判定的类型; 写入值域限 RULE_CONTENT_TYPES."""
+    pattern: str = Field(nullable=False)
+    """字面关键词 (大小写不敏感) 或 r: 前缀的正则; 保存与 ParseRuleSet 构造都经 RE2 编译校验."""
+    enabled: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Schedule(SQLModel, table=True):

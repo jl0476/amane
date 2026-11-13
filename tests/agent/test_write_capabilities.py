@@ -33,11 +33,13 @@ from amane.api.models.saved_queries import (
     SAVED_QUERY_NAME_MAX,
 )
 from amane.config import AgentConfig
-from amane.db.models import FacetKind, SavedQueryEntity, TaskStatus, TaskType
+from amane.db.models import PARSE_RULE_SCOPE_LIBRARY, FacetKind, SavedQueryEntity, TaskStatus, TaskType
+from amane.db.parse_rules import ParseRuleProvider
 from amane.db.repository import Repository
 from amane.enums import ApiType
 from amane.handlers.models import ScrapePayload
 from amane.llm import build_model
+from amane.parsing import ContentType, RuleKind, infer_content_type
 from tests.agent.support import ToolCallContext, cap_toolset, tool_fn
 
 
@@ -236,6 +238,64 @@ async def test_task_submit_invalid_body(write_deps: AgentDeps) -> None:
     assert out["error"].startswith("参数无效: scrape:")
     assert "rescrape" in out["types"]
     assert out["schema"]["properties"]["type"]["const"] == "scrape"
+
+
+@pytest.mark.asyncio
+async def test_task_submit_scrape_follows_library_rules(
+    write_deps: AgentDeps, repo: Repository, tmp_path: Path
+) -> None:
+    """media 系 SCRAPE 载荷 content_type 随 media 所属库规则, 与 REST 路径同口径;
+    bridge 未接线时回退内置判定, 目标 media 不存在回错误不入队."""
+    root_a = tmp_path / "lib-a"
+    root_b = tmp_path / "lib-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    lib_a = await repo.create_library(name="a", path=str(root_a))
+    lib_b = await repo.create_library(name="b", path=str(root_b))
+    lib_a_id = lib_a.id
+    lib_b_id = lib_b.id
+    assert lib_a_id is not None and lib_b_id is not None
+    for lib_id, content_type in ((lib_a_id, ContentType.CHINESE), (lib_b_id, ContentType.WESTERN)):
+        await repo.create_parse_rule(
+            scope_type=PARSE_RULE_SCOPE_LIBRARY,
+            scope_id=lib_id,
+            kind=RuleKind.NUMBER_KEYWORD,
+            content_type=content_type,
+            pattern="MIDV",
+        )
+    media_a = await repo.create_media_file(lib_a_id, path=str(root_a / "MIDV-123.mp4"), number="MIDV-123")
+    media_b = await repo.create_media_file(lib_b_id, path=str(root_b / "MIDV-456.mp4"), number="MIDV-456")
+    assert media_a.id is not None and media_b.id is not None
+    cap = build_task_ops_capability()
+
+    # rules_for 未接线 (bridge 默认): 与内置判定一致, 不因缺接线而失败
+    fallback = await tool_fn(cap, "submit_task")(
+        ToolCallContext(write_deps), submission={"type": "scrape", "media_id": media_a.id}
+    )
+    task = await repo.get_task(int(fallback["task_id"]))
+    assert task is not None
+    assert task.payload["content_type"] == infer_content_type("MIDV-123").value
+
+    # bootstrap 接线后 (bridge.rules_for = runtime.parse_rules_for): 类型各随其库
+    write_deps.bridge.rules_for = ParseRuleProvider(repo).for_library
+    submitted_a = await tool_fn(cap, "submit_task")(
+        ToolCallContext(write_deps), submission={"type": "scrape", "media_id": media_a.id}
+    )
+    submitted_b = await tool_fn(cap, "submit_task")(
+        ToolCallContext(write_deps), submission={"type": "scrape", "media_id": media_b.id}
+    )
+    task_a = await repo.get_task(int(submitted_a["task_id"]))
+    task_b = await repo.get_task(int(submitted_b["task_id"]))
+    assert task_a is not None and task_b is not None
+    assert task_a.payload["number"] == "MIDV-123"
+    assert task_a.payload["content_type"] == "chinese"
+    assert task_b.payload["number"] == "MIDV-456"
+    assert task_b.payload["content_type"] == "western"
+
+    missing = await tool_fn(cap, "submit_task")(
+        ToolCallContext(write_deps), submission={"type": "scrape", "media_id": 999999999}
+    )
+    assert missing == {"error": "媒体文件 999999999 不存在"}
 
 
 @pytest.mark.asyncio

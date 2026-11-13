@@ -1,0 +1,54 @@
+{
+  "title": "Parse Rules",
+  "hint": "Resolve numbers and content types per library; enabled library rules fully replace the global bucket (type + kind), and the first match overrides the built-in verdict",
+  "searchPlaceholder": "Search patterns…",
+  "empty": "No parse rules",
+  "noMatches": "No matching rules",
+  "newRule": "New Rule",
+  "editRule": "Edit Rule",
+  "toast": {
+    "created": "Rule created",
+    "updated": "Rule saved"
+  },
+  "confirmDelete": {
+    "title": "Delete Parse Rule",
+    "message": "Delete the rule with pattern \"{{pattern}}\"? This cannot be undone"
+  },
+  "scope": {
+    "all": "All",
+    "global": "Global",
+    "library": "Library"
+  },
+  "kind": {
+    "number_keyword": "Number Keyword",
+    "path_keyword": "Path Keyword"
+  },
+  "contentTypes": {
+    "censored": "Censored",
+    "uncensored": "Uncensored",
+    "chinese": "Chinese",
+    "western": "Western",
+    "fc2": "FC2",
+    "amateur": "Amateur",
+    "hentai": "Hentai"
+  },
+  "columns": {
+    "scope": "Scope",
+    "kind": "Kind",
+    "contentType": "Content Type",
+    "pattern": "Pattern",
+    "enabled": "Enabled",
+    "updated": "Updated",
+    "actions": "Actions"
+  },
+  "fields": {
+    "scopeType": "Scope",
+    "scopeLibrary": "Library",
+    "kind": "Kind",
+    "contentType": "Content Type",
+    "pattern": "Pattern",
+    "patternHint": "RE2 regex, max 256 chars; number keywords match the number segment, path keywords match the full path",
+    "patternTooLong": "Pattern exceeds {{max}} characters",
+    "enabled": "Enabled"
+  }
+}

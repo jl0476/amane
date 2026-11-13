@@ -29,6 +29,8 @@ PLUGIN_K = PLUGIN
 IQQTV = SiteName.IQQTV
 TITLE = MetadataField.TITLE
 PLOT = MetadataField.PLOT
+ORIGINAL_TITLE = MetadataField.ORIGINAL_TITLE
+ORIGINAL_PLOT = MetadataField.ORIGINAL_PLOT
 AGGREGATE_FIELDS = (
     MetadataField.POSTER_URLS,
     MetadataField.THUMB_URLS,
@@ -169,6 +171,7 @@ def _full_metadata(**overrides) -> MediaMetadata:
     defaults = {
         "number": "X",
         "title": "T",
+        "original_title": "T",
         "actors": ["A"],
         "studio": "S",
         "release": "2025-01-01",
@@ -181,8 +184,10 @@ def _full_metadata(**overrides) -> MediaMetadata:
         "series": "Ser",
         "publisher": "Pub",
         "plot": "Plot",
+        "original_plot": "Plot",
         "trailer_urls": ["http://tr.mp4"],
         "extrafanart": ["http://e.jpg"],
+        "field_languages": {"original_title": "jp", "original_plot": "jp"},
     }
     defaults.update(overrides)
     return MediaMetadata.model_validate(defaults)
@@ -1067,3 +1072,224 @@ class TestFetchGraphIntegration:
         assert "dmm" in result.failed_sites
         assert len(c_dmm.fetch_calls) == 1
         assert result.raw
+
+
+# ============================================================
+# 原文双轨: 按字段独立聚合与逐字段语言声明
+# ============================================================
+
+
+def test_metadata_field_has_original_members():
+    assert MetadataField.ORIGINAL_TITLE == "original_title"
+    assert MetadataField.ORIGINAL_PLOT == "original_plot"
+
+
+def test_original_members_exist_in_media_metadata():
+    """枚举一致性契约 (tests/crawlers/test_enum_consistency.py): 新成员必须能在 MediaMetadata 找到同名键."""
+    for member in (MetadataField.ORIGINAL_TITLE, MetadataField.ORIGINAL_PLOT):
+        assert member in MediaMetadata.model_fields
+
+
+class TestOriginalFields:
+    @pytest.mark.asyncio
+    async def test_original_fields_aggregate_independently(self):
+        """标题与剧情可来自不同语言源: 原文按字段独立取值, 逐字段记录声明语言."""
+        fp = defaultdict(lambda: [DB, DMM], {TITLE: [DB, DMM], PLOT: [DMM, DB]})
+        graph = build_graph(fp, {})
+
+        ja = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "title": "日本語タイトル",
+                    "original_title": "日本語タイトル",
+                    "field_languages": {"original_title": "jp"},
+                }
+            )
+        )
+        zh = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "plot": "中文简介",
+                    "original_plot": "中文简介",
+                    "field_languages": {"original_plot": "zh_cn"},
+                }
+            )
+        )
+
+        state = await execute_graph(graph, {K1: ja, K2: zh}, SearchQuery("X"))
+
+        assert state.result.title == "日本語タイトル"
+        assert state.result.original_title == "日本語タイトル"
+        assert state.result.field_sources["original_title"] == "javdb"
+        assert state.result.plot == "中文简介"
+        assert state.result.original_plot == "中文简介"
+        assert state.result.field_sources["original_plot"] == "dmm"
+        assert state.result.field_languages == {"original_title": "jp", "original_plot": "zh_cn"}
+
+    @pytest.mark.asyncio
+    async def test_undeclared_language_is_skipped_and_chain_continues(self):
+        """链首源未声明字段语言时该源不参与该字段原文聚合, 链上后续声明源补位."""
+        fp = defaultdict(lambda: [DB, DMM])
+        graph = build_graph(fp, {})
+
+        undeclared = MockCrawler(
+            MediaMetadata.model_validate({"number": "X", "title": "T", "original_title": "无声明原文"})
+        )
+        declared = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "original_title": "声明原文",
+                    "field_languages": {"original_title": "jp"},
+                }
+            )
+        )
+
+        state = await execute_graph(graph, {K1: undeclared, K2: declared}, SearchQuery("X"))
+
+        assert state.result.original_title == "声明原文"
+        assert state.result.field_sources["original_title"] == "dmm"
+        assert state.result.field_languages == {"original_title": "jp"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "field_languages",
+        [
+            pytest.param(None, id="no_declaration"),
+            pytest.param({}, id="empty_declaration"),
+            pytest.param({"original_title": ""}, id="blank_declaration"),
+        ],
+    )
+    async def test_original_field_unresolved_when_no_source_declares(self, field_languages):
+        """全部源未声明 (或声明为空) → 原文字段留空, 不写 field_sources 与 field_languages."""
+        fp = defaultdict(lambda: [DB])
+        graph = build_graph(fp, {})
+
+        crawler = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "title": "T",
+                    "original_title": "原文",
+                    "field_languages": field_languages,
+                }
+            )
+        )
+
+        state = await execute_graph(graph, {K1: crawler}, SearchQuery("X"))
+
+        assert state.result.original_title is None
+        assert "original_title" not in state.result.field_sources
+        assert state.result.field_languages == {}
+
+    @pytest.mark.asyncio
+    async def test_declared_language_recorded_for_translated_field(self):
+        """翻译字段声明了语言时同样记入 field_languages, 不影响取值."""
+        fp = defaultdict(lambda: [DB])
+        graph = build_graph(fp, {})
+
+        crawler = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "title": "T",
+                    "field_languages": {"title": "jp", "unknown_field": "en"},
+                }
+            )
+        )
+
+        state = await execute_graph(graph, {K1: crawler}, SearchQuery("X"))
+
+        assert state.result.title == "T"
+        assert state.result.field_languages == {"title": "jp"}
+
+    @pytest.mark.asyncio
+    async def test_original_plot_normalized_on_fetch(self):
+        """original_plot 与 plot 同样在进入聚合前收成纯文本, raw 快照一致."""
+        crawler = MockCrawler(
+            MediaMetadata.model_validate(
+                {
+                    "number": "X",
+                    "title": "T",
+                    "original_plot": "前戏<br>高潮<br><br>尾声 &amp; 至此",
+                    "field_languages": {"original_plot": "jp"},
+                }
+            )
+        )
+
+        result = await aggregate(SearchQuery("X"), {K1: crawler}, defaultdict(lambda: [DB]))
+
+        assert result.metadata.original_plot == "前戏\n高潮\n\n尾声 & 至此"
+        assert result.raw["javdb"]["original_plot"] == result.metadata.original_plot
+
+
+# ============================================================
+# website 派生: 标题胜出来源的单值地址
+# ============================================================
+
+
+class TestWebsite:
+    @pytest.mark.asyncio
+    async def test_website_from_title_source(self):
+        """website 取标题胜出来源的 source_url, 与来源在 source_urls 里的位置无关."""
+        fp = defaultdict(lambda: [DB, DMM], {TITLE: [DMM, DB]})
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", title="T_DB", source_url="http://db.com/v/1")),
+            K2: MockCrawler(MediaMetadata(number="X", title="T_DMM", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "dmm"
+        assert state.result.website == "http://dmm.com/v/1"
+        assert set(state.result.source_urls.values()) == {"http://db.com/v/1", "http://dmm.com/v/1"}
+
+    @pytest.mark.asyncio
+    async def test_website_none_when_title_source_has_no_url(self):
+        """标题来源无 source_url (r18dev 类) → website 留空, 不沿链回退到其它站的地址."""
+        fp = defaultdict(lambda: [DB, DMM], {TITLE: [DB, DMM]})
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", title="T_DB", source_url=None)),
+            K2: MockCrawler(MediaMetadata(number="X", title="T_DMM", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "javdb"
+        assert state.result.source_urls == {"dmm": "http://dmm.com/v/1"}
+        assert state.result.website is None
+
+    @pytest.mark.asyncio
+    async def test_website_none_when_title_unresolved(self):
+        """标题未定值 → website 留空, 不取任何 source_url."""
+        fp = defaultdict(lambda: [DB, DMM])
+        graph = build_graph(fp, {})
+
+        crawlers = {
+            K1: MockCrawler(MediaMetadata(number="X", source_url="http://db.com/v/1")),
+            K2: MockCrawler(MediaMetadata(number="X", source_url="http://dmm.com/v/1")),
+        }
+
+        state = await execute_graph(graph, crawlers, SearchQuery("X"))
+
+        assert state.result.field_sources == {}
+        assert state.result.website is None
+
+    @pytest.mark.asyncio
+    async def test_website_matches_language_node_key(self):
+        """多语言站的 field_sources 与 source_urls 同为节点键, website 照常取到."""
+        avsox = str(SiteName.AVSOX)
+        fp = defaultdict(lambda: [avsox], {TITLE: [avsox]})
+        graph = build_graph(fp, {TITLE: Language.JP}, frozenset({TITLE}), frozenset({avsox}))
+
+        crawler = MockCrawler(MediaMetadata(number="X", title="T", source_url="http://avsox.click/ja/1"))
+        state = await execute_graph(graph, {avsox: crawler}, SearchQuery("X"))
+
+        assert state.result.field_sources["title"] == "avsox:jp"
+        assert state.result.website == "http://avsox.click/ja/1"

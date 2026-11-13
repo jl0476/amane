@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from amane.app.bootstrap import build_safe_dirs
 from amane.config import (
@@ -17,6 +17,9 @@ from amane.config import (
     DownloadableResource,
     HotSettings,
     MediaServerConfig,
+    NamingConfig,
+    NfoConfig,
+    OrganizeCommonConfig,
     ScrapingConfig,
     SiteConfig,
     WatermarkConfig,
@@ -28,11 +31,14 @@ from amane.enums import (
     BrowserBackendName,
     BrowserMode,
     Language,
+    LinkMode,
     MetadataField,
     SiteName,
     WatermarkCorner,
     WatermarkKind,
 )
+from amane.library.rules import DEFAULT_SUBTITLE_EXTENSIONS
+from amane.organize.path_templates import VIDEO_TEMPLATE_DEFAULT
 from amane.parsing import ContentType
 
 # ---------------------------------------------------------------------------
@@ -155,6 +161,133 @@ class TestHotSettings:
         """worker.poll_interval > 10.0 被拒绝"""
         with pytest.raises(ValidationError, match=r"less than or equal to 10"):
             HotSettings(worker=WorkerConfig(poll_interval=11.0))
+
+
+COMMON_DEFAULTS: list[tuple[str, object]] = [
+    ("overwrite_video", False),
+    ("overwrite_image", True),
+]
+
+NAMING_DEFAULTS: list[tuple[str, object]] = [
+    ("syntax", "native"),
+    ("video_template", VIDEO_TEMPLATE_DEFAULT),
+    ("link_template", None),
+    ("link_mode", LinkMode.STRM),
+    ("strm_content_template", None),
+    ("thumb_template", None),
+    ("poster_template", None),
+    ("fanart_template", None),
+    ("extrafanart_template", None),
+    ("extrafanart_name_template", None),
+    ("nfo_template", None),
+    ("trailer_template", None),
+    ("subtitle_template", None),
+    ("subtitle_extensions", list(DEFAULT_SUBTITLE_EXTENSIONS)),
+    ("write_nfo", True),
+    ("copy_resources", list(DownloadableResource)),
+]
+
+NFO_DEFAULTS: list[tuple[str, object]] = [
+    ("title", True),
+    ("originaltitle", True),
+    ("originaltitle_source", "title"),
+    ("sorttitle", True),
+    ("plot", True),
+    ("outline", True),
+    ("outline_summary", False),
+    ("originalplot", False),
+    ("actor", True),
+    ("director", True),
+    ("premiered", True),
+    ("releasedate", True),
+    ("year", True),
+    ("num", True),
+    ("runtime", True),
+    ("votes", False),
+    ("score", True),
+    ("criticrating", True),
+    ("country", False),
+    ("mpaa", True),
+    ("mpaa_value", "JP-18+"),
+    ("customrating", False),
+    ("series", True),
+    ("set", True),
+    ("tag", True),
+    ("genre", True),
+    ("studio", True),
+    ("maker", True),
+    ("publisher", True),
+    ("label", True),
+    ("poster", True),
+    ("cover", True),
+    ("trailer", True),
+    ("website", False),
+    ("external_ids", True),
+    ("add_part_to_title", False),
+    ("add_translated_by", False),
+    ("tagline_format", None),
+    ("set_by_actress", False),
+    ("set_by_serial_name", False),
+    ("set_by_series", False),
+    ("additional_tags", []),
+]
+
+
+class TestOrganizeSections:
+    """HotSettings 的 common / naming / nfo 三个 section: 默认值与 extra=forbid."""
+
+    def test_hot_settings_has_new_sections(self) -> None:
+        """三个 section 已挂载, 默认实例与单独构造等价."""
+        hot = HotSettings()
+        assert hot.common == OrganizeCommonConfig()
+        assert hot.naming == NamingConfig()
+        assert hot.nfo == NfoConfig()
+
+    @pytest.mark.parametrize(("field", "expected"), COMMON_DEFAULTS)
+    def test_common_defaults(self, field: str, expected: object) -> None:
+        assert OrganizeCommonConfig().model_dump()[field] == expected
+
+    @pytest.mark.parametrize(("field", "expected"), NAMING_DEFAULTS)
+    def test_naming_defaults(self, field: str, expected: object) -> None:
+        assert NamingConfig().model_dump()[field] == expected
+
+    def test_naming_field_set(self) -> None:
+        """naming 恰好包含 15 个模板类字段与 syntax, 不允许增减."""
+        assert set(NamingConfig.model_fields) == {name for name, _ in NAMING_DEFAULTS}
+
+    @pytest.mark.parametrize(("field", "expected"), NFO_DEFAULTS)
+    def test_nfo_defaults(self, field: str, expected: object) -> None:
+        assert NfoConfig().model_dump()[field] == expected
+
+    def test_nfo_field_set(self) -> None:
+        """nfo 的字段集合与规格 3.4.3 的清单一致."""
+        assert set(NfoConfig.model_fields) == {name for name, _ in NFO_DEFAULTS}
+
+    @pytest.mark.parametrize(
+        ("model", "payload"),
+        [
+            (OrganizeCommonConfig, {"not_a_field": True}),
+            (NamingConfig, {"not_a_field": "x"}),
+            (NfoConfig, {"not_a_field": True}),
+        ],
+    )
+    def test_unknown_section_key_rejected(self, model: type[BaseModel], payload: dict[str, object]) -> None:
+        """section 模型各自 extra=forbid, 未知键抛 ValidationError."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            model(**payload)
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"common": {"not_a_field": True}},
+            {"naming": {"not_a_field": "x"}},
+            {"nfo": {"not_a_field": True}},
+        ],
+    )
+    def test_hot_settings_rejects_unknown_key_in_new_sections(self, patch: dict[str, object]) -> None:
+        """挂载后向新 section 塞未知键同样被拒绝."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            HotSettings.model_validate(patch)
 
 
 class TestMediaServerConfig:

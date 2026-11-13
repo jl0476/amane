@@ -5,7 +5,7 @@
 阅读顺序:
 
 1. [architecture.md](architecture.md) — 模块边界与启动编排
-2. [config.md](config.md) — Cold / Hot 与进程内 rebuild
+2. [config.md](config.md) — Cold / Hot、进程内 rebuild 与库级覆盖层
 3. [data-model.md](data-model.md) — 所有权与多源聚合
 4. [task-system.md](task-system.md) — 任务边界与 Worker
 
@@ -19,6 +19,8 @@
 | API 端点 | [api.md](api.md) |
 | 前端文件索引 (路由 → 文件) | [frontend.md](frontend.md) |
 | 表结构 / 迁移 | [database.md](database.md) |
+| 整理 / 覆写协议 | [organize.md](organize.md) |
+| 解析 / 识别词 | [parsing.md](parsing.md) |
 | 翻译 / LLM | [llm.md](llm.md) |
 | 助理 (首页对话) | [agent.md](agent.md) |
 | 语义检索 (向量 sidecar / 索引生命周期) | [semantic.md](semantic.md) |

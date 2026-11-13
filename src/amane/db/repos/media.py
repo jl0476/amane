@@ -210,6 +210,8 @@ class MediaRepoMixin(RepositoryMixinBase):
                 media.metadata_id = updates["metadata_id"]
             if "has_external_subtitle" in updates:
                 media.has_external_subtitle = updates["has_external_subtitle"]
+            if "link_path" in updates:
+                media.link_path = updates["link_path"]
             media.updated_at = _utcnow()
             session.add(media)
             await session.commit()

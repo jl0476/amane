@@ -12,7 +12,7 @@ from ...enums import ActorGender, SiteName
 from ...net.errors import FailureReason, SourceError, parse_detail
 from ..base import Crawler, CrawlerProfile
 from ..http import RequestError
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import CSSSelector, extract_all_texts, extract_text
 from .dmm_api import (
     DigitalResponse,
@@ -268,10 +268,12 @@ class DmmCrawler(Crawler):
         poster_urls = [package_image.mediumUrl] if package_image and package_image.mediumUrl else []
 
         number = self._cid_to_number(cid, retail=False)
+        original_title, original_plot, field_languages = japanese_originals(data.title, data.description)
 
         return MediaMetadata(
             number=number,
             title=data.title or None,
+            original_title=original_title,
             actors=film_actors(a.name for a in data.actresses if a.name),
             studio=data.maker.name if data.maker else None,
             publisher=data.label.name if data.label else None,
@@ -280,6 +282,8 @@ class DmmCrawler(Crawler):
             tags=[g.name for g in data.genres if g.name],
             series=data.series.name if data.series else None,
             plot=data.description or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             thumb_urls=thumb_urls,
             poster_urls=poster_urls,
             trailer_urls=trailer_urls,
@@ -423,9 +427,12 @@ class DmmCrawler(Crawler):
             except KeyError, TypeError, ValueError:
                 pass
 
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
+
         return MediaMetadata(
             number=number,
             title=title or None,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             publisher=publisher or None,
@@ -434,6 +441,8 @@ class DmmCrawler(Crawler):
             tags=tags,
             series=series or None,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             thumb_urls=thumb_urls,
             poster_urls=poster_urls,
             score=score,
@@ -478,9 +487,12 @@ class DmmCrawler(Crawler):
         score_text = extract_text(html, "//p[contains(@class,'d-review__average')]/strong/text()")
         score = self._parse_score(score_text)
 
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
+
         return MediaMetadata(
             number=number,
             title=title or None,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio or None,
             publisher=publisher or None,
@@ -489,6 +501,8 @@ class DmmCrawler(Crawler):
             tags=tags,
             series=series or None,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             thumb_urls=thumb_urls,
             poster_urls=poster_urls,
             score=score,
@@ -527,10 +541,12 @@ class DmmCrawler(Crawler):
         runtime = int(play_info.duration / 60) if play_info and play_info.duration else None
 
         extrafanart = [sp.imageLarge for sp in data.samplePictures if sp.imageLarge]
+        original_title, original_plot, field_languages = japanese_originals(data.title, data.description)
 
         return MediaMetadata(
             number=cid,
             title=data.title,
+            original_title=original_title,
             actors=film_actors(a.name for a in data.actresses if a.name),
             studio=data.maker.name if data.maker else None,
             publisher=data.label.name if data.label else None,
@@ -539,6 +555,8 @@ class DmmCrawler(Crawler):
             tags=[g.name for g in data.genres if g.name],
             series=data.series.name if data.series else None,
             plot=data.description or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[data.packageImage] if data.packageImage else [],
             thumb_urls=[data.packageLargeImage] if data.packageLargeImage else [],
             trailer_urls=[trailer_url] if trailer_url else [],
@@ -572,10 +590,12 @@ class DmmCrawler(Crawler):
             s.staffName for s in data.staffs if s.roleName in ("制作プロダクション", "制作", "制作著作")
         ]
         studio = studio_candidates[0] if studio_candidates else None
+        original_title, original_plot, field_languages = japanese_originals(data.titleName, data.description)
 
         return MediaMetadata(
             number="",  # DMM TV 不暴露与其它分类相同的 cid.
             title=data.titleName,
+            original_title=original_title,
             actors=film_actors((c.actorName for c in data.casts if c.actorName), gender=ActorGender.UNKNOWN),
             studio=studio,
             publisher=studio,
@@ -583,6 +603,8 @@ class DmmCrawler(Crawler):
             runtime=None,
             tags=[g.name for g in data.genres if g.name],
             plot=data.description or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[data.keyVisualImage] if data.keyVisualImage else [],
             thumb_urls=[data.packageImage] if data.packageImage else [],
             score=data.reviewSummary.averagePoint if data.reviewSummary else None,

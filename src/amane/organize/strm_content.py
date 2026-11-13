@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import AfterValidator
 
 from ..enums import ActorGender
-from .template import Parser, StrmEngine, TemplateContext
+from .backend import SyntaxName, template_backend
+from .template import Parser, TemplateContext
 
 if TYPE_CHECKING:
     from ..db.models import Metadata
@@ -45,9 +46,13 @@ def render_strm_content(
     file_info: FileInfo | None = None,
     link: Path | None = None,
     actor_genders: Mapping[str, ActorGender] | None = None,
+    syntax: SyntaxName = "native",
 ) -> str:
     """空模板写 dest 的字面绝对路径.
     模板引用 `{video_relpath}` 且整理后的路径不在本库内时抛 ValueError, 不写出错误正文.
+
+    ``syntax`` 是生效 ``NamingConfig.syntax``: 正文渲染属运行时分派的六个入口之一 (规格 3.2.1),
+    两套后端的 STRM 语义一致 (不折叠空段 / 不截断长字段).
     """
     normalized = normalize_strm_content_template(template)
     if normalized is None:
@@ -62,4 +67,5 @@ def render_strm_content(
     )
     ctx.apply_video(dest, library_root)
     ctx.apply_link(link)
-    return StrmEngine(normalized).render(ctx)
+    rendered = template_backend(syntax).render_strm(normalized, ctx)
+    return rendered if rendered.endswith("\n") else f"{rendered}\n"

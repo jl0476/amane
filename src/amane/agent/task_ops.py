@@ -38,7 +38,7 @@ def build_task_ops_capability() -> Capability[AgentDeps]:
         """Enqueue a task; the body shape comes from get_task_submission_schema."""
         try:
             req = TASK_SUBMISSION.validate(submission)
-            task_type, payload = await resolve_submission(req, ctx.deps.repo)
+            task_type, payload = await resolve_submission(req, ctx.deps.repo, rules_for=ctx.deps.bridge.rules_for)
         except ValidationError as exc:
             return TASK_SUBMISSION.error(submission, exc)
         except HTTPException as exc:

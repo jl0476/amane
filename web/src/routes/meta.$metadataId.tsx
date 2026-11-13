@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Box,
   Button,
@@ -643,6 +644,14 @@ function TitleDetailPage() {
                 <LockToggle {...lockProps("title")} />
               </Group>
             )}
+            {item.original_title && (
+              <Group gap={4} align="center" wrap="nowrap">
+                <Text c="dimmed" size="sm">
+                  {item.original_title}
+                </Text>
+                <LockToggle {...lockProps("original_title")} />
+              </Group>
+            )}
           </div>
 
           <Group gap="lg" wrap="wrap">
@@ -765,6 +774,28 @@ function TitleDetailPage() {
                   ];
                 })}
               </Group>
+            </FieldBlock>
+          )}
+
+          {item.website && (
+            <FieldBlock label={t("detail.fields.website")}>
+              <Anchor
+                href={item.website}
+                target="_blank"
+                rel="noreferrer"
+                size="sm"
+                style={{ wordBreak: "break-all" }}
+              >
+                {item.website}
+              </Anchor>
+            </FieldBlock>
+          )}
+
+          {item.original_plot && (
+            <FieldBlock label={t("detail.fields.original_plot")} lock={lockProps("original_plot")}>
+              <Text size="sm" style={{ whiteSpace: "pre-line" }}>
+                {item.original_plot}
+              </Text>
             </FieldBlock>
           )}
 

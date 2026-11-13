@@ -10,7 +10,7 @@ from ...enums import SiteName
 from ...net.connectivity import ConnectivityOutcome, probe_get
 from ..base import Crawler, CrawlerProfile
 from ..http import RequestError
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 
 # 探测样本番号, 必须是在售商品: 站点对不存在的 SKU 返回 404, 探测结论会落成失败.
 _PROBE_SKU = "ABW-350"
@@ -153,10 +153,12 @@ class PrestigeCrawler(Crawler):
                     extrafanart.append(img_url)
 
         external_id = data.get("uuid", "")
+        original_title, original_plot, field_languages = japanese_originals(title, data.get("body"))
 
         return MediaMetadata(
             number=number,
             title=title or None,
+            original_title=original_title,
             actors=film_actors(actors),
             studio=studio,
             publisher=label_name or maker_name or None,
@@ -165,6 +167,8 @@ class PrestigeCrawler(Crawler):
             tags=tags,
             series=series_name or None,
             plot=data.get("body") or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             poster_urls=[poster_url] if poster_url else [],
             thumb_urls=[thumb_url] if thumb_url else [],
             directors=directors,

@@ -19,6 +19,7 @@ import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ManualRouteImport } from './routes/manual'
 import { Route as MetaRouteImport } from './routes/meta'
 import { Route as NetworkRouteImport } from './routes/network'
+import { Route as ParseRulesRouteImport } from './routes/parse-rules'
 import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as SavedQueriesRouteImport } from './routes/saved-queries'
 import { Route as SchedulesRouteImport } from './routes/schedules'
@@ -86,6 +87,11 @@ const MetaRoute = MetaRouteImport.update({
 const NetworkRoute = NetworkRouteImport.update({
   id: '/network',
   path: '/network',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ParseRulesRoute = ParseRulesRouteImport.update({
+  id: '/parse-rules',
+  path: '/parse-rules',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PluginsRoute = PluginsRouteImport.update({
@@ -190,6 +196,7 @@ export interface FileRoutesByFullPath {
   '/manual': typeof ManualRoute
   '/meta': typeof MetaRouteWithChildren
   '/network': typeof NetworkRoute
+  '/parse-rules': typeof ParseRulesRoute
   '/plugins': typeof PluginsRoute
   '/saved-queries': typeof SavedQueriesRouteWithChildren
   '/schedules': typeof SchedulesRoute
@@ -215,6 +222,7 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/manual': typeof ManualRoute
   '/network': typeof NetworkRoute
+  '/parse-rules': typeof ParseRulesRoute
   '/plugins': typeof PluginsRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
@@ -245,6 +253,7 @@ export interface FileRoutesById {
   '/manual': typeof ManualRoute
   '/meta': typeof MetaRouteWithChildren
   '/network': typeof NetworkRoute
+  '/parse-rules': typeof ParseRulesRoute
   '/plugins': typeof PluginsRoute
   '/saved-queries': typeof SavedQueriesRouteWithChildren
   '/schedules': typeof SchedulesRoute
@@ -277,6 +286,7 @@ export interface FileRouteTypes {
     | '/manual'
     | '/meta'
     | '/network'
+    | '/parse-rules'
     | '/plugins'
     | '/saved-queries'
     | '/schedules'
@@ -302,6 +312,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/manual'
     | '/network'
+    | '/parse-rules'
     | '/plugins'
     | '/schedules'
     | '/settings'
@@ -331,6 +342,7 @@ export interface FileRouteTypes {
     | '/manual'
     | '/meta'
     | '/network'
+    | '/parse-rules'
     | '/plugins'
     | '/saved-queries'
     | '/schedules'
@@ -362,6 +374,7 @@ export interface RootRouteChildren {
   ManualRoute: typeof ManualRoute
   MetaRoute: typeof MetaRouteWithChildren
   NetworkRoute: typeof NetworkRoute
+  ParseRulesRoute: typeof ParseRulesRoute
   PluginsRoute: typeof PluginsRoute
   SavedQueriesRoute: typeof SavedQueriesRouteWithChildren
   SchedulesRoute: typeof SchedulesRoute
@@ -439,6 +452,13 @@ declare module '@tanstack/react-router' {
       path: '/network'
       fullPath: '/network'
       preLoaderRoute: typeof NetworkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/parse-rules': {
+      id: '/parse-rules'
+      path: '/parse-rules'
+      fullPath: '/parse-rules'
+      preLoaderRoute: typeof ParseRulesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/plugins': {
@@ -661,6 +681,7 @@ const rootRouteChildren: RootRouteChildren = {
   ManualRoute: ManualRoute,
   MetaRoute: MetaRouteWithChildren,
   NetworkRoute: NetworkRoute,
+  ParseRulesRoute: ParseRulesRoute,
   PluginsRoute: PluginsRoute,
   SavedQueriesRoute: SavedQueriesRouteWithChildren,
   SchedulesRoute: SchedulesRoute,

@@ -15,6 +15,7 @@ from ..config import SAFE_DIRS_ALLOW_ALL, ColdSettings, ConfigManager
 from ..config.token import resolve_api_token, resolve_image_token
 from ..db.embeddings import EmbeddingStore
 from ..db.engine import create_async_engine_from_path
+from ..db.parse_rules import ParseRuleProvider
 from ..db.profiling import DbLogPolicy
 from ..db.repository import Repository
 from ..events import EventBus
@@ -23,6 +24,7 @@ from ..library import InventoryStore
 from ..llm import TranslationCache, TranslationCoalescer
 from ..media import ResourceStore
 from ..observability import setup_logging
+from ..organize import recover_organize_journals
 from ..playback import PlaybackFactory, PlaybackState
 from ..plugins.manager import PluginManager
 from ..release import ReleaseChecker
@@ -181,6 +183,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
 
     library_locks = LibraryTaskLocks()
     inventory_store = InventoryStore()
+    parse_rule_provider = ParseRuleProvider(repo)
     semantic_service = SemanticService(repo, resource_store, cold.data_dir, hot.semantic)
     handlers = build_handlers(
         repo,
@@ -196,6 +199,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         library_locks=library_locks,
         inventory_store=inventory_store,
         semantic=semantic_service,
+        parse_rules=parse_rule_provider,
     )
 
     worker = AsyncWorker(
@@ -208,6 +212,9 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         log_dir=cold.log_dir,
         get_hot=lambda: config.hot,
     )
+    # 启动恢复扫描必须先于 worker 认领任务: 后台并发会把正在落盘的新 journal 误当作
+    # 中断遗留, 令回滚 / 清理与正常落盘交错 (联合审核 P1). 完成后才允许任务执行.
+    await recover_organize_journals(repo)
     worker.start()
 
     cron_scheduler = CronScheduler(repo)
@@ -228,6 +235,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
             use_polling=hot.watcher.use_polling,
             media_extensions=hot.watcher.media_extensions,
             debounce_seconds=hot.watcher.debounce_seconds,
+            parse_rules=parse_rule_provider,
         )
         await watcher_service.start()
     except Exception:
@@ -260,6 +268,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
         library_locks=library_locks,
         inventory_store=inventory_store,
         semantic=semantic_service,
+        parse_rules=parse_rule_provider,
         playback_factory=PlaybackFactory(
             plugin_manager=plugin_manager,
             plugin_configs=hot.plugins,
@@ -275,6 +284,7 @@ async def start_app(config: ConfigManager | None = None) -> AppSession:
     agent_service.bridge.watcher = watcher_service
     agent_service.bridge.cancel_running_task = runtime.cancel_task
     agent_service.bridge.poll_feed = feed_service.poll_one
+    agent_service.bridge.rules_for = runtime.parse_rules_for
 
     logger.info("amane service ready")
     return AppSession(

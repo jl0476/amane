@@ -1223,6 +1223,17 @@ export type DesktopResponse = {
 export type DownloadableResource = 'thumb' | 'poster' | 'extrafanart' | 'trailer';
 
 /**
+ * EffectiveConfigResponse
+ *
+ * GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层).
+ */
+export type EffectiveConfigResponse = {
+    common: OrganizeCommonConfig;
+    naming: NamingConfig;
+    nfo: NfoConfig;
+};
+
+/**
  * EmbeddingKind
  */
 export type EmbeddingKind = 'cover' | 'still';
@@ -1843,6 +1854,9 @@ export type HealthResponse = {
  */
 export type HotSettings = {
     scraping?: ScrapingConfig;
+    common?: OrganizeCommonConfig;
+    naming?: NamingConfig;
+    nfo?: NfoConfig;
     media_server?: MediaServerConfig;
     actor_scraping?: ActorScrapingConfig;
     agent?: AgentConfig;
@@ -2239,6 +2253,40 @@ export type LibraryListResponse = {
 };
 
 /**
+ * LibraryOverrideResponse
+ *
+ * 单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现.
+ */
+export type LibraryOverrideResponse = {
+    /**
+     * Section
+     */
+    section: string;
+    /**
+     * Payload
+     */
+    payload?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * LibraryOverridesResponse
+ *
+ * 该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现.
+ */
+export type LibraryOverridesResponse = {
+    /**
+     * Overrides
+     */
+    overrides?: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+};
+
+/**
  * LibraryResponse
  */
 export type LibraryResponse = {
@@ -2330,6 +2378,10 @@ export type LibraryResponse = {
      * Copy Resources
      */
     copy_resources: Array<DownloadableResource>;
+    /**
+     * Template Overrides
+     */
+    template_overrides: Array<string>;
     /**
      * Trailer Pattern
      */
@@ -2563,6 +2615,10 @@ export type MediaFileResponse = {
      */
     metadata_id?: number | null;
     /**
+     * Link Path
+     */
+    link_path?: string | null;
+    /**
      * Created At
      */
     created_at?: string | null;
@@ -2795,7 +2851,7 @@ export type MetadataDetailResponse = {
 /**
  * MetadataField
  */
-export type MetadataField = 'title' | 'plot' | 'actors' | 'directors' | 'tags' | 'series' | 'release' | 'runtime' | 'publisher' | 'studio' | 'poster_urls' | 'thumb_urls' | 'trailer_urls' | 'extrafanart' | 'score';
+export type MetadataField = 'title' | 'original_title' | 'plot' | 'original_plot' | 'actors' | 'directors' | 'tags' | 'series' | 'release' | 'runtime' | 'publisher' | 'studio' | 'poster_urls' | 'thumb_urls' | 'trailer_urls' | 'extrafanart' | 'score';
 
 /**
  * MetadataListResponse
@@ -2894,6 +2950,14 @@ export type MetadataPartial = {
      */
     plot?: string | null;
     /**
+     * Original Title
+     */
+    original_title?: string | null;
+    /**
+     * Original Plot
+     */
+    original_plot?: string | null;
+    /**
      * Directors
      */
     directors?: Array<string> | null;
@@ -2953,6 +3017,10 @@ export type MetadataResponse = {
      */
     title?: string | null;
     /**
+     * Original Title
+     */
+    original_title?: string | null;
+    /**
      * Actors
      */
     actors?: Array<string>;
@@ -2984,6 +3052,10 @@ export type MetadataResponse = {
      * Plot
      */
     plot?: string | null;
+    /**
+     * Original Plot
+     */
+    original_plot?: string | null;
     /**
      * Directors
      */
@@ -3055,6 +3127,16 @@ export type MetadataResponse = {
         [key: string]: unknown;
     };
     /**
+     * Field Languages
+     */
+    field_languages?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Website
+     */
+    website?: string | null;
+    /**
      * Raw
      */
     raw?: {
@@ -3120,7 +3202,180 @@ export type Mosaic = 'uncensored' | 'cracked' | 'leaked';
  *
  * 整理时将源文件写入模板路径的方式.
  */
-export type MoveMode = 'move' | 'copy' | 'hardlink' | 'symlink';
+export type MoveMode = 'move' | 'copy' | 'hardlink' | 'symlink' | 'inplace';
+
+/**
+ * NamingConfig
+ *
+ * 命名模板与语法. 字段与 Library 行的模板类字段一一对应.
+ */
+export type NamingConfig = {
+    /**
+     * Syntax
+     */
+    syntax?: 'native' | 'jinja';
+    /**
+     * Video Template
+     */
+    video_template?: string;
+    /**
+     * Link Template
+     */
+    link_template?: string | null;
+    link_mode?: LinkMode;
+    /**
+     * Strm Content Template
+     */
+    strm_content_template?: string | null;
+    /**
+     * Thumb Template
+     */
+    thumb_template?: string | null;
+    /**
+     * Poster Template
+     */
+    poster_template?: string | null;
+    /**
+     * Fanart Template
+     */
+    fanart_template?: string | null;
+    /**
+     * Extrafanart Template
+     */
+    extrafanart_template?: string | null;
+    /**
+     * Extrafanart Name Template
+     */
+    extrafanart_name_template?: string | null;
+    /**
+     * Nfo Template
+     */
+    nfo_template?: string | null;
+    /**
+     * Trailer Template
+     */
+    trailer_template?: string | null;
+    /**
+     * Subtitle Template
+     */
+    subtitle_template?: string | null;
+    /**
+     * Subtitle Extensions
+     */
+    subtitle_extensions?: Array<string>;
+    /**
+     * Write Nfo
+     */
+    write_nfo?: boolean;
+    /**
+     * Copy Resources
+     */
+    copy_resources?: Array<DownloadableResource>;
+};
+
+/**
+ * NamingPreviewRequest
+ *
+ * 命名试算入参 (规格 3.2.4): 不落盘, 走与整理相同的 resolve_paths 代码路径.
+ *
+ * ``media_file_id`` 用真实文件与已刮削的元数据; 两者都缺省时用请求字段构造.
+ * ``library_id`` 缺省用全局默认模板; ``syntax`` 缺省用生效语法.
+ */
+export type NamingPreviewRequest = {
+    /**
+     * Library Id
+     */
+    library_id?: number | null;
+    /**
+     * Media File Id
+     */
+    media_file_id?: number | null;
+    /**
+     * Syntax
+     */
+    syntax?: 'native' | 'jinja' | null;
+    /**
+     * Number
+     */
+    number?: string;
+    /**
+     * Source Path
+     */
+    source_path?: string;
+    content_type?: ContentType;
+    /**
+     * Title
+     */
+    title?: string;
+    /**
+     * Actors
+     */
+    actors?: Array<string>;
+    /**
+     * Studio
+     */
+    studio?: string;
+    /**
+     * Release
+     */
+    release?: string;
+};
+
+/**
+ * NamingPreviewResponse
+ *
+ * 解析结果 + 各产物渲染路径; subtitle 按 `{源文件主干}.srt` 的假想字幕渲染.
+ */
+export type NamingPreviewResponse = {
+    /**
+     * Number
+     */
+    number: string;
+    /**
+     * Content Type
+     */
+    content_type: string;
+    /**
+     * Mosaic
+     */
+    mosaic: string;
+    /**
+     * Subtitle Tag
+     */
+    subtitle_tag: string;
+    /**
+     * Definition
+     */
+    definition: string;
+    /**
+     * Video
+     */
+    video: string;
+    /**
+     * Thumb
+     */
+    thumb: string;
+    /**
+     * Poster
+     */
+    poster: string;
+    /**
+     * Fanart
+     */
+    fanart: string;
+    /**
+     * Nfo
+     */
+    nfo: string;
+    /**
+     * Trailer
+     */
+    trailer: string;
+    /**
+     * Subtitle
+     */
+    subtitle: string;
+};
 
 /**
  * NetworkConfig
@@ -3168,9 +3423,219 @@ export type NetworkConfig = {
 };
 
 /**
+ * NfoConfig
+ *
+ * NFO 字段开关. 字段清单与默认值见 3.4.3.
+ */
+export type NfoConfig = {
+    /**
+     * Title
+     */
+    title?: boolean;
+    /**
+     * Originaltitle
+     */
+    originaltitle?: boolean;
+    /**
+     * Originaltitle Source
+     */
+    originaltitle_source?: 'title' | 'original';
+    /**
+     * Sorttitle
+     */
+    sorttitle?: boolean;
+    /**
+     * Plot
+     */
+    plot?: boolean;
+    /**
+     * Outline
+     */
+    outline?: boolean;
+    /**
+     * Outline Summary
+     */
+    outline_summary?: boolean;
+    /**
+     * Originalplot
+     */
+    originalplot?: boolean;
+    /**
+     * Actor
+     */
+    actor?: boolean;
+    /**
+     * Director
+     */
+    director?: boolean;
+    /**
+     * Premiered
+     */
+    premiered?: boolean;
+    /**
+     * Releasedate
+     */
+    releasedate?: boolean;
+    /**
+     * Year
+     */
+    year?: boolean;
+    /**
+     * Num
+     */
+    num?: boolean;
+    /**
+     * Runtime
+     */
+    runtime?: boolean;
+    /**
+     * Votes
+     */
+    votes?: boolean;
+    /**
+     * Score
+     */
+    score?: boolean;
+    /**
+     * Criticrating
+     */
+    criticrating?: boolean;
+    /**
+     * Country
+     */
+    country?: boolean;
+    /**
+     * Mpaa
+     */
+    mpaa?: boolean;
+    /**
+     * Mpaa Value
+     */
+    mpaa_value?: string;
+    /**
+     * Customrating
+     */
+    customrating?: boolean;
+    /**
+     * Series
+     */
+    series?: boolean;
+    /**
+     * Set
+     */
+    set?: boolean;
+    /**
+     * Tag
+     */
+    tag?: boolean;
+    /**
+     * Genre
+     */
+    genre?: boolean;
+    /**
+     * Studio
+     */
+    studio?: boolean;
+    /**
+     * Maker
+     */
+    maker?: boolean;
+    /**
+     * Publisher
+     */
+    publisher?: boolean;
+    /**
+     * Label
+     */
+    label?: boolean;
+    /**
+     * Poster
+     */
+    poster?: boolean;
+    /**
+     * Cover
+     */
+    cover?: boolean;
+    /**
+     * Trailer
+     */
+    trailer?: boolean;
+    /**
+     * Website
+     */
+    website?: boolean;
+    /**
+     * External Ids
+     */
+    external_ids?: boolean;
+    /**
+     * Add Part To Title
+     */
+    add_part_to_title?: boolean;
+    /**
+     * Add Translated By
+     */
+    add_translated_by?: boolean;
+    /**
+     * Tagline Format
+     */
+    tagline_format?: string | null;
+    /**
+     * Set By Actress
+     */
+    set_by_actress?: boolean;
+    /**
+     * Set By Serial Name
+     */
+    set_by_serial_name?: boolean;
+    /**
+     * Set By Series
+     */
+    set_by_series?: boolean;
+    /**
+     * Additional Tags
+     */
+    additional_tags?: Array<string>;
+};
+
+/**
+ * NfoRewriteFailure
+ *
+ * 单份文件重写失败的原因; ``path`` 是该文件的索引路径.
+ */
+export type NfoRewriteFailure = {
+    /**
+     * Path
+     */
+    path: string;
+    /**
+     * Error
+     */
+    error: string;
+};
+
+/**
+ * NfoRewriteResponse
+ *
+ * 逐文件独立重写的结果: 成功者不回滚, 失败清单随响应返回.
+ */
+export type NfoRewriteResponse = {
+    /**
+     * Rewritten
+     */
+    rewritten?: Array<string>;
+    /**
+     * Failures
+     */
+    failures?: Array<NfoRewriteFailure>;
+};
+
+/**
  * OptionalPathTemplateDefaults
  *
  * 附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).
+ *
+ * 取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验.
  */
 export type OptionalPathTemplateDefaults = {
     /**
@@ -3205,6 +3670,22 @@ export type OptionalPathTemplateDefaults = {
      * Subtitle Template
      */
     subtitle_template: string;
+};
+
+/**
+ * OrganizeCommonConfig
+ *
+ * 整理时的覆写策略. 只放本阶段实现的字段.
+ */
+export type OrganizeCommonConfig = {
+    /**
+     * Overwrite Video
+     */
+    overwrite_video?: boolean;
+    /**
+     * Overwrite Image
+     */
+    overwrite_image?: boolean;
 };
 
 /**
@@ -3263,6 +3744,10 @@ export type OrganizeResult = {
      * Conflicts
      */
     conflicts: Array<OrganizeConflict>;
+    /**
+     * Overwritten
+     */
+    overwritten?: number;
 };
 
 /**
@@ -3294,6 +3779,12 @@ export type OrganizeSubmission = {
      */
     copy_resources?: Array<DownloadableResource> | null;
     /**
+     * Explicit Fields
+     *
+     * 用户显式给出的模板字段名
+     */
+    explicit_fields?: Array<string>;
+    /**
      * Media File Ids
      *
      * 勾选快照; 与 path 不能同时指定. None 表示 path 范围内的全部索引
@@ -3309,6 +3800,80 @@ export type OrganizeSubmission = {
      * Type
      */
     type: 'organize';
+};
+
+/**
+ * ParseRuleListResponse
+ */
+export type ParseRuleListResponse = {
+    /**
+     * Items
+     */
+    items: Array<ParseRuleResponse>;
+};
+
+/**
+ * ParseRuleResponse
+ */
+export type ParseRuleResponse = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * Scope Type
+     */
+    scope_type: string;
+    /**
+     * Scope Id
+     */
+    scope_id: number;
+    kind: RuleKind;
+    content_type: ContentType;
+    /**
+     * Pattern
+     */
+    pattern: string;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * ParseRuleUpsertRequest
+ *
+ * POST 与 PUT 同形 (整体替换); scope_type=global 时 scope_id 恒按 0 落库.
+ *
+ * 值与 ``PARSE_RULE_SCOPE_GLOBAL`` / ``PARSE_RULE_SCOPE_LIBRARY`` 一致; Literal 不能引用变量.
+ */
+export type ParseRuleUpsertRequest = {
+    /**
+     * Scope Type
+     */
+    scope_type: 'global' | 'library';
+    /**
+     * Scope Id
+     */
+    scope_id?: number;
+    kind: RuleKind;
+    content_type: ContentType;
+    /**
+     * Pattern
+     */
+    pattern: string;
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
 };
 
 /**
@@ -3346,6 +3911,47 @@ export type PathTemplateSchemaResponse = {
      * Subtitle Extensions Default
      */
     subtitle_extensions_default: Array<string>;
+    /**
+     * Syntaxes
+     */
+    syntaxes: Array<PathTemplateSyntaxInfo>;
+};
+
+/**
+ * PathTemplateSyntaxInfo
+ *
+ * 一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认.
+ */
+export type PathTemplateSyntaxInfo = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Default Video Template
+     */
+    default_video_template: string;
+    default_optional_templates: OptionalPathTemplateDefaults;
+    /**
+     * Placeholders
+     */
+    placeholders: Array<PathTemplateSyntaxVariable>;
+};
+
+/**
+ * PathTemplateSyntaxVariable
+ *
+ * 占位符在对应语法下的变量名: Jinja 映射 4 个带 `?` 的占位符, 其余同名.
+ */
+export type PathTemplateSyntaxVariable = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Variable
+     */
+    variable: string;
 };
 
 /**
@@ -3835,6 +4441,13 @@ export type RescrapeTarget = 'metadata' | 'actor';
  * RoutineType
  */
 export type RoutineType = 'cleanup' | 'upscale' | 'r18_import' | 'rescrape' | 'semantic_index';
+
+/**
+ * RuleKind
+ *
+ * 识别词的两段: 番号关键词先于路径关键词, 是唯一显式优先级.
+ */
+export type RuleKind = 'number_keyword' | 'path_keyword';
 
 /**
  * RuntimePaths
@@ -6686,6 +7299,36 @@ export type CropPosterFromThumbResponses = {
 
 export type CropPosterFromThumbResponse = CropPosterFromThumbResponses[keyof CropPosterFromThumbResponses];
 
+export type RewriteNfoData = {
+    body?: never;
+    path: {
+        /**
+         * Metadata Id
+         */
+        metadata_id: number;
+    };
+    query?: never;
+    url: '/api/metadata/{metadata_id}/nfo';
+};
+
+export type RewriteNfoErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RewriteNfoError = RewriteNfoErrors[keyof RewriteNfoErrors];
+
+export type RewriteNfoResponses = {
+    /**
+     * Successful Response
+     */
+    200: NfoRewriteResponse;
+};
+
+export type RewriteNfoResponse = RewriteNfoResponses[keyof RewriteNfoResponses];
+
 export type MergeMetadataData = {
     body: MergeRequest;
     path: {
@@ -6759,6 +7402,107 @@ export type CheckConnectivityResponses = {
 };
 
 export type CheckConnectivityResponse = CheckConnectivityResponses[keyof CheckConnectivityResponses];
+
+export type ListParseRulesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/parse-rules';
+};
+
+export type ListParseRulesResponses = {
+    /**
+     * Successful Response
+     */
+    200: ParseRuleListResponse;
+};
+
+export type ListParseRulesResponse = ListParseRulesResponses[keyof ListParseRulesResponses];
+
+export type CreateParseRuleData = {
+    body: ParseRuleUpsertRequest;
+    path?: never;
+    query?: never;
+    url: '/api/parse-rules';
+};
+
+export type CreateParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateParseRuleError = CreateParseRuleErrors[keyof CreateParseRuleErrors];
+
+export type CreateParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    201: ParseRuleResponse;
+};
+
+export type CreateParseRuleResponse = CreateParseRuleResponses[keyof CreateParseRuleResponses];
+
+export type DeleteParseRuleData = {
+    body?: never;
+    path: {
+        /**
+         * Rule Id
+         */
+        rule_id: number;
+    };
+    query?: never;
+    url: '/api/parse-rules/{rule_id}';
+};
+
+export type DeleteParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteParseRuleError = DeleteParseRuleErrors[keyof DeleteParseRuleErrors];
+
+export type DeleteParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteParseRuleResponse = DeleteParseRuleResponses[keyof DeleteParseRuleResponses];
+
+export type UpdateParseRuleData = {
+    body: ParseRuleUpsertRequest;
+    path: {
+        /**
+         * Rule Id
+         */
+        rule_id: number;
+    };
+    query?: never;
+    url: '/api/parse-rules/{rule_id}';
+};
+
+export type UpdateParseRuleErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateParseRuleError = UpdateParseRuleErrors[keyof UpdateParseRuleErrors];
+
+export type UpdateParseRuleResponses = {
+    /**
+     * Successful Response
+     */
+    200: ParseRuleResponse;
+};
+
+export type UpdateParseRuleResponse = UpdateParseRuleResponses[keyof UpdateParseRuleResponses];
 
 export type ListPlaybackSourcesData = {
     body?: never;
@@ -9085,6 +9829,31 @@ export type GetPathTemplateSchemaResponses = {
 
 export type GetPathTemplateSchemaResponse = GetPathTemplateSchemaResponses[keyof GetPathTemplateSchemaResponses];
 
+export type PreviewNamingData = {
+    body: NamingPreviewRequest;
+    path?: never;
+    query?: never;
+    url: '/api/libraries/naming/preview';
+};
+
+export type PreviewNamingErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PreviewNamingError = PreviewNamingErrors[keyof PreviewNamingErrors];
+
+export type PreviewNamingResponses = {
+    /**
+     * Successful Response
+     */
+    200: NamingPreviewResponse;
+};
+
+export type PreviewNamingResponse = PreviewNamingResponses[keyof PreviewNamingResponses];
+
 export type ListLibrariesData = {
     body?: never;
     path?: never;
@@ -9215,6 +9984,139 @@ export type UpdateLibraryResponses = {
 };
 
 export type UpdateLibraryResponse = UpdateLibraryResponses[keyof UpdateLibraryResponses];
+
+export type ListLibraryOverridesData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides';
+};
+
+export type ListLibraryOverridesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListLibraryOverridesError = ListLibraryOverridesErrors[keyof ListLibraryOverridesErrors];
+
+export type ListLibraryOverridesResponses = {
+    /**
+     * Successful Response
+     */
+    200: LibraryOverridesResponse;
+};
+
+export type ListLibraryOverridesResponse = ListLibraryOverridesResponses[keyof ListLibraryOverridesResponses];
+
+export type DeleteLibraryOverrideData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+        /**
+         * Section
+         */
+        section: string;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides/{section}';
+};
+
+export type DeleteLibraryOverrideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteLibraryOverrideError = DeleteLibraryOverrideErrors[keyof DeleteLibraryOverrideErrors];
+
+export type DeleteLibraryOverrideResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteLibraryOverrideResponse = DeleteLibraryOverrideResponses[keyof DeleteLibraryOverrideResponses];
+
+export type PutLibraryOverrideData = {
+    /**
+     * Payload
+     */
+    body: {
+        [key: string]: unknown;
+    };
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+        /**
+         * Section
+         */
+        section: string;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/overrides/{section}';
+};
+
+export type PutLibraryOverrideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PutLibraryOverrideError = PutLibraryOverrideErrors[keyof PutLibraryOverrideErrors];
+
+export type PutLibraryOverrideResponses = {
+    /**
+     * Successful Response
+     */
+    200: LibraryOverrideResponse;
+};
+
+export type PutLibraryOverrideResponse = PutLibraryOverrideResponses[keyof PutLibraryOverrideResponses];
+
+export type GetEffectiveConfigData = {
+    body?: never;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/effective-config';
+};
+
+export type GetEffectiveConfigErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetEffectiveConfigError = GetEffectiveConfigErrors[keyof GetEffectiveConfigErrors];
+
+export type GetEffectiveConfigResponses = {
+    /**
+     * Successful Response
+     */
+    200: EffectiveConfigResponse;
+};
+
+export type GetEffectiveConfigResponse = GetEffectiveConfigResponses[keyof GetEffectiveConfigResponses];
 
 export type ClouddriveNotifyData = {
     body: CloudDriveNotifyRequest;

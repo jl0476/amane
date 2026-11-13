@@ -6,10 +6,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from amane.config import HotSettings
+from amane.organize.template_jinja import JINJA_TEMPLATE_DEFAULTS, JINJA_VIDEO_TEMPLATE_DEFAULT
 from tests.api.conftest import hot_for_tests
 
 if TYPE_CHECKING:
     from httpx2 import AsyncClient
+
+_JINJA_NAMING = {"syntax": "jinja", "video_template": JINJA_VIDEO_TEMPLATE_DEFAULT, **JINJA_TEMPLATE_DEFAULTS}
 
 
 class TestConfigHttp:
@@ -56,6 +59,46 @@ class TestConfigHttp:
         got = await client.get("config")
         assert got.json()["network"]["proxy"] == "socks5://test"
         assert got.json()["worker"]["concurrency"] == 8
+
+
+class TestConfigNamingValidation:
+    """PATCH /config 的 naming 节执行语法感知校验 (规格 3.2.3): 残留即 422 且不落库."""
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_switch_with_native_default_templates_rejected(self, client: AsyncClient):
+        """全局语法 native→jinja 而全局模板仍为 native 默认字面量 → 422 含模板字段与残留, 全局配置不变."""
+        resp = await client.patch("config", json={"naming": {"syntax": "jinja"}})
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "video_template" in detail
+        assert "{studio}" in detail
+
+        got = (await client.get("config")).json()
+        assert got["naming"]["syntax"] == "native"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_switch_with_jinja_templates_accepted(self, client: AsyncClient):
+        """全局模板随切换一并写入合法 Jinja 默认 → 200, 全局语法与模板更新."""
+        resp = await client.patch("config", json={"naming": _JINJA_NAMING})
+        assert resp.status_code == 200
+
+        got = (await client.get("config")).json()
+        assert got["naming"]["syntax"] == "jinja"
+        assert got["naming"]["video_template"] == JINJA_VIDEO_TEMPLATE_DEFAULT
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_same_syntax_template_residual_rejected(self, client: AsyncClient):
+        """语法未变但写入的模板携带另一语法残留 → 422 含模板字段与残留, 全局配置不变."""
+        assert (await client.patch("config", json={"naming": _JINJA_NAMING})).status_code == 200
+
+        resp = await client.patch("config", json={"naming": {"video_template": "{studio}/{number}.{ext}"}})
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "video_template" in detail
+        assert "{studio}" in detail
+
+        got = (await client.get("config")).json()
+        assert got["naming"]["video_template"] == JINJA_VIDEO_TEMPLATE_DEFAULT
 
 
 class TestConfigRebuild:
@@ -131,3 +174,37 @@ class TestConfigRebuild:
         assert resp.status_code == 200
         assert runtime.browser is rebuilt
         assert rebuilt._closed is False
+
+
+class TestSyntaxSwitchValidatesLibraries:
+    """全局语法切换校验所有库的生效模板 (联合审核 P2): 名单内钉住库行模板的库不受全局默认影响."""
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_switch_rejected_when_library_pins_native_template(
+        self, client: AsyncClient, safe_path
+    ):
+        scan_dir = safe_path / "lib-pin"
+        scan_dir.mkdir()
+        lib = (
+            await client.post(
+                "libraries",
+                json={"path": str(scan_dir), "video_template": "{studio}/{number}/{number}.mp4"},
+            )
+        ).json()
+        assert lib["id"] > 0
+
+        resp = await client.patch(
+            "config",
+            json={"naming": {"syntax": "jinja", "video_template": JINJA_VIDEO_TEMPLATE_DEFAULT}},
+        )
+
+        assert resp.status_code == 422
+        assert "lib-pin" in resp.json()["detail"]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_switch_allowed_when_no_library_pins_templates(self, client: AsyncClient):
+        resp = await client.patch(
+            "config",
+            json={"naming": {"syntax": "jinja", "video_template": JINJA_VIDEO_TEMPLATE_DEFAULT}},
+        )
+        assert resp.status_code == 200

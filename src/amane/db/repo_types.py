@@ -280,6 +280,7 @@ class ActorBrowseParams(BaseModel):
 
 class MetadataFields(TypedDict, total=False):
     title: str | None
+    original_title: str | None
     actors: list[str]
     studio: str | None
     publisher: str | None
@@ -288,6 +289,7 @@ class MetadataFields(TypedDict, total=False):
     tags: list[str]
     series: str | None
     plot: str | None
+    original_plot: str | None
     directors: list[str]
     poster_urls: list[str]
     thumb_urls: list[str]
@@ -297,6 +299,8 @@ class MetadataFields(TypedDict, total=False):
     external_ids: dict[str, str]
     source_urls: dict[str, str]
     field_sources: dict[str, str]
+    field_languages: dict[str, str]
+    website: str | None
     raw: dict[str, dict[str, object]]
 
 
@@ -310,6 +314,7 @@ class MediaFileUpdates(TypedDict, total=False):
     status: MediaFileStatus
     metadata_id: int | None
     has_external_subtitle: bool
+    link_path: str | None
 
 
 class LibraryUpdates(TypedDict, total=False):
@@ -337,6 +342,8 @@ class LibraryUpdates(TypedDict, total=False):
     subtitle_extensions: list[str]
     write_nfo: bool
     copy_resources: list[DownloadableResource]
+    template_overrides: list[str]
+    """追加进名单的模板字段名; 与既有名单取并集 (名单只增不减), 值域见 TEMPLATE_OVERRIDE_FIELDS."""
     trailer_pattern: str
     blacklist_patterns: list[str]
     min_file_size: int

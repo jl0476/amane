@@ -40,10 +40,15 @@ from .feeds import (
 )
 from .health import HealthResponse
 from .libraries import (
+    EffectiveConfigResponse,
     LibraryCreateRequest,
     LibraryListResponse,
+    LibraryOverrideResponse,
+    LibraryOverridesResponse,
     LibraryResponse,
     LibraryUpdateRequest,
+    NamingPreviewRequest,
+    NamingPreviewResponse,
     OptionalPathTemplateDefaults,
     PathTemplatePlaceholder,
     PathTemplateSchemaResponse,
@@ -71,6 +76,8 @@ from .metadata import (
     MetadataMergeEntriesRequest,
     MetadataResponse,
     MetadataUserTagsRequest,
+    NfoRewriteFailure,
+    NfoRewriteResponse,
     PartialMetadata,
     SemanticHitInfo,
 )
@@ -81,6 +88,11 @@ from .network import (
     ConnectivityCheckRequest,
     ConnectivityItemResponse,
     ConnectivityReportResponse,
+)
+from .parse_rules import (
+    ParseRuleListResponse,
+    ParseRuleResponse,
+    ParseRuleUpsertRequest,
 )
 from .playback import (
     PlaybackSourceListResponse,
@@ -153,6 +165,7 @@ __all__ = [
     "CropPosterRequest",
     "DeleteSubmission",
     "DesktopResponse",
+    "EffectiveConfigResponse",
     "FacetBatchAction",
     "FacetBatchRequest",
     "FacetBatchResponse",
@@ -175,6 +188,8 @@ __all__ = [
     "HealthResponse",
     "LibraryCreateRequest",
     "LibraryListResponse",
+    "LibraryOverrideResponse",
+    "LibraryOverridesResponse",
     "LibraryResponse",
     "LibraryUpdateRequest",
     "MediaBatchDeleteRequest",
@@ -191,8 +206,15 @@ __all__ = [
     "MetadataListResponse",
     "MetadataResponse",
     "MetadataUserTagsRequest",
+    "NamingPreviewRequest",
+    "NamingPreviewResponse",
+    "NfoRewriteFailure",
+    "NfoRewriteResponse",
     "OptionalPathTemplateDefaults",
     "OrganizeSubmission",
+    "ParseRuleListResponse",
+    "ParseRuleResponse",
+    "ParseRuleUpsertRequest",
     "PartialMetadata",
     "PathTemplatePlaceholder",
     "PathTemplateSchemaResponse",

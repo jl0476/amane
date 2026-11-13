@@ -126,7 +126,8 @@
     "move": "移动",
     "copy": "复制",
     "hardlink": "硬链接",
-    "symlink": "符号链接"
+    "symlink": "符号链接",
+    "inplace": "原地"
   },
   "fieldVideoTemplate": "视频路径模板",
   "fieldVideoTemplateHint": "可使用相对或绝对路径, 可用占位符见下方徽章",
@@ -142,7 +143,7 @@
   "fieldStrmContentTemplateHint": "链接方式为 STRM 时有效. 默认写入视频文件绝对路径",
   "fieldInitialRefresh": "创建后立即扫描",
   "advancedTemplates": "附属资源模板",
-  "advancedTemplatesHint": "留空使用默认值",
+  "advancedTemplatesHint": "留空使用默认值; 切换语法时自动替换的模板随保存显式生效, 不再跟随后续的默认更新",
   "optionalTemplateDefault": "默认: {{default}}",
   "placeholders": {
     "label": "可用占位符",
@@ -247,5 +248,58 @@
     "noise": "系统文件",
     "noiseHint": "操作系统或同步工具生成的产物, 会随目录一起删除",
     "showNoise": "显示系统文件"
+  },
+  "tabs": {
+    "files": "文件",
+    "overrides": "配置覆盖"
+  },
+  "overrides": {
+    "hint": "按 section 覆盖全局配置; 空模板框表示显式取空. 未覆盖的键继承全局",
+    "inheritGlobal": "继承全局",
+    "inheritOffHint": "重新开启将放弃覆盖编辑, 恢复继承全局",
+    "inheritHint": "本 section 继承全局配置; 关闭开关进入编辑, 保存后生成覆盖行",
+    "inheritConfirmTitle": "恢复继承全局",
+    "inheritConfirmBody": "将放弃该 section 的覆盖编辑, 全部字段回到全局配置",
+    "overriding": "覆盖中",
+    "saved": "覆盖已保存",
+    "loadFailed": "加载覆盖配置失败"
+  },
+  "syntax": {
+    "native": "内置",
+    "jinja": "Jinja2"
+  },
+  "preview": {
+    "title": "试算",
+    "syntax": "语法",
+    "hint": "按此库当前生效的模板与语法实时渲染; 未保存的模板修改不参与; 切换语法时未自定义的模板替换为对应语法的默认, 随保存显式生效",
+    "hintGlobal": "按全局默认模板渲染; 保存库之后才按库模板试算; 切换语法时未自定义的模板替换为对应语法的默认, 随保存显式生效",
+    "number": "番号",
+    "sampleTitle": "标题",
+    "studio": "制作商",
+    "actors": "演员",
+    "actorsPlaceholder": "逗号分隔",
+    "contentType": "类型",
+    "release": "发行日期",
+    "sourcePath": "源文件路径",
+    "failed": "试算失败",
+    "subtitleTag": "中字 {{tag}}",
+    "fields": {
+      "video": "视频",
+      "thumb": "封面",
+      "poster": "海报",
+      "fanart": "背景图",
+      "nfo": "NFO",
+      "trailer": "预告片",
+      "subtitle": "字幕"
+    },
+    "contentTypes": {
+      "censored": "有码",
+      "uncensored": "无码",
+      "chinese": "国产",
+      "western": "欧美",
+      "fc2": "FC2",
+      "amateur": "素人",
+      "hentai": "动漫"
+    }
   }
 }

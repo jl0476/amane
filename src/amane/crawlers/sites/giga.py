@@ -8,7 +8,7 @@ from parsel import Selector
 from ...enums import SiteName
 from ...net.errors import FailureReason, SourceError
 from ..base import Crawler, CrawlerProfile
-from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors
+from ..models import FetchOptions, MediaMetadata, SearchQuery, film_actors, japanese_originals
 from ..parsing import extract_all_texts, extract_text
 
 if TYPE_CHECKING:
@@ -104,10 +104,12 @@ class GigaCrawler(Crawler):
                 '//div[@id="story_list2"]//li[contains(@class,"story_window")]//text()[not(ancestor::a)]',
             )
         )
+        original_title, original_plot, field_languages = japanese_originals(title, plot)
 
         return MediaMetadata(
             number=extract_text(html, self._work_field("作品番号")),
             title=title,
+            original_title=original_title,
             actors=film_actors(actors),
             studio="GIGA",
             release=extract_text(html, self._work_field("DVDリリース日")) or None,
@@ -115,6 +117,8 @@ class GigaCrawler(Crawler):
             tags=tags,
             directors=directors,
             plot=plot or None,
+            original_plot=original_plot,
+            field_languages=field_languages,
             thumb_urls=[urljoin(url, cover)] if cover else [],
             extrafanart=[urljoin(url, u) for u in extrafanart],
             source_url=url,

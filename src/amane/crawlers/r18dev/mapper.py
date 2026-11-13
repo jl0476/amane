@@ -8,7 +8,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ...enums import ActorGender, Language
-from ..models import FilmActor, MediaMetadata
+from ..models import FilmActor, MediaMetadata, japanese_originals
 from ..sites.dmm_cdn import PICS_CDN, image_candidates
 
 if TYPE_CHECKING:
@@ -79,10 +79,13 @@ def to_metadata(detail: R18VideoDetail, number: str, language: Language | None =
 
     release = v.release_date.isoformat() if v.release_date else None
     score = None
+    # 原文固定取日文轨, 与请求语言无关; 该轨为空时对应字段不声明.
+    original_title, original_plot, field_languages = japanese_originals(v.title_ja, v.comment_ja)
 
     return MediaMetadata(
         number=number,
         title=title or None,
+        original_title=original_title,
         actors=actors,
         studio=studio,
         publisher=publisher,
@@ -91,6 +94,8 @@ def to_metadata(detail: R18VideoDetail, number: str, language: Language | None =
         tags=tags,
         series=series,
         plot=plot or None,
+        original_plot=original_plot,
+        field_languages=field_languages,
         poster_urls=poster_urls,
         thumb_urls=thumb_urls,
         trailer_urls=[detail.trailer_url] if detail.trailer_url else [],

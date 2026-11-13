@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ...config import ConfigResolver, NamingConfig
 from ...db.models import TaskStatus, TaskType
 from ...library import (
     TRASH_DIRNAME,
@@ -23,7 +24,7 @@ from ...library import (
     inventory_tree,
     scan_trash,
 )
-from ..deps import RepoDep, RuntimeDep
+from ..deps import ConfigDep, RepoDep, RuntimeDep
 from ..models.cleanup import (
     InventoryNodePage,
     InventoryNodeResponse,
@@ -227,6 +228,7 @@ async def expand_cleanup_selection(
     library_id: int,
     req: SelectionRequest,
     repo: RepoDep,
+    config: ConfigDep,
     runtime: RuntimeDep,
 ) -> SelectionSummaryResponse:
     """由选中项展开显式来源清单: 文件表与详情页的删除入口据此预览. 只读, 不改磁盘与索引."""
@@ -245,12 +247,15 @@ async def expand_cleanup_selection(
             meta = await repo.get_metadata(item.metadata_id)
             if meta is not None:
                 metas[item.metadata_id] = meta
+    naming = await ConfigResolver(config.hot, repo).resolve(NamingConfig, scope=library, library=library)
     outcome = await build_footprint(
         library=library,
         items=items,
         indexed=await repo.list_media_files(library_id=library_id, limit=None),
         metas=metas,
         include_work_dir=req.include_work_dir,
+        rules=await runtime.parse_rules_for(library_id),
+        naming=naming,
     )
     if not outcome.inventory.entries:
         return SelectionSummaryResponse(exists=False, notices=_notices(outcome.inventory, outcome.notices))

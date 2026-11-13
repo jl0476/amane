@@ -1,0 +1,54 @@
+{
+  "title": "识别词",
+  "hint": "按库解析番号与类型; 库级启用规则整体替换全局同桶 (类型 + 关键词), 首条命中覆盖内置判定",
+  "searchPlaceholder": "搜索模式…",
+  "empty": "暂无识别词",
+  "noMatches": "无匹配规则",
+  "newRule": "新建规则",
+  "editRule": "编辑规则",
+  "toast": {
+    "created": "规则已创建",
+    "updated": "规则已保存"
+  },
+  "confirmDelete": {
+    "title": "删除识别词",
+    "message": "确定删除模式「{{pattern}}」的识别词？此操作不可撤销"
+  },
+  "scope": {
+    "all": "全部",
+    "global": "全局",
+    "library": "库级"
+  },
+  "kind": {
+    "number_keyword": "番号关键词",
+    "path_keyword": "路径关键词"
+  },
+  "contentTypes": {
+    "censored": "有码",
+    "uncensored": "无码",
+    "chinese": "国产",
+    "western": "欧美",
+    "fc2": "FC2",
+    "amateur": "素人",
+    "hentai": "动漫"
+  },
+  "columns": {
+    "scope": "作用域",
+    "kind": "类型",
+    "contentType": "内容类型",
+    "pattern": "模式",
+    "enabled": "启用",
+    "updated": "更新时间",
+    "actions": "操作"
+  },
+  "fields": {
+    "scopeType": "作用域",
+    "scopeLibrary": "媒体库",
+    "kind": "类型",
+    "contentType": "内容类型",
+    "pattern": "模式",
+    "patternHint": "RE2 正则, 最长 256 字符; 番号关键词匹配番号段, 路径关键词匹配完整路径",
+    "patternTooLong": "模式超过 {{max}} 字符",
+    "enabled": "启用"
+  }
+}

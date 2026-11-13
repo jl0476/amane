@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from amane.enums import MoveMode
 from amane.library import FootprintNotice, FootprintNoticeKind, InventoryEntryKind, InventoryReason, build_footprint
 from amane.library.cleanup import footprint as footprint_module
 
@@ -228,6 +229,30 @@ class TestFootprint:
         assert outcome.notices == []
 
     @pytest.mark.asyncio(loop_scope="function")
+    async def test_inplace_library_lists_products_at_source(self, repo: Repository, tmp_path: Path) -> None:
+        """inplace 库: 反解按库的移动模式执行, 视频模板不参与 — 源目录里的产物进清单, 不误报模板错误."""
+        root = tmp_path / "lib"
+        video_dir = root / "raw"
+        video_dir.mkdir(parents=True)
+        video = video_dir / "NSFS-039.mp4"
+        video.write_bytes(b"v" * 100)
+        (video_dir / "NSFS-039.nfo").write_text("nfo")
+        (video_dir / "thumb.jpg").write_bytes(b"thumb")
+        lib = await repo.create_library(name="t", path=str(root), move_mode=MoveMode.INPLACE, video_template="")
+        assert lib.id is not None
+        meta = await repo.upsert_metadata(number="NSFS-039", studio="Studio")
+        assert meta.id is not None
+        item = await repo.create_media_file(lib.id, path=str(video), number="NSFS-039", metadata_id=meta.id)
+
+        outcome = build_footprint.sync(
+            library=lib, items=[item], indexed=[item], metas={meta.id: meta}, include_work_dir=False
+        )
+
+        names = sorted(entry.path.name for entry in outcome.inventory.entries)
+        assert names == ["NSFS-039.mp4", "NSFS-039.nfo", "thumb.jpg"]
+        assert outcome.notices == []
+
+    @pytest.mark.asyncio(loop_scope="function")
     async def test_truncation_ignores_paths_outside_root(self, repo: Repository, tmp_path: Path) -> None:
         """库外产物不进清单, 因此也不算「未纳入」: 提示里的数字只数真会进清单的路径."""
         from amane.db.models import MediaFileStatus
@@ -315,3 +340,36 @@ class TestFootprint:
         paths = {entry.path for entry in outcome.inventory.entries}
         assert video in paths
         assert not any(path.name == "secret.nfo" for path in paths)
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_naming_override_drives_product_paths(self, repo: Repository, tmp_path: Path) -> None:
+        """清理清单反解与整理共用生效命名配置 (联合审核 P2): 覆盖模板改产物目录后清单跟着变."""
+        from amane.config import NamingConfig
+
+        lib, metas, item, _video = await self._seed(repo, tmp_path)
+        naming = NamingConfig(video_template="ov-{number}/{number}.mp4")
+        # 覆盖模板的产物先在磁盘上落位 (清单只登记存在的路径).
+        ov_dir = Path(lib.path) / "ov-NSFS-039"
+        ov_dir.mkdir()
+        (ov_dir / "NSFS-039.nfo").write_text("<movie/>", encoding="utf-8")
+
+        outcome = build_footprint.sync(
+            library=lib,
+            items=[item],
+            indexed=[item],
+            metas=metas,
+            include_work_dir=False,
+            naming=naming,
+        )
+
+        names = sorted(entry.path.as_posix() for entry in outcome.inventory.entries)
+        assert any("ov-NSFS-039/NSFS-039.nfo" in name for name in names), names
+        # 不带 naming 时按库行模板反解, 不出现覆盖目录.
+        baseline = build_footprint.sync(
+            library=lib,
+            items=[item],
+            indexed=[item],
+            metas=metas,
+            include_work_dir=False,
+        )
+        assert all("ov-NSFS-039" not in entry.path.as_posix() for entry in baseline.inventory.entries)

@@ -81,6 +81,7 @@
   "detail": {
     "fields": {
       "title": "标题",
+      "original_title": "原标题",
       "studio": "制作商",
       "publisher": "发行商",
       "release": "发行日期",
@@ -92,11 +93,13 @@
       "actors": "演员",
       "tags": "标签",
       "plot": "剧情",
+      "original_plot": "原文简介",
       "trailer": "预告片",
       "poster": "海报",
       "thumb": "封面",
       "extrafanart": "剧照",
-      "sourceUrls": "来源链接"
+      "sourceUrls": "来源链接",
+      "website": "官网"
     },
     "connections": "关联文件",
     "noFiles": "无关联文件",
@@ -302,6 +305,9 @@
     "title": {
       "label": "标题"
     },
+    "original_title": {
+      "label": "原标题"
+    },
     "actors": {
       "label": "演员"
     },
@@ -326,6 +332,9 @@
     },
     "plot": {
       "label": "剧情"
+    },
+    "original_plot": {
+      "label": "原文简介"
     },
     "directors": {
       "label": "导演"

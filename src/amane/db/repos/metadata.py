@@ -52,14 +52,16 @@ logger = structlog.get_logger()
 
 
 def _normalize_text_fields(fields: MetadataFields) -> MetadataFields:
-    """长文本列在落库前归一 (与聚合输出同一函数, 幂等).
+    """长文本列在落库前归一 (与聚合输出同一函数, 幂等); 就地改写, 返回原字典.
 
+    只改写调用方传入的键, 不注入未传键 — 注入会让 PATCH 单字段时把另一字段落成 None.
     覆盖面是全部写库路径: 首刮 / 补刮 / merge / REST PATCH / Agent 工具都经这两个写方法.
     """
-    plot = fields.get("plot")
-    if not isinstance(plot, str):
-        return fields
-    return {**fields, "plot": normalize_long_text(plot)}
+    if "plot" in fields and isinstance(fields["plot"], str):
+        fields["plot"] = normalize_long_text(fields["plot"])
+    if "original_plot" in fields and isinstance(fields["original_plot"], str):
+        fields["original_plot"] = normalize_long_text(fields["original_plot"])
+    return fields
 
 
 def _image_signature(metadata: Metadata) -> tuple[list[str], list[str], dict[str, list[str]]]:
@@ -82,7 +84,9 @@ def _merge_raw_snapshots(
 # 锁字段 (MetadataField) ↔ Metadata 列名; 仅 extrafanart / score 两名不同.
 _LOCK_FIELD_COLUMN: dict[MetadataField, str] = {
     MetadataField.TITLE: "title",
+    MetadataField.ORIGINAL_TITLE: "original_title",
     MetadataField.PLOT: "plot",
+    MetadataField.ORIGINAL_PLOT: "original_plot",
     MetadataField.ACTORS: "actors",
     MetadataField.DIRECTORS: "directors",
     MetadataField.TAGS: "tags",
@@ -456,6 +460,8 @@ class MetadataRepoMixin(RepositoryMixinBase):
             # 显式赋值, 禁止 setattr; 字段集由 MetadataFields 与 Metadata 静态对齐.
             if "title" in updates:
                 metadata.title = updates["title"]
+            if "original_title" in updates:
+                metadata.original_title = updates["original_title"]
             if "actors" in updates:
                 metadata.actors = updates["actors"]
             if "studio" in updates:
@@ -472,6 +478,8 @@ class MetadataRepoMixin(RepositoryMixinBase):
                 metadata.series = updates["series"]
             if "plot" in updates:
                 metadata.plot = updates["plot"]
+            if "original_plot" in updates:
+                metadata.original_plot = updates["original_plot"]
             if "directors" in updates:
                 metadata.directors = updates["directors"]
             if "poster_urls" in updates:
@@ -490,6 +498,10 @@ class MetadataRepoMixin(RepositoryMixinBase):
                 metadata.source_urls = updates["source_urls"]
             if "field_sources" in updates:
                 metadata.field_sources = updates["field_sources"]
+            if "field_languages" in updates:
+                metadata.field_languages = updates["field_languages"]
+            if "website" in updates:
+                metadata.website = updates["website"]
             if "raw" in updates:
                 metadata.raw = updates["raw"]
             metadata.updated_at = _utcnow()

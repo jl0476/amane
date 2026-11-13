@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 import pytest
 
+from amane.config import NamingConfig
 from amane.db.models import Library, Metadata
 from amane.enums import ActorGender, LinkMode
 from amane.organize import (
@@ -20,10 +21,13 @@ from amane.organize import (
     render_extrafanart_names,
     render_path_template,
     resolve_paths,
+    resolve_sidecar_paths,
     resolve_subtitle_path,
     validate_extrafanart_name_template,
+    validate_naming_templates,
     validate_path_template,
 )
+from amane.organize.backend import SyntaxName
 from amane.organize.template import (
     PATH_FIELD_ELLIPSIS,
     PATH_FIELD_MAX_BYTES,
@@ -1394,3 +1398,269 @@ def test_resolve_paths_uses_actress_placeholder(media: Path) -> None:
         actor_genders={"F": ActorGender.FEMALE, "M": ActorGender.MALE},
     )
     assert result.video == media / "F" / "ABC-123.mp4"
+
+
+# --- 任务 13: naming 参数 (生效配置) 优先于库行 ---
+
+
+def test_resolve_paths_prefers_naming_over_library_row(media: Path) -> None:
+    """naming 非 None 时模板字段取自它, 库行被忽略; naming=None 维持现状取库行."""
+    wp = Library(
+        name="t",
+        path=str(media),
+        video_template="{studio}/{number}.{ext}",
+        thumb_template="{link_dir}/lib-thumb.jpg",
+        nfo_template="{link_dir}/lib.nfo",
+    )
+    meta = _meta()
+    naming = NamingConfig(video_template="{number}/{number}.{ext}", thumb_template="{link_dir}/naming-thumb.jpg")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.video == media / "ABC-123" / "ABC-123.mp4"
+    # 无链接模板时 {link_dir} 退化为视频侧 ({video_dir})
+    assert result.thumb == media / "ABC-123" / "naming-thumb.jpg"
+    # 未被 naming 覆盖语义的字段: nfo 用 naming 侧的 None → 内建默认, 库行 lib.nfo 被忽略
+    assert result.nfo == media / "ABC-123" / "ABC-123.nfo"
+
+    baseline = resolve_paths(wp, meta, ext="mp4")
+    assert baseline.video == media / "StudioX" / "ABC-123.mp4"
+    assert baseline.thumb == media / "StudioX" / "lib-thumb.jpg"
+
+
+def test_resolve_subtitle_path_prefers_naming_over_library_row(media: Path) -> None:
+    """resolve_subtitle_path 的 naming 参数同样优先于库行 subtitle_template."""
+    wp = Library(name="t", path=str(media), subtitle_template="{link_dir}/lib-{raw_srt_name}.{ext}")
+    meta = _meta()
+    naming = NamingConfig(subtitle_template="{link_dir}/naming.{ext}")
+
+    result = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        source_path=media / "raw" / "v.mp4",
+        naming=naming,
+    )
+    assert result == media / "v" / "naming.srt"
+
+    baseline = resolve_subtitle_path(
+        wp, meta, Path("subs.srt"), video_dir=media / "v", video_name="v", source_path=media / "raw" / "v.mp4"
+    )
+    assert baseline == media / "v" / "lib-subs.srt"
+
+
+# --- 任务 21: 运行时分派与语法验证 ---
+
+
+def test_resolve_paths_dispatches_jinja_syntax(media: Path) -> None:
+    """naming.syntax=jinja 时经 Jinja 后端渲染: `{{ }}` 形态被求值 (native 解析会直接报错)."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", video_template="{{ studio }}/{{ number }}.{{ ext }}")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.video == media / "StudioX" / "ABC-123.mp4"
+
+
+def test_resolve_paths_jinja_sidecar_fallback(media: Path) -> None:
+    """jinja 语法下未设置的附属模板回退到 Jinja 形态的内建默认, 不落盘字面量."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", video_template="{{ studio }}/{{ number }}.{{ ext }}")
+
+    result = resolve_paths(wp, meta, ext="mp4", naming=naming)
+    assert result.thumb == media / "StudioX" / "thumb.jpg"
+    assert result.nfo == media / "StudioX" / "ABC-123.nfo"
+    for path in (result.thumb, result.nfo, result.poster, result.fanart, result.trailer, result.extrafanart_dir):
+        assert "{" not in str(path) and "}" not in str(path)
+
+
+def test_resolve_subtitle_path_dispatches_jinja_syntax(media: Path) -> None:
+    """resolve_subtitle_path 按生效语法分派: jinja 模板被求值, 未设置时回退 Jinja 默认."""
+    wp = Library(name="t", path=str(media))
+    meta = _meta()
+    naming = NamingConfig(syntax="jinja", subtitle_template="{{ video_dir }}/subs-{{ raw_srt_name }}.{{ ext }}")
+
+    result = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        source_path=media / "raw" / "v.mp4",
+        naming=naming,
+    )
+    assert result == media / "v" / "subs-subs.srt"
+
+    fallback = resolve_subtitle_path(
+        wp,
+        meta,
+        Path("subs.srt"),
+        video_dir=media / "v",
+        video_name="v",
+        naming=NamingConfig(syntax="jinja", video_template="{{ number }}.{{ ext }}"),
+    )
+    assert fallback == media / "v" / "subs.srt"
+    assert "{" not in str(fallback)
+
+
+def test_render_path_template_dispatches_syntax() -> None:
+    """render_path_template 按语法分派: 默认 native 不变, jinja 求值 `{{ }}`."""
+    assert render_path_template("{{ studio }}", {"studio": "S"}, syntax="jinja") == "S"
+    assert render_path_template("{studio}", {"studio": "S"}) == "S"
+
+
+def test_render_extrafanart_names_dispatches_syntax() -> None:
+    """剧照文件名按语法分派渲染."""
+    ctx = TemplateContext.from_mapping({"number": "ABC-123", "index": "1", "index_padded": "01"})
+    names = render_extrafanart_names("{{ number }}-{{ index_padded }}.jpg", ctx, 2, syntax="jinja")
+    # 宽度按本轮数量 (2 → 1 位), 序号由函数重写注入
+    assert names == ["ABC-123-1.jpg", "ABC-123-2.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("syntax", "source", "match"),
+    [
+        ("jinja", "{studio}/{number}", r"残留"),
+        ("native", "{{ studio }}/{{ number }}", r"video_template"),
+        ("native", "{% if cd %}-CD{% endif %}", r"video_template"),
+        ("native", "{nope}.{ext}", r"未知占位符"),
+        ("native", "{number:foo}.{ext}", r"未知 filter"),
+    ],
+)
+def test_validate_naming_templates_rejects(syntax: SyntaxName, source: str, match: str) -> None:
+    """切换验证: 目标引擎的保存校验与渲染探针任一失败即抛错, 消息指明模板字段."""
+    with pytest.raises(ValueError, match=match):
+        validate_naming_templates(syntax, {"video_template": source}, probe=True)
+
+
+def test_validate_naming_templates_probe_only_on_switch() -> None:
+    """probe=False 只做保存校验: 自研形态在 jinja 目标下保存校验通过 (能解析), 探针才查残留."""
+    validate_naming_templates("jinja", {"video_template": "{studio}"}, probe=False)
+    with pytest.raises(ValueError, match="残留"):
+        validate_naming_templates("jinja", {"video_template": "{studio}"}, probe=True)
+
+
+def test_validate_naming_templates_skips_none_and_accepts_clean() -> None:
+    """None 模板跳过 (运行时不启用); 两套默认模板各自通过对应语法的验证."""
+    validate_naming_templates("jinja", {"link_template": None, "strm_content_template": None}, probe=True)
+    validate_naming_templates("native", {"video_template": VIDEO_TEMPLATE_DEFAULT}, probe=True)
+    validate_naming_templates(
+        "jinja",
+        {"video_template": "{{ studio }}/{{ number }}/{{ number }}{% if cd %}-CD{{ cd }}{% endif %}.{{ ext }}"},
+        probe=True,
+    )
+
+
+# --- 任务 28: resolve_sidecar_paths 按需渲染 ---
+
+
+def test_sidecar_only_renders_selected_artifacts(media: Path) -> None:
+    """artifacts=("nfo",): 视频与链接模板不渲染, 无关模板 (越界 thumb) 不求值也不阻断."""
+    wp = Library(
+        name="t",
+        path=str(media),
+        # 视频模板本身解析就会失败: 本入口不得触碰它
+        video_template="{not_a_placeholder",
+        link_template="/absolute/outside/{number}.strm",
+        thumb_template="{link_dir}/../../../outside/{raw_name}.jpg",
+        nfo_template="{link_dir}/{video_name}.nfo",
+    )
+    meta = _meta()
+    video = media / "x" / "y.mp4"
+
+    sidecars = resolve_sidecar_paths(
+        wp,
+        meta,
+        consume_path=video,
+        video_path=video,
+        source_path=media / "raw" / "y.mp4",
+        ext="mp4",
+        artifacts=("nfo",),
+    )
+    assert sidecars.nfo == media / "x" / "y.nfo"
+    assert sidecars.thumb is None
+    assert sidecars.poster is None
+    assert sidecars.fanart is None
+    assert sidecars.extrafanart_dir is None
+    assert sidecars.trailer is None
+    assert sidecars.subtitle is None
+
+
+def test_sidecar_context_matches_resolve_paths(media: Path) -> None:
+    """含 raw_* 的附属模板: resolve_paths 与 resolve_sidecar_paths(全集) 输出一致 (source_path 传入)."""
+    wp = Library(
+        name="t",
+        path=str(media),
+        video_template="{number}/{number}.{ext}",
+        thumb_template="{link_dir}/{raw_dir}.jpg",
+        poster_template="{link_dir}/poster.jpg",
+        fanart_template="{link_dir}/fanart.jpg",
+        extrafanart_template="{link_dir}/{raw_name}-stills",
+        nfo_template="{link_dir}/{video_name}.nfo",
+        trailer_template="{link_dir}/{raw_relpath}.jpg",
+    )
+    meta = _meta()
+    src = media / "rawdir" / "rawname.mp4"
+
+    full = resolve_paths(wp, meta, ext="mp4", source_path=src, file_info=parse_file_info(str(src)))
+    sidecars = resolve_sidecar_paths(
+        wp,
+        meta,
+        consume_path=full.link if full.link is not None else full.video,
+        video_path=full.video,
+        source_path=src,
+        ext="mp4",
+        file_info=parse_file_info(str(src)),
+    )
+    assert sidecars.thumb == full.thumb
+    assert sidecars.poster == full.poster
+    assert sidecars.fanart == full.fanart
+    assert sidecars.extrafanart_dir == full.extrafanart_dir
+    assert sidecars.nfo == full.nfo
+    assert sidecars.trailer == full.trailer
+    # raw_* 来自原始文件路径, 不是落盘后的路径
+    assert sidecars.thumb == media / "ABC-123" / "rawdir.jpg"
+    assert sidecars.trailer == media / "ABC-123" / "rawdir" / "rawname.mp4.jpg"
+
+
+def test_sidecar_artifact_subset_matches_full_set(media: Path) -> None:
+    """artifacts 子集与全集对同一产物输出一致; 全集行为与 resolve_paths 一致."""
+    wp = Library(
+        name="t",
+        path=str(media),
+        video_template="{number}/{number}.{ext}",
+        nfo_template="{link_dir}/{video_name}.nfo",
+        thumb_template="{link_dir}/thumb.jpg",
+    )
+    meta = _meta()
+    src = media / "raw" / "y.mp4"
+    video = media / "ABC-123" / "ABC-123.mp4"
+
+    only_nfo = resolve_sidecar_paths(
+        wp, meta, consume_path=video, video_path=video, source_path=src, ext="mp4", artifacts=("nfo",)
+    )
+    all_sidecars = resolve_sidecar_paths(wp, meta, consume_path=video, video_path=video, source_path=src, ext="mp4")
+    assert only_nfo.nfo == all_sidecars.nfo == media / "ABC-123" / "ABC-123.nfo"
+    assert all_sidecars.thumb == media / "ABC-123" / "thumb.jpg"
+
+
+def test_sidecar_naming_selects_template_syntax(media: Path) -> None:
+    """naming 与 artifacts 正交: naming 决定用哪套模板 (含 jinja 语法), artifacts 决定渲染哪些产物."""
+    wp = Library(name="t", path=str(media), nfo_template="{link_dir}/lib.nfo")
+    meta = _meta()
+    video = media / "ABC-123" / "ABC-123.mp4"
+
+    naming = NamingConfig(syntax="jinja", nfo_template="{{ link_dir }}/{{ video_name }}.nfo")
+    sidecars = resolve_sidecar_paths(
+        wp,
+        meta,
+        consume_path=video,
+        video_path=video,
+        source_path=media / "raw" / "y.mp4",
+        ext="mp4",
+        artifacts=("nfo",),
+        naming=naming,
+    )
+    assert sidecars.nfo == media / "ABC-123" / "ABC-123.nfo"

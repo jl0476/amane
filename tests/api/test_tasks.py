@@ -326,6 +326,7 @@ class TestTaskResult:
                             "reason": "target_exists",
                         }
                     ],
+                    "overwritten": 0,
                 },
             ),
             (

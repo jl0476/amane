@@ -73,7 +73,10 @@ async def test_full_pipeline_with_post_processing(repo: Repository, fake_factory
     src_file.write_text("fake video")
 
     lib = await repo.create_library(
-        name="test", path=str(src_dir), video_template=str(tmp_path / "organized" / "{studio}/{number}/{number}.{ext}")
+        name="test",
+        path=str(src_dir),
+        video_template=str(tmp_path / "organized" / "{studio}/{number}/{number}.{ext}"),
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     media = await repo.create_media_file(library_id=lib.id, path=str(src_file))
@@ -135,6 +138,7 @@ async def test_pipeline_copy_mode_keeps_source(repo: Repository, fake_factory, r
         path=str(src_dir),
         move_mode=MoveMode.COPY,
         video_template=str(tmp_path / "organized" / "{studio}/{number}/{number}.{ext}"),
+        template_overrides=["video_template"],
     )
     assert lib.id is not None
     media = await repo.create_media_file(library_id=lib.id, path=str(src_file))

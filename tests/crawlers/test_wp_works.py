@@ -157,3 +157,39 @@ async def test_scrape_reports_parse_error(payload: Any) -> None:
     with pytest.raises(SourceError) as excinfo:
         await crawler._scrape("https://faleno.jp/top/wp-json/wp/v2/works?slug=fns257")
     assert excinfo.value.reason is FailureReason.PARSE_ERROR
+
+
+# ------------------------------------------------------------------
+# 原文双轨
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("acf", "expected"),
+    [
+        pytest.param(
+            {"作品名": "作品タイトル", "作品紹介文": "作品紹介"},
+            ("作品タイトル", "作品紹介", {"original_title": "jp", "original_plot": "jp"}),
+            id="title_and_plot",
+        ),
+        pytest.param(
+            {"作品名": "作品タイトル"},
+            ("作品タイトル", None, {"original_title": "jp"}),
+            id="plot_missing",
+        ),
+        pytest.param(
+            {"作品名": "作品タイトル", "作品紹介文": "   "},
+            ("作品タイトル", None, {"original_title": "jp"}),
+            id="plot_blank",
+        ),
+    ],
+)
+async def test_wp_works_scrape_emits_original_fields(
+    acf: dict[str, str], expected: tuple[str | None, str | None, dict[str, str] | None]
+) -> None:
+    """原文与标题 / 简介同源 (日文), 简介缺省时只声明标题."""
+    crawler = _crawler(FalenoCrawler, [{"slug": "fns257", "acf": acf}])
+    result = await crawler._scrape("https://faleno.jp/top/wp-json/wp/v2/works?slug=fns257")
+    assert result is not None
+    assert (result.original_title, result.original_plot, result.field_languages) == expected

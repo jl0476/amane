@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ...organize.path_templates import resolve_paths
-from ...parsing import parse_file_info
+from ...parsing import ParseRuleSet, parse_file_info
 from ...utils.path import existing_disk_path, is_name_surrogate_dir, path_is_under, path_key
 from ...utils.threads import in_thread
 from ..rules import DEFAULT_SUBTITLE_EXTENSIONS
@@ -34,6 +34,7 @@ from .inventory import (
 )
 
 if TYPE_CHECKING:
+    from ...config import NamingConfig
     from ...db.models import Library, MediaFile, Metadata
 
 logger = structlog.get_logger()
@@ -76,11 +77,16 @@ def build_footprint(
     indexed: Sequence[MediaFile],
     metas: Mapping[int, Metadata],
     include_work_dir: bool,
+    rules: ParseRuleSet | None = None,
+    naming: NamingConfig | None = None,
     limit: int = MAX_INVENTORY_ENTRIES,
 ) -> FootprintOutcome:
     """由选中的媒体文件展开显式来源清单; 只读磁盘, 不访问数据库.
 
     展开含整目录递归与逐项 stat, 因此与其他库内 I/O 一样经 ``in_thread``.
+    ``rules`` 是该库的识别词集 (调用方注入), 供模板反解的那次路径解析使用.
+    ``naming`` 是该库的生效命名配置 (调用方注入): 反解必须与整理同一套模板 (联合审核 P2),
+    覆盖配置或继承的全局模板都经它生效; None 维持按库行取值.
     """
     assert library.id is not None
     root = Path(library.path)
@@ -124,7 +130,7 @@ def build_footprint(
 
     for item in items:
         add(Path(item.path), indexed_file=True)
-        _add_products(library, item, metas, add=add, notices=notices)
+        _add_products(library, item, metas, add=add, notices=notices, rules=rules, naming=naming)
         if not include_work_dir:
             _add_subtitles(library, Path(item.path), add=add)
             continue
@@ -186,8 +192,14 @@ def _add_products(
     *,
     add: _Add,
     notices: list[FootprintNotice],
+    rules: ParseRuleSet | None = None,
+    naming: NamingConfig | None = None,
 ) -> None:
-    """按路径模板反解刮削产物: 产物位置由模板决定, 与视频文件名没有对应关系."""
+    """按路径模板反解刮削产物: 产物位置由模板决定, 与视频文件名没有对应关系.
+
+    反解与整理执行同一算法, 传入库的移动模式: inplace 库不渲染视频模板,
+    产物随视频 (即源文件) 落在源目录.
+    """
     metadata = metas.get(item.metadata_id) if item.metadata_id is not None else None
     if metadata is None:
         return
@@ -198,8 +210,10 @@ def _add_products(
             metadata,
             ext=source.suffix.lstrip("."),
             source_path=source,
-            file_info=parse_file_info(item.path),
+            file_info=parse_file_info(item.path, rules=rules),
             safe_dirs=None,
+            move_mode=library.move_mode,
+            naming=naming,
         )
     except ValueError as exc:
         notices.append(FootprintNotice(FootprintNoticeKind.TEMPLATE_ERROR, path=source, detail=str(exc)))

@@ -1,7 +1,7 @@
 # 设计规格：配置覆盖层与命名整理（MDC 迁移 P0 + P1）
 
 > 日期: 2026-11-12
-> 状态: 待审阅（第 9 版，按第 8 轮联合复审修订 4 项 P2）
+> 状态: 待审阅（第 10 版，按实现审核修订 2 项 P1 / 5 项 P2）
 > 范围: MDC 能力迁移的第一阶段（配置基础层 + 命名整理 + 原文双轨字段）
 > 上游总纲: `.research/mdc/migration-roadmap.md`
 
@@ -29,7 +29,19 @@
 第 5 版经复审提出 1 项 P1、2 项 P2；第 6 版经复审提出 1 项 P1；
 第 7 版与实现计划联合审核提出 2 项 P1、6 项 P2。七轮意见全部成立。
 前几轮的处理已并入正文；第 3、4 轮的处理明细见第 4、5 版存档，第 5 轮明细见第 6 版存档，
-第 6 轮明细见第 7 版存档，本版修订第 7 轮项目：
+第 6 轮明细见第 7 版存档。第 9 版规格基线下的**实现**（`feat/mdc-p0-p1`）经独立审核确认 2 项 P1、5 项 P2，随本版修订：
+
+| 级别 | 问题 | 修复 | 落点 |
+|---|---|---|---|
+| P1 | 启动恢复与正常覆写并发 | 启动恢复改为 bootstrap 顺序 `await`，完成于 worker 认领之前；废弃后台任务形态 | 3.4.2 |
+| P1 | 失败后重试整理删除恢复所需源索引 | 整理任务清理缺失索引前先恢复本库 journal（`library_root` 限定）；仍未完成 journal 引用的源行受保护不清理 | 3.4.2 |
+| P2 | 覆写指纹使用行缓存 | 阶段 A **一律现场读取** oshash/size，不信任行缓存（缓存过期 + MOVE 会移走改过的源） | 3.4.2 |
+| P2 | 全局语法切换未校验受影响库 | 切换时对全部库按新全局合成生效 NamingConfig 并渲染探针，任一失败拒绝保存 | 3.2.3 |
+| P2 | 覆盖编辑器丢弃与全局同值的显式覆盖 | 显式值全部保留；回到继承只走继承开关 | 前端 |
+| P2 | 清理清单未消费生效命名配置 | `build_footprint` 增加 `naming` 注入，反解与整理同一套模板 | 3.4.4 |
+| P2 | NFO 集合来源选项未实现 | `<set>` 来源按 演员首位 → 番号前缀 → 系列 顺序取第一个非空，全空不写 | 3.4.3 |
+
+本版修订第 7 轮项目：
 
 | 级别 | 问题 | 处理 | 落点 |
 |---|---|---|---|
@@ -735,6 +747,9 @@ Jinja2 会把自研语法的 `{number}` 当**普通文本**解析 —— 解析*
 
 1. 用目标引擎解析全部生效模板：`video` / `link` / `strm_content` / 8 个附属模板，
    以及继承链上所有生效模板（库行名单内的、覆盖表里的、最终落到全局默认的）。
+   **全局语法切换还须校验所有库**（实现审核 P2 修订）：名单内钉住库行模板的库
+   不受全局模板默认影响，但 `syntax` 继承全局 —— 任一库的生效模板按新语法渲染
+   有残留即拒绝保存（422），detail 指出库名与模板。
 2. 对每个模板做**渲染探针**：用一组**覆盖全部 30 个占位符**的样例变量渲染，
    检查输出中不含未替换的占位符残留。
    - 自研语法：残留 `{` + 标识符 + `}` 形态。
@@ -1197,14 +1212,15 @@ organize_journal
 
 **journal 中不存在空指纹**。`compute_oshash`（`src/amane/utils/oshash.py`）对
 小于 128 KiB 或不可读的文件返回 `None`，源行的 `oshash` / `size` 也可能尚未填充 ——
-因此阶段 A 在写 journal 前先**现场补算**：
+因此阶段 A 在写 journal 前对源文件**一律现场读取**指纹（实现审核修订：行缓存的
+`oshash` / `size` 只描述索引建立时的内容，源被外部改写后缓存过期 —— MOVE 会移走
+改过的源，再因目标与旧指纹不符而失败，恢复也以同一旧指纹复验而持续失败）：
 
 ```
-读源行 → oshash 为 NULL 时对源文件调 compute_oshash,
-         size 为 NULL 时对源文件 stat 取 st_size
-       → 补算结果写入 journal（同时写回源行, 接管后字段填充复用）
-       → 补算后 oshash 仍为 NULL（文件 < 128 KiB 或不可读）
-         → 放弃覆写, 任务记 failed（视频文件不该这么小, 不构成有效覆写对象）
+对源文件现场 compute_oshash + stat size
+→ 写入 journal（同时写回源行, 接管后字段填充复用）
+→ 现场读不出（文件 < 128 KiB 或不可读）
+  → 放弃覆写, 任务记 failed（视频文件不该这么小, 不构成有效覆写对象）
 ```
 
 由此 journal 的 `source_oshash` / `source_size` 恒为非 NULL，恢复时不存在
@@ -1231,6 +1247,12 @@ organize_journal
 
 写入时机：阶段 A 的 journal 行必须**独立提交**（OS 操作无法加入 DB 事务）；
 指纹在写入时从源行读取（必要时现场补算，见上）。
+
+**恢复与任务的顺序**（实现审核 P1 修订）：启动恢复在 bootstrap 中**顺序 await**，
+完成于 worker 认领任何任务之前 —— 后台并发执行会把正在落盘的新 journal 误当作
+中断遗留，令回滚与正常落盘交错。整理任务清理缺失索引之前也先恢复**本库**
+（`library_root` 限定，其它库任务正在写入的 journal 不触碰），且仍未完成 journal
+引用的源行在缺失清理中受保护（联合审核 P1）。
 
 恢复规则（应用启动时的恢复扫描 + 整理同一目标前的就地恢复）：
 
@@ -1447,7 +1469,7 @@ Emby/Jellyfin 会忽略，但信息不丢）。`originalplot` 默认 `False`，
 | `<mpaa>` | `mpaa` | `mpaa_value` | 不写 |
 | `<customrating>` | `customrating` | 当前无数据来源 | 不写 |
 | `<series>` | `series` | `series` | 不写 |
-| `<set><name>` | `set` | `series`；`set_by_*` 为真时改取演员/番号前缀/系列 | 不写 |
+| `<set><name>` | `set` | 集合名按 `set_by_*` 顺序取第一个非空来源：演员首位 → 番号前缀 → 系列；全空回退 `series`，无任何可用来源不写（实现审核 P2 修订） | 不写 |
 | `<tag>` | `tag` | 每个标签一个，另加 `additional_tags` | 不写 |
 | `<genre>` | `genre` | 每个标签一个 | 不写 |
 | `<studio>` / `<maker>` | `studio` / `maker` | `studio` | 不写 |
@@ -1658,6 +1680,7 @@ source_path / file_info / safe_dirs / actor_genders）必须产出完全相同�
 | 原文双轨字段的来源、按字段语言判定与 `website` 派生 | `docs/dev/data-model.md` |
 | 覆写的备份/提交点/清理协议、`organize_journal` 与索引接管 | `docs/dev/organize.md` |
 | 用户可见的命名与 NFO 行为 | `docs/user/organize.md` |
+| 清理清单反解消费生效命名配置 | `build_footprint(naming=…)`（实现审核 P2） |
 | NFO 字段语义（`plot` / `outline` / `originaltitle` / `originalplot`） | `docs/user/media-server.md` |
 
 `docs/dev/index.md` 需登记新建的两个文档。`docs/user/media-server.md`
@@ -1731,6 +1754,11 @@ source_path / file_info / safe_dirs / actor_genders）必须产出完全相同�
 | `resolve_paths` + inplace | 表测试：视频路径 = 源路径、`video_template` 被忽略、图片落在源目录 |
 | **`MoveMode.INPLACE` 分支存在** | 表测试：inplace 不移动视频；不是静默落空（用 mock 断言未调用 move/copy） |
 | **覆写事务性**（P1-1） | 表测试：move/copy/hardlink/symlink 四模式各一条；磁盘不足时目标完好；权限失败时目标完好 |
+| **指纹现场读取**（实现审核 P2） | 表测试：行缓存 oshash/size 过期（源被外部改写、等大小不同内容）→ 按现场内容覆写与接管，不因旧指纹失败 |
+| **启动恢复顺序**（实现审核 P1） | 顺序契约测试：bootstrap 内恢复调用先于 worker 认领 |
+| **清理保护恢复源行**（实现审核 P1） | 集成测试：接管失败中断后重试整理，prune 保留受保护源行且本轮完成接管 |
+| **全局切换校验库**（实现审核 P2） | 集成测试：名单内钉住 native 模板的库 + 全局切 jinja → 422 带库名；无钉住 → 200 |
+| **清理清单 naming 一致**（实现审核 P2） | 集成测试：覆盖模板产物落位后，清单反解含覆盖路径；无 naming 时不出现 |
 | **journal 更新失败不删目标**（第 3 轮 P1） | 表测试：`os.replace` 成功、写 `phase=placed` 抛错 → 目标保留新内容、不回滚、journal 仍为 `prepared`、任务记 failed |
 | **提交点后清理失败** | 表测试：删除备份抛错 / 删除 journal 抛错 → 目标保留、不报回滚；下次扫描幂等清理 |
 | **跨文件系统移动** | 表测试：monkeypatch `os.replace` 抛 `EXDEV` → 走临时文件 + replace；源在接管成功前**不删除** |

@@ -32,6 +32,7 @@ import {
   IconMoonStars,
   IconMovie,
   IconPuzzle,
+  IconRegex,
   IconRss,
   IconSearch,
   IconSettings,
@@ -88,6 +89,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/libraries", labelKey: "nav.libraries", icon: IconFolders },
       { to: "/plugins", labelKey: "nav.plugins", icon: IconPuzzle },
+      { to: "/parse-rules", labelKey: "nav.parseRules", icon: IconRegex },
       { to: "/feeds/sources", labelKey: "nav.feedSources", icon: IconListTree },
       { to: "/manual", labelKey: "nav.manual", icon: IconBook },
     ],

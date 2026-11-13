@@ -150,6 +150,13 @@ class OrganizePayload(LibraryBase):
     copy_resources: list[DownloadableResource] | None = Field(
         default=None, description="覆盖 Library.copy_resources; None 沿用库设置"
     )
+    explicit_fields: list[str] = Field(
+        default_factory=list, description="用户显式给出的模板字段名", json_schema_extra={"x-hidden": True}
+    )
+    """用户显式给出的模板字段名. 入队前由 Submission 记录; 库值回填不计入.
+
+    必须落库 —— ``model_fields_set`` 经 JSON 往返后不再可靠 (规格 3.1.3).
+    """
     media_file_ids: list[int] | None = Field(
         default=None,
         description="勾选快照; 与 path 不能同时指定. None 表示 path 范围内的全部索引",
@@ -189,6 +196,8 @@ class OrganizeResult(BaseModel):
     pruned_dirs: int
     conflicts: list[OrganizeConflict]
     """未处理的条目, 最多 ORGANIZE_CONFLICT_LIMIT 条; 恒为 conflicted 条目的前缀, 差额只留在任务日志里."""
+    overwritten: int = 0
+    """经覆写协议落盘的条目数; 是 organized 的子集."""
 
 
 # --- SCAN INVALID ---

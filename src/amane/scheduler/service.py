@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..db.models import Library, TaskType
+from ..db.parse_rules import ParseRuleProvider
 from ..enums import LibraryAutomation, LibraryIngest
 from ..events import EventBus, EventType
 from ..handlers._common import refresh_external_subtitle, register_media_file, scan_library
@@ -66,6 +67,7 @@ class WatcherService:
         debounce_seconds: float = 3.0,
         check_interval: float = _CHECK_INTERVAL,
         observer_timeout: float = 1.0,
+        parse_rules: ParseRuleProvider | None = None,
     ):
         self._repo = repo
         self._event_bus = event_bus
@@ -74,6 +76,7 @@ class WatcherService:
         self._debounce_seconds = debounce_seconds
         self._check_interval = check_interval
         self._observer_timeout = observer_timeout
+        self._parse_rules = parse_rules
         self._watcher: FileWatcher | None = None
         self._debounce_task: asyncio.Task | None = None
         self._cloud_routes: dict[int, CloudDriveRoute] = {}
@@ -474,7 +477,8 @@ class WatcherService:
         logger.info("file discovered", path=path_str, media_file_id=media.id, library_id=library_id)
 
         try:
-            parsed = parse_file_info(path_str)
+            rules = await self._parse_rules.for_library(library_id) if self._parse_rules is not None else None
+            parsed = parse_file_info(path_str, rules=rules)
         except Exception:
             logger.debug("cannot parse number", path=path_str)
             parsed = None

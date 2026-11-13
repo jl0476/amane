@@ -20,6 +20,12 @@ from amane.crawlers.sites.official import (
     _poster_urls,
 )
 
+_DETAIL_HTML = (
+    "<html><head><title>作品タイトル | 【S1 NO.1 STYLE (エスワン ナンバーワンスタイル)】公式サイト</title></head>"
+    '<body><div class="th">品番</div><div class="td"><p><span>DVD</span>SSIS960</p></div>'
+    '<p class="p-workPage__text">{plot}</p></body></html>'
+)
+
 
 @pytest.fixture
 def crawler():
@@ -276,3 +282,36 @@ async def test_series_beats_studio_when_both_match(crawler):
 )
 def test_poster_urls(thumb_url: str | None, expected: list[str]):
     assert _poster_urls(thumb_url) == expected
+
+
+# ------------------------------------------------------------------
+# 原文双轨
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param(
+            _DETAIL_HTML.format(plot="作品紹介文"),
+            ("作品タイトル", "作品紹介文", {"original_title": "jp", "original_plot": "jp"}),
+            id="title_and_plot",
+        ),
+        pytest.param(
+            _DETAIL_HTML.format(plot=""),
+            ("作品タイトル", None, {"original_title": "jp"}),
+            id="plot_missing",
+        ),
+    ],
+)
+async def test_official_scrape_emits_original_fields(
+    html: str, expected: tuple[str | None, str | None, dict[str, str] | None]
+) -> None:
+    """原文与标题 / 简介同源 (日文), 简介缺省时只声明标题."""
+    web = AsyncMock()
+    web.get_text.return_value = html
+    crawler = OfficialCrawler(client=HttpClient(web=web))
+    meta = await crawler._scrape("https://s1s1s1.com/works/detail/ssis960")
+    assert meta is not None
+    assert (meta.original_title, meta.original_plot, meta.field_languages) == expected

@@ -25,6 +25,7 @@ import type {
   MetadataField,
   MetadataSortField,
   Mosaic,
+  NamingPreviewRequest,
   RescrapeTarget,
   RoutineType,
   SavedQueryEntity,
@@ -111,6 +112,11 @@ export const LIBRARY_AUTOMATIONS = exhaustiveTuple<LibraryAutomation>()("none", 
 export const LIBRARY_INGESTS = exhaustiveTuple<LibraryIngest>()("native", "clouddrive");
 
 export const LINK_MODES = exhaustiveTuple<LinkMode>()("strm", "symlink");
+
+/** 命名模板语法 (NamingConfig.syntax). */
+export type NamingSyntax = NonNullable<NamingPreviewRequest["syntax"]>;
+
+export const NAMING_SYNTAXES = exhaustiveTuple<NamingSyntax>()("native", "jinja");
 
 export const MEDIA_FILE_STATUSES = exhaustiveTuple<MediaFileStatus>()(
   "pending",
@@ -219,7 +225,9 @@ export const FACET_SORT_FIELDS = exhaustiveTuple<FacetSortField>()("name", "coun
 
 export const METADATA_FIELDS = exhaustiveTuple<MetadataField>()(
   "title",
+  "original_title",
   "plot",
+  "original_plot",
   "actors",
   "directors",
   "tags",

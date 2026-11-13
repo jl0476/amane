@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...db import Library
 from ...enums import DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
 from ...library import (
@@ -13,6 +14,7 @@ from ...library import (
     TrailerPattern,
     resolve_ingest_cloud_path,
 )
+from ...organize.backend import SYNTAXES, template_backend
 from ...organize.path_templates import (
     EXTRAFANART_NAME_TEMPLATE_DEFAULT,
     EXTRAFANART_TEMPLATE_DEFAULT,
@@ -27,8 +29,10 @@ from ...organize.path_templates import (
     VIDEO_TEMPLATE_DEFAULT,
     ExtrafanartNameTemplate,
     PathTemplate,
+    sidecar_defaults,
 )
 from ...organize.strm_content import StrmContentTemplate
+from ...parsing import ContentType
 from ...utils.model import create_partial_model, subset_of
 
 
@@ -75,8 +79,11 @@ class LibraryCreateRequest(BaseModel):
 if TYPE_CHECKING:
     type LibraryUpdateRequest = Library
 
-# 外部可写字段: 除主键 id 外的全部库配置列.
-LibraryUpdateRequest = create_partial_model(Library, ignore_fields=("id",), partial_cls_name="LibraryUpdateRequest")
+# 外部可写字段: 除主键 id 与 template_overrides 名单外的全部库配置列.
+# template_overrides 只能经由请求中显式给出的模板字段追加 (路由按 model_fields_set 计算), 不允许直接改写.
+LibraryUpdateRequest = create_partial_model(
+    Library, ignore_fields=("id", "template_overrides"), partial_cls_name="LibraryUpdateRequest"
+)
 
 
 class LibraryResponse(BaseModel):
@@ -105,6 +112,7 @@ class LibraryResponse(BaseModel):
     subtitle_extensions: list[str]
     write_nfo: bool
     copy_resources: list[DownloadableResource]
+    template_overrides: list[str]
     trailer_pattern: str
     blacklist_patterns: list[str]
     min_file_size: int
@@ -114,18 +122,42 @@ class LibraryListResponse(BaseModel):
     items: list[LibraryResponse]
 
 
+class LibraryOverrideResponse(BaseModel):
+    """单个 section 的覆盖; payload 为稀疏 JSON, 可空模板字段的显式取空以 {} 原样呈现."""
+
+    section: str
+    payload: dict[str, Any] = {}
+
+
+class LibraryOverridesResponse(BaseModel):
+    """该库的全部覆盖, 按 section 分组; 未写覆盖的 section 不出现."""
+
+    overrides: dict[str, dict[str, Any]] = {}
+
+
+class EffectiveConfigResponse(BaseModel):
+    """GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层)."""
+
+    common: OrganizeCommonConfig
+    naming: NamingConfig
+    nfo: NfoConfig
+
+
 @subset_of(Library, covariant=True)
 class OptionalPathTemplateDefaults(BaseModel):
-    """附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染)."""
+    """附属模板缺省 (Library 对应列为 None 时 ORGANIZE 使用; 剧照文件名在写盘时按张数渲染).
 
-    thumb_template: PathTemplate
-    poster_template: PathTemplate
-    fanart_template: PathTemplate
-    extrafanart_template: PathTemplate
-    extrafanart_name_template: ExtrafanartNameTemplate
-    nfo_template: PathTemplate
-    trailer_template: PathTemplate
-    subtitle_template: PathTemplate
+    取值是代码字面量, 两套语法各有一份 (Jinja 默认不是合法的自研语法模板), 不做语法校验.
+    """
+
+    thumb_template: str
+    poster_template: str
+    fanart_template: str
+    extrafanart_template: str
+    extrafanart_name_template: str
+    nfo_template: str
+    trailer_template: str
+    subtitle_template: str
 
 
 OPTIONAL_TEMPLATE_DEFAULTS = OptionalPathTemplateDefaults(
@@ -148,6 +180,23 @@ class PathTemplatePlaceholder(BaseModel):
     )
 
 
+class PathTemplateSyntaxVariable(BaseModel):
+    """占位符在对应语法下的变量名: Jinja 映射 4 个带 `?` 的占位符, 其余同名."""
+
+    name: str
+    variable: str
+
+
+class PathTemplateSyntaxInfo(BaseModel):
+    """一套语法的默认视频模板、附属模板默认与占位符名 → 变量名映射, 供前端切换语法时替换默认."""
+
+    name: str
+    default_video_template: str
+    default_optional_templates: OptionalPathTemplateDefaults
+    """附属模板在该语法下的内建默认: 与渲染期未设置时的回退同源 (规格 3.2.3)."""
+    placeholders: list[PathTemplateSyntaxVariable]
+
+
 class PathTemplateSchemaResponse(BaseModel):
     """与 ORGANIZE 实际使用的默认值同源; 路径模板由 resolve_paths 解析, 剧照文件名模板由写盘阶段渲染."""
 
@@ -155,6 +204,7 @@ class PathTemplateSchemaResponse(BaseModel):
     optional_defaults: OptionalPathTemplateDefaults
     placeholders: list[PathTemplatePlaceholder]
     subtitle_extensions_default: list[str]
+    syntaxes: list[PathTemplateSyntaxInfo]
 
 
 def path_template_schema() -> PathTemplateSchemaResponse:
@@ -163,7 +213,55 @@ def path_template_schema() -> PathTemplateSchemaResponse:
         optional_defaults=OPTIONAL_TEMPLATE_DEFAULTS,
         placeholders=[
             PathTemplatePlaceholder(name=name, map_keys=list(PLACEHOLDER_MAP_KEYS.get(name, ())))
-            for name in PLACEHOLDERS
+            for name in (*PLACEHOLDERS, "dir")
         ],
         subtitle_extensions_default=list(DEFAULT_SUBTITLE_EXTENSIONS),
+        syntaxes=[
+            PathTemplateSyntaxInfo(
+                name=described.name,
+                default_video_template=described.default_video_template,
+                default_optional_templates=OptionalPathTemplateDefaults(**sidecar_defaults(syntax)),
+                placeholders=[
+                    PathTemplateSyntaxVariable(name=p.name, variable=p.variable) for p in described.placeholders
+                ],
+            )
+            for syntax in SYNTAXES
+            for described in (template_backend(syntax).describe(),)
+        ],
     )
+
+
+class NamingPreviewRequest(BaseModel):
+    """命名试算入参 (规格 3.2.4): 不落盘, 走与整理相同的 resolve_paths 代码路径.
+
+    ``media_file_id`` 用真实文件与已刮削的元数据; 两者都缺省时用请求字段构造.
+    ``library_id`` 缺省用全局默认模板; ``syntax`` 缺省用生效语法.
+    """
+
+    library_id: int | None = None
+    media_file_id: int | None = None
+    syntax: Literal["native", "jinja"] | None = None
+    number: str = ""
+    source_path: str = ""
+    content_type: ContentType = ContentType.CENSORED
+    title: str = ""
+    actors: list[str] = []
+    studio: str = ""
+    release: str = ""
+
+
+class NamingPreviewResponse(BaseModel):
+    """解析结果 + 各产物渲染路径; subtitle 按 `{源文件主干}.srt` 的假想字幕渲染."""
+
+    number: str
+    content_type: str
+    mosaic: str
+    subtitle_tag: str
+    definition: str
+    video: str
+    thumb: str
+    poster: str
+    fanart: str
+    nfo: str
+    trailer: str
+    subtitle: str

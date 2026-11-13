@@ -24,6 +24,8 @@ class MediaFileResponse(BaseModel):
     has_subtitle: bool = False
     definition: str | None = None
     metadata_id: int | None = None
+    link_path: str | None = None
+    """链接落盘位置; 未配置链接模板为 None, 文件已不存在时读取侧按无链接处理 (规格 3.4.4)."""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

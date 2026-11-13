@@ -24,7 +24,9 @@ class Repository(
     repos.FeedsRepoMixin,
     repos.LibrariesRepoMixin,
     repos.MediaRepoMixin,
+    repos.ParseRulesRepoMixin,
     repos.MetadataRepoMixin,
+    repos.OrganizeJournalRepoMixin,
     repos.SchedulesRepoMixin,
     repos.TasksRepoMixin,
 ):

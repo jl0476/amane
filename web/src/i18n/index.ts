@@ -18,6 +18,7 @@ import enFileBrowser from "./locales/en/fileBrowser.json";
 import enLibrary from "./locales/en/library.json";
 import enLogs from "./locales/en/logs.json";
 import enMetadata from "./locales/en/metadata.json";
+import enParseRules from "./locales/en/parseRules.json";
 import enPlugins from "./locales/en/plugins.json";
 import enSavedQueries from "./locales/en/savedQueries.json";
 import enSchedules from "./locales/en/schedules.json";
@@ -33,6 +34,7 @@ import zhCNFileBrowser from "./locales/zh-CN/fileBrowser.json";
 import zhCNLibrary from "./locales/zh-CN/library.json";
 import zhCNLogs from "./locales/zh-CN/logs.json";
 import zhCNMetadata from "./locales/zh-CN/metadata.json";
+import zhCNParseRules from "./locales/zh-CN/parseRules.json";
 import zhCNPlugins from "./locales/zh-CN/plugins.json";
 import zhCNSavedQueries from "./locales/zh-CN/savedQueries.json";
 import zhCNSchedules from "./locales/zh-CN/schedules.json";
@@ -51,6 +53,7 @@ export const resources = {
     fileBrowser: zhCNFileBrowser,
     library: zhCNLibrary,
     metadata: zhCNMetadata,
+    parseRules: zhCNParseRules,
     plugins: zhCNPlugins,
     tasks: zhCNTasks,
     settings: zhCNSettings,
@@ -67,6 +70,7 @@ export const resources = {
     fileBrowser: enFileBrowser,
     library: enLibrary,
     metadata: enMetadata,
+    parseRules: enParseRules,
     plugins: enPlugins,
     tasks: enTasks,
     settings: enSettings,
