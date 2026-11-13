@@ -493,8 +493,11 @@ def _place_library_images(
 
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
+    水印只作用于本轮写出的图, 跳过的既有图不重编码.
     """
     skipped = 0
+    thumb_written = False
+    poster_written = False
     if thumb_local is not None and DownloadableResource.thumb in kinds:
         if not overwrite_image and paths.thumb.exists():
             skipped += 1
@@ -503,6 +506,7 @@ def _place_library_images(
             _copy_into_library(thumb_local, paths.thumb)
             paths.fanart.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(thumb_local, paths.fanart)
+            thumb_written = True
 
     if DownloadableResource.poster in kinds:
         if not overwrite_image and paths.poster.exists():
@@ -510,6 +514,7 @@ def _place_library_images(
         elif poster_local is not None:
             paths.poster.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(poster_local, paths.poster)
+            poster_written = True
         elif (
             thumb_local is not None
             and config is not None
@@ -523,6 +528,7 @@ def _place_library_images(
                 poster_ratio=config.scraping.poster_ratio,
                 jpeg_quality=config.scraping.jpeg_quality,
             )
+            poster_written = True
 
     if trailer_local is not None and DownloadableResource.trailer in kinds:
         if not overwrite_image and paths.trailer.exists():
@@ -541,10 +547,11 @@ def _place_library_images(
             _copy_into_library(p, target)
 
     # 叠加水印 (thumb / poster); 跳过的产物不重写, 水印也随之不动.
+    # overwrite_image=True 时保持对既有图叠印: 覆盖写路径的产物也算本轮写的.
     wm = config.watermark if config is not None else WatermarkConfig()
     if wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
-        if paths.thumb.exists():
+        if (thumb_written or overwrite_image) and paths.thumb.exists():
             apply_cover_watermarks_from_info(
                 paths.thumb,
                 file_info,
@@ -554,7 +561,7 @@ def _place_library_images(
                 scale=wm.scale,
                 corners=wm.corners,
             )
-        if paths.poster.exists():
+        if (poster_written or overwrite_image) and paths.poster.exists():
             apply_cover_watermarks_from_info(
                 paths.poster,
                 file_info,

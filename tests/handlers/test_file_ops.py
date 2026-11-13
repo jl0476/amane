@@ -1162,6 +1162,60 @@ async def test_overwrite_image_toggle_skips_existing_images(
         assert _pixel(paths.poster) == before[1]
 
 
+@pytest.mark.parametrize("overwrite_image", [False, True])
+@pytest.mark.asyncio
+async def test_watermark_leaves_skipped_images_untouched(
+    resource_store: ResourceStore, tmp_path: Path, overwrite_image: bool
+) -> None:
+    """水印只作用于本轮写出的图: overwrite_image=False 时旧图不被重编码叠印, True 照常覆写叠印."""
+    client = cast("WebClient", FakeClient())
+    src = tmp_path / "src" / "MIDV-123-C.mp4"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"movie")
+
+    user_dir = tmp_path / "watermarks"
+    user_dir.mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+
+    paths = _paths(tmp_path / "out")
+    paths.thumb.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (800, 538), "green").save(paths.thumb)
+    Image.new("RGB", (800, 538), "green").save(paths.poster)
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns, _pixel(p)) for p in (paths.thumb, paths.poster)}
+
+    mf = MediaFile(path=str(src), library_id=1)
+    meta = Metadata(number="MIDV-123", thumb_urls=["https://s/t.jpg"], poster_urls=["https://s/p.jpg"])
+
+    result = await execute_file_operations(
+        media_file=mf,
+        metadata=meta,
+        paths=paths,
+        move_mode=MoveMode.COPY,
+        resource_store=resource_store,
+        file_info=parse_file_info(src, has_external_subtitle=mf.has_external_subtitle),
+        web_client=client,
+        config=HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2)),
+        watermark_dir=user_dir,
+        overwrite_image=overwrite_image,
+    )
+
+    assert result.outcome is PlaceOutcome.PLACED
+    if overwrite_image:
+        # 覆盖写: 旧图换成本轮下载图并叠印, 与无旧图时的基线一致.
+        for image in (paths.thumb, paths.poster):
+            with Image.open(image) as img:
+                pixel = img.convert("RGB").getpixel((20, 20))
+            assert isinstance(pixel, tuple)
+            assert pixel[0] > 180 and pixel[2] < 80
+    else:
+        # 跳过: 旧图字节与 mtime 原样保留, 不重编码也不再次叠印.
+        for image in (paths.thumb, paths.poster):
+            content, mtime, pixel = before[image]
+            assert image.read_bytes() == content
+            assert image.stat().st_mtime_ns == mtime
+            assert _pixel(image) == pixel
+
+
 # --- 任务 27: MediaFile.link_path 持久化 ---
 
 
