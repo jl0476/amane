@@ -450,6 +450,7 @@ async def _recover_prepared(
         except OSError as e:
             await _record_error(repo, journal_id, f"恢复回滚失败: {e}")
             return
+        logger.info("journal recovery rollback restored", journal_id=journal_id, backup=str(backup), target=str(target))
         await _cleanup_tmp(target, backup)
         await _delete_journal(repo, journal_id)
         return
@@ -462,6 +463,7 @@ async def _recover_prepared(
         await _recover_takeover(repo, journal, target=target, backup=backup, mode=mode, oshash=oshash, size=size)
         return
     # 备份缺失: 视为回滚已完成或未开始, 清理临时文件与 journal 行.
+    logger.info("journal recovery cleared", journal_id=journal_id, target=str(target))
     await _cleanup_tmp(target, backup)
     await _delete_journal(repo, journal_id)
 
@@ -486,6 +488,19 @@ async def _recover_placed(
             except OSError as e:
                 await _record_error(repo, journal_id, f"恢复备份失败: {e}")
                 return
+            logger.info(
+                "journal recovery rollback restored", journal_id=journal_id, backup=str(backup), target=str(target)
+            )
+        else:
+            # 目标与备份双缺: mode=move 的源可能已在提交点移走, 内容去向无从追溯, journal 是唯一痕迹.
+            logger.warning(
+                "journal recovery target and backup both missing",
+                journal_id=journal_id,
+                source=str(journal.source_path),
+                target=str(target),
+                oshash=oshash,
+                size=size,
+            )
         await _delete_journal(repo, journal_id)
         return
     error = await _verify_fingerprint(target, oshash, size, label="目标")
@@ -519,6 +534,12 @@ async def _recover_takeover(
         except Exception as e:
             await _record_error(repo, journal_id, f"恢复接管失败: {e}")
             return
+        logger.info(
+            "journal recovery takeover redone",
+            journal_id=journal_id,
+            source_row=row.id,
+            target=str(target),
+        )
     await _recover_cleanup(
         repo,
         journal_id,
@@ -603,6 +624,13 @@ async def _recover_cleanup(
             await _record_error(repo, journal_id, error)
             return
     await _delete_journal(repo, journal_id)
+    logger.info(
+        "journal recovery cleanup done",
+        journal_id=journal_id,
+        source=str(source),
+        target=str(target),
+        mode=str(mode),
+    )
 
 
 def _tmp_from_backup(target: Path, backup: Path) -> Path | None:

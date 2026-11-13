@@ -549,6 +549,12 @@ class AppRuntime:
             for task in list(self._retire_tasks):
                 with suppress(Exception):
                     await task
+            # 恢复扫描任务独立于 worker, 关闭时取消并等待退出, 进行中的扫描不随进程残留.
+            if self._journal_recovery_task is not None and not self._journal_recovery_task.done():
+                self._journal_recovery_task.cancel()
+            if self._journal_recovery_task is not None:
+                with suppress(asyncio.CancelledError):
+                    await self._journal_recovery_task
             if self.r18_handle is not None and not self.r18_handle.closed:
                 self.r18_handle.closed = True
                 with suppress(Exception):

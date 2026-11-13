@@ -161,7 +161,8 @@ async def execute_file_operations(
     dest = video_dest(paths.video.parent, paths.video.stem, source_path)
     # 整理同一目标前就地恢复: 该目标有未完成的覆写时先按恢复矩阵处理, 占用判定基于恢复后的磁盘事实.
     if repo is not None and await repo.get_organize_journal_by_target(str(dest)) is not None:
-        await recover_organize_journals(repo, target_path=str(dest))
+        recovered = await recover_organize_journals(repo, target_path=str(dest))
+        logger.info("organize journal in-place recovery finished", dest=str(dest), rows=recovered)
     check = await target_state(source_path, dest)
     if check.state is TargetState.OCCUPIED and not overwrite_video:
         logger.warning("organize target occupied", source=str(source_path), dest=str(dest))
