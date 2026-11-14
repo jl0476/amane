@@ -7,6 +7,7 @@
 
 import asyncio
 import hashlib
+import shutil
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,6 +22,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from ..db.models import Resource
 from .file_type import detect_media_type
+from .images import probe_size
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -33,6 +35,9 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 RESOURCE_URL_PREFIX = "/api/resources"
+
+TMP_MARK = ".amane-tmp-"
+"""独占临时名标记, 后接任务标识; 与 organize/overwrite.py 的落位临时同一纪律, 便于事后清理."""
 
 # 上游把已下架资源重定向到 200 的占位图 (DMM 的 now_printing, up-timely 的 noimage) 时不能算获取成功:
 # 否则该 URL 会被判为可用并前置, 前端最终显示占位图本身.
@@ -99,6 +104,21 @@ class UpscaleOutcome(StrEnum):
     UPSCALED = "upscaled"
     SKIPPED = "skipped"
     FAILED = "failed"
+
+
+@dataclass
+class _BestCandidate:
+    """择优轮的一个候选: 独占临时上的那份字节与其来源 URL."""
+
+    url: str
+    temp: Path
+
+
+def _content_rank(path: Path) -> tuple[int, int]:
+    """比较键: 分辨率面积最大者胜, 同面积取字节数大者. 尺寸读不出按 0 面积, 劣于任何可读图."""
+    size = probe_size(path)
+    area = size[0] * size[1] if size is not None else 0
+    return area, path.stat().st_size
 
 
 class ResourceStore:
@@ -406,6 +426,130 @@ class ResourceStore:
 
         logger.warning("all download sources exhausted", urls_tried=len(urls))
         return AcquireResult(success=False, path=None, used_url=None, failed=failed)
+
+    async def acquire_best(self, urls: list[str], client: WebClient, *, task_token: str) -> AcquireResult:
+        """quality 策略: 各候选落到本轮独占临时 (命中共享缓存则复制参与, 共享文件只读), 面积→字节
+        择优, 胜者经 ``commit_temp`` 绑定已比较的字节提交.
+
+        清理责任全在本轮: 落选临时与取消/异常路径的全部临时由本轮删除; 共享 Resource 绝不删除.
+        """
+        if not urls:
+            return AcquireResult(success=False, failed=[])
+
+        temps: list[Path] = []
+        failed: list[str] = []
+        try:
+            candidates: list[_BestCandidate] = []
+            # 去重保序: 同一 URL 的两份临时会互相覆盖.
+            for url in dict.fromkeys(urls):
+                temp = await self._exclusive_download(url, client, task_token, temps)
+                if temp is None:
+                    failed.append(url)
+                    continue
+                candidates.append(_BestCandidate(url=url, temp=temp))
+            if not candidates:
+                logger.warning("all download sources exhausted", urls_tried=len(urls))
+                return AcquireResult(success=False, failed=failed)
+
+            winner = max(candidates, key=lambda c: _content_rank(c.temp))
+            result = await self.commit_temp(winner.url, winner.temp)
+            if result.success:
+                return AcquireResult(success=True, path=result.path, used_url=winner.url, failed=failed)
+            return AcquireResult(success=False, failed=[*failed, winner.url])
+        finally:
+            for temp in temps:
+                temp.unlink(missing_ok=True)
+
+    async def _exclusive_download(self, url: str, client: WebClient, task_token: str, temps: list[Path]) -> Path | None:
+        """单候选落到本轮独占临时: 命中共享缓存复制参与 (共享文件只读), 未命中直接下载.
+
+        独占临时不写记录也不进缓存. 单候选异常按该候选失败处理, 择优轮继续; ``CancelledError``
+        是 ``BaseException``, 不在此拦, 由调用方的 finally 清理后原样上抛.
+        """
+        temp = self._exclusive_tmp(url, task_token)
+        temps.append(temp)
+        try:
+            cached = await self.resolve(url)
+            if cached is not None:
+                shutil.copyfile(cached, temp)
+                return temp
+            temp.parent.mkdir(parents=True, exist_ok=True)
+            if not await client.download(url, temp):
+                logger.warning("candidate download failed", url=url, host=urlsplit(url).hostname)
+                return None
+            return temp
+        except Exception as exc:
+            logger.warning("candidate acquire failed", url=url, error=str(exc))
+            return None
+
+    def _exclusive_tmp(self, url: str, task_token: str) -> Path:
+        """本轮独占临时名: 与缓存目标同目录 (同文件系统 → 提交改名原子), 保留扩展名
+        (download 的实现可能按扩展名决定写出的格式); 加 uuid 段保证同任务并发轮不共用文件.
+        """
+        dest = self._compute_path(url)
+        return dest.with_name(f"{dest.stem}{TMP_MARK}{task_token}-{uuid4().hex[:8]}{dest.suffix}")
+
+    async def commit_temp(self, url: str, temp: Path) -> AcquireResult:
+        """绑定**已比较的字节**原子提交: 按 url_hash 定位缓存路径, 原子改名并写记录;
+        禁止重新下载替代提交.
+
+        并发内容冲突 (提交时该 URL 已有内容 hash 不同的缓存) 把既有内容纳入比较重选:
+        既有胜 → 删本轮临时返回既有路径; 本轮胜 → 覆盖缓存 (记录与文件同步更新) 并记 warning;
+        同内容 hash → 幂等成功. 提交失败 (磁盘错误等) 删本轮临时返回 FAILED.
+        """
+        async with self._serialized(url):
+            return await self._commit_temp_locked(url, temp)
+
+    async def _commit_temp_locked(self, url: str, temp: Path) -> AcquireResult:
+        dest = self._compute_path(url)
+        overwrite = False
+        try:
+            temp_hash = self._hash_file(temp)
+            existing = await self.get_by_url(url)
+            existing_path = self.full_path(existing) if existing is not None else None
+            if existing_path is not None and existing_path.exists():
+                # 内容判定按盘上字节, 不信记录列: 磁盘被外部换掉时记录可能已过期.
+                existing_hash = self._hash_file(existing_path)
+                if existing_hash == temp_hash:
+                    temp.unlink(missing_ok=True)
+                    return AcquireResult(success=True, path=existing_path, used_url=url)
+                if _content_rank(existing_path) >= _content_rank(temp):
+                    # 既有更优: 本轮落选, 只删本轮临时.
+                    temp.unlink(missing_ok=True)
+                    return AcquireResult(success=True, path=existing_path, used_url=url)
+                overwrite = True
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            temp.replace(dest)
+        except OSError:
+            temp.unlink(missing_ok=True)
+            logger.warning("commit temp failed", url=url)
+            return AcquireResult(success=False, failed=[url])
+
+        # 文件已就位, 记录写盘上那份.
+        size = dest.stat().st_size
+        mime = detect_media_type(dest)
+        async with self._session() as session:
+            if existing is not None:
+                existing.content_hash = temp_hash
+                existing.size = size
+                existing.mime_type = mime
+                session.add(existing)
+            else:
+                session.add(
+                    Resource(
+                        url=url,
+                        file_path=self._relative_path(dest),
+                        content_hash=temp_hash,
+                        size=size,
+                        mime_type=mime,
+                    )
+                )
+            await session.commit()
+
+        if overwrite:
+            logger.warning("resource cache overwritten", url=url, content_hash=temp_hash)
+        return AcquireResult(success=True, path=dest, used_url=url)
 
     async def acquire_extrafanart(
         self,

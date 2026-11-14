@@ -1,13 +1,22 @@
-"""测试 ResourceStore 的派生资源 (裁剪), 就地超分与获取失败的收尾."""
+"""测试 ResourceStore 的派生资源 (裁剪), 就地超分, 独占临时择优与获取失败的收尾."""
 
 import asyncio
+import io
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
+from structlog.testing import capture_logs
 
 from amane.media import ResourceStore, UpscaleOutcome, derived_locator
-from amane.media.resource_store import RESOURCE_URL_PREFIX, _is_placeholder_url, internal_url_hash
+from amane.media.resource_store import (
+    RESOURCE_URL_PREFIX,
+    TMP_MARK,
+    _is_placeholder_url,
+    internal_url_hash,
+)
 from amane.net.egress import EgressPolicy
 from amane.net.http import RateLimiters, WebClient
 
@@ -629,3 +638,287 @@ class TestAcquireConcurrency:
         finally:
             released.set()
             await asyncio.gather(first, second, return_exceptions=True)
+
+
+# --- 独占临时择优 (acquire_best) 与提交 (commit_temp) ---
+
+
+def _png(width: int, height: int, *, variant: int = 0) -> bytes:
+    """生成确定尺寸的 PNG; variant != 0 时逐像素伪噪声, 同尺寸得到显著更大的字节量 (难压缩)."""
+    img = Image.new("RGB", (width, height))
+    if variant:
+        img.putdata([((x * 37 + y * 91 + x * y * 13) % 256,) * 3 for y in range(height) for x in range(width)])
+    else:
+        img.paste((200, 30, 30), (0, 0, width, height))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _download_client(
+    monkeypatch: pytest.MonkeyPatch, contents: Mapping[str, bytes | None]
+) -> tuple[WebClient, list[str]]:
+    """download 按 url 写入预设字节 (None 表示下载失败); 记录每次远端下载请求."""
+    client = WebClient(limiters=RateLimiters(default_rate=100))
+    requested: list[str] = []
+
+    async def download(url: str, dest: Path, **kwargs: Any) -> bool:
+        requested.append(url)
+        content = contents[url]
+        if content is None:
+            return False
+        dest.write_bytes(content)
+        return True
+
+    monkeypatch.setattr(client, "download", download)
+    return client, requested
+
+
+async def _seed_cache(store: ResourceStore, url: str, content: bytes, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """经既有 acquire 路径预置一条共享缓存 (记录 + 文件)."""
+    client = AsyncMock()
+    client.resolve_final_url = AsyncMock(return_value=url)
+
+    async def download(_url: str, dest: Path, **kwargs: object) -> bool:
+        dest.write_bytes(content)
+        return True
+
+    client.download = AsyncMock(side_effect=download)
+    path = await store.acquire(url, client)
+    assert path is not None and path.read_bytes() == content
+    return path
+
+
+def _tmp_leftovers(store: ResourceStore) -> list[Path]:
+    """base_dir 下残留的独占临时文件; 择优轮结束后必须为空."""
+    return sorted(store._base_dir.rglob(f"*{TMP_MARK}*"))
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_picks_largest_area(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    urls = [f"https://s/{name}.jpg" for name in ("a", "b", "c")]
+    contents = {urls[0]: _png(100, 100), urls[1]: _png(50, 150), urls[2]: _png(200, 150)}
+    client, requested = _download_client(monkeypatch, contents)
+
+    result = await resource_store.acquire_best(urls, client, task_token="t9")
+
+    assert result.success is True
+    assert result.used_url == urls[2]  # 面积 30000 最大
+    assert result.path is not None and result.path.read_bytes() == contents[urls[2]]
+    assert result.failed == []
+    assert requested == urls  # 每候选一次, 无额外请求
+    for loser in urls[:2]:
+        assert await resource_store.get_by_url(loser) is None  # 落选者不落库
+    record = await resource_store.get_by_url(urls[2])
+    assert record is not None and record.size == len(contents[urls[2]])
+    assert _tmp_leftovers(resource_store) == []  # 落选临时已清理
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_tie_breaks_by_bytes(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    urls = ["https://s/tie-a.jpg", "https://s/tie-b.jpg"]
+    small = _png(100, 100)
+    big = _png(100, 100, variant=1)
+    assert len(big) > len(small)  # 前置: 同尺寸不同字节
+    client, _ = _download_client(monkeypatch, {urls[0]: small, urls[1]: big})
+
+    result = await resource_store.acquire_best(urls, client, task_token="t9")
+
+    assert result.success is True
+    assert result.used_url == urls[1]  # 同面积 → 字节数大者
+    assert result.path is not None and result.path.read_bytes() == big
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_partial_and_all_failure(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    # 部分失败: 在成功者中择优, 失败者计入 failed
+    urls = [f"https://s/p{name}.jpg" for name in ("a", "b", "c")]
+    contents = {urls[0]: _png(80, 80), urls[1]: _png(200, 100), urls[2]: None}
+    client, _ = _download_client(monkeypatch, contents)
+
+    result = await resource_store.acquire_best(urls, client, task_token="t9")
+
+    assert result.success is True
+    assert result.used_url == urls[1]
+    assert result.failed == [urls[2]]
+    assert await resource_store.get_by_url(urls[2]) is None
+
+    # 全失败: success=False, failed 清单完整
+    dead_urls = ["https://s/dead1.jpg", "https://s/dead2.jpg"]
+    dead_client, _ = _download_client(monkeypatch, dict.fromkeys(dead_urls))
+
+    failed_result = await resource_store.acquire_best(dead_urls, dead_client, task_token="t9")
+
+    assert failed_result.success is False
+    assert failed_result.path is None and failed_result.used_url is None
+    assert failed_result.failed == dead_urls
+    for url in dead_urls:
+        assert await resource_store.get_by_url(url) is None
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_cached_candidate_readonly_in_comparison(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """命中共享缓存的候选复制到独占临时参与比较, 共享文件与记录只读不动."""
+    cached_url = "https://s/cached-big.jpg"
+    cached_bytes = _png(200, 150)
+    cached_path = await _seed_cache(resource_store, cached_url, cached_bytes, monkeypatch)
+    record_before = await resource_store.get_by_url(cached_url)
+    assert record_before is not None
+    new_url = "https://s/cached-new.jpg"
+    client, requested = _download_client(monkeypatch, {new_url: _png(100, 100)})
+
+    result = await resource_store.acquire_best([new_url, cached_url], client, task_token="t9")
+
+    # 缓存内容参与比较并获胜
+    assert result.success is True
+    assert result.used_url == cached_url
+    assert result.path == cached_path
+    assert requested == [new_url]  # 缓存命中的候选不发请求
+    # 共享文件与记录原样
+    assert cached_path.read_bytes() == cached_bytes
+    record_after = await resource_store.get_by_url(cached_url)
+    assert record_after is not None
+    assert record_after.content_hash == record_before.content_hash
+    assert record_after.size == record_before.size
+    # 新候选落选: 不落库, 独占临时 (含缓存复制的那份) 已清理
+    assert await resource_store.get_by_url(new_url) is None
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_commit_temp_binds_compared_bytes(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """提交的就是参与比较的那份字节; 除每候选一次下载外不得有第二次远端请求."""
+    urls = ["https://s/bind-a.jpg", "https://s/bind-b.jpg"]
+    contents = {urls[0]: _png(100, 100), urls[1]: _png(200, 150)}
+    client, requested = _download_client(monkeypatch, contents)
+
+    result = await resource_store.acquire_best(urls, client, task_token="t9")
+
+    assert result.success is True and result.used_url == urls[1]
+    dest = resource_store._compute_path(urls[1])
+    assert result.path == dest
+    assert dest.read_bytes() == contents[urls[1]]
+    record = await resource_store.get_by_url(urls[1])
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(dest)
+    assert record.size == len(contents[urls[1]])
+    assert requested == urls  # 无第二次远端请求
+
+
+@pytest.mark.asyncio
+async def test_commit_temp_same_hash_idempotent(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """并发同 URL 同内容 hash: 删本轮临时, 幂等返回既有持久路径."""
+    url = "https://s/idem.jpg"
+    content = _png(150, 150)
+    cached_path = await _seed_cache(resource_store, url, content, monkeypatch)
+    record_before = await resource_store.get_by_url(url)
+    assert record_before is not None
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(content)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    assert result.path == cached_path and result.used_url == url
+    assert not temp.exists()  # 本轮临时已删
+    assert cached_path.read_bytes() == content  # 既有缓存原样
+    record_after = await resource_store.get_by_url(url)
+    assert record_after is not None
+    assert record_after.content_hash == record_before.content_hash
+
+
+@pytest.mark.asyncio
+async def test_commit_temp_different_hash_lower_res_reselects(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """并发同 URL 更低分辨率缓存: 既有纳入比较重选, 本轮高分辨率胜 → 覆盖缓存 (记录+文件) + warning."""
+    url = "https://s/conflict.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    high = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(high)
+
+    with capture_logs() as logs:
+        result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    assert result.path == cached_path  # 路径不变, 字节已覆盖
+    assert cached_path.read_bytes() == high
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.size == len(high)
+    assert not temp.exists()
+    assert any(log["log_level"] == "warning" and log["event"] == "resource cache overwritten" for log in logs)
+
+
+@pytest.mark.asyncio
+async def test_commit_temp_different_hash_existing_better_returns_existing(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """既有内容更优: 返回既有持久路径, 本轮临时删除, 既有缓存与记录原样."""
+    url = "https://s/better.jpg"
+    high = _png(200, 150)
+    cached_path = await _seed_cache(resource_store, url, high, monkeypatch)
+    record_before = await resource_store.get_by_url(url)
+    assert record_before is not None
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(100, 100))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    assert result.path == cached_path and result.used_url == url
+    assert not temp.exists()  # 本轮临时已删
+    assert cached_path.read_bytes() == high  # 既有缓存未被覆盖
+    record_after = await resource_store.get_by_url(url)
+    assert record_after is not None
+    assert record_after.content_hash == record_before.content_hash
+
+
+@pytest.mark.asyncio
+async def test_commit_failure_cleans_temp(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """提交磁盘错误: 删本轮临时, 返回 FAILED, 不写记录."""
+    url = "https://s/disk-error.jpg"
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"plain file")  # dest.parent.mkdir 在普通文件下抛 OSError
+    monkeypatch.setattr(resource_store, "_compute_path", lambda target: blocker / "sub" / "x.jpg")
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(100, 100))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is False
+    assert result.failed == [url]
+    assert not temp.exists()  # 本轮临时已清理
+    assert await resource_store.get_by_url(url) is None  # 未写记录
+
+
+@pytest.mark.asyncio
+async def test_cancel_cleans_temp(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """本轮取消/异常: 独占临时 (含缓存复制的那份) 全部清理; 共享缓存与记录不动."""
+    cached_url = "https://s/keep.jpg"
+    cached_bytes = _png(200, 150)
+    cached_path = await _seed_cache(resource_store, cached_url, cached_bytes, monkeypatch)
+    record_before = await resource_store.get_by_url(cached_url)
+    assert record_before is not None
+    slow_url = "https://s/cancelled.jpg"
+    client = AsyncMock()
+
+    async def download(url: str, dest: Path, **kwargs: object) -> bool:
+        raise asyncio.CancelledError
+
+    client.download = AsyncMock(side_effect=download)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.acquire_best([cached_url, slow_url], client, task_token="t9")
+
+    assert _tmp_leftovers(resource_store) == []
+    assert cached_path.read_bytes() == cached_bytes
+    record_after = await resource_store.get_by_url(cached_url)
+    assert record_after is not None
+    assert record_after.content_hash == record_before.content_hash
+    assert await resource_store.get_by_url(slow_url) is None
