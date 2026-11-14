@@ -243,6 +243,86 @@ def test_skip_ratio_is_explicit_input() -> None:
     assert plan_crop.executed is CropStrategy.RIGHT
 
 
+# ---------------------------------------------------------------- 低清阈值模式 (任务 11, 规格 §3.3 判定顺序 5)
+
+# 阈值模式判定矩阵: case → [(resolve 覆盖参数, 期望 executed)]; 「用候选原样」编码为 executed=NONE.
+# 同 case 多行钉住双向语义; 基线 thumb (800, 538) / 候选 (379, 430) 即默认态裁剪路径 (b/h≈0.799 < 0.9).
+_LOW_RES_CASES: dict[str, list[tuple[dict[str, Any], CropStrategy]]] = {
+    # 候选 < 阈值, thumb 高 > 候选高 → 裁剪产物 (5b: 高度提升).
+    "below_threshold_crop_wins": [
+        ({"low_res_height": 800}, CropStrategy.RIGHT),
+    ],
+    # 候选 == 阈值 → 用候选原样 (5a 边界取 b ≥ T).
+    "at_threshold_candidate_wins": [
+        ({"low_res_height": 800, "candidate_size": (379, 800)}, CropStrategy.NONE),
+    ],
+    # 候选 > 阈值 → 用候选原样, 即使 skip_ratio 判定应裁 (b/h≈0.892 < 0.9).
+    "above_threshold_candidate_wins": [
+        ({"low_res_height": 450, "candidate_size": (379, 480)}, CropStrategy.NONE),
+    ],
+    # 两者都低于阈值 → 高者胜: h > b 裁剪, h < b 用候选.
+    "both_below_higher_wins": [
+        ({"low_res_height": 800, "thumb_size": (400, 300), "candidate_size": (250, 200)}, CropStrategy.RIGHT),
+        ({"low_res_height": 800, "thumb_size": (400, 300), "candidate_size": (250, 350)}, CropStrategy.NONE),
+    ],
+    # 同高 → 用候选原样 (5b: h ≤ b, 裁剪无高度收益).
+    "same_height_candidate_wins": [
+        ({"low_res_height": 800, "candidate_size": (379, 538)}, CropStrategy.NONE),
+    ],
+    # 无候选 → 无比较对象, 用裁剪产物 (判定顺序 3).
+    "no_candidate_crops": [
+        ({"low_res_height": 800, "candidate_size": None}, CropStrategy.RIGHT),
+    ],
+    # thumb 尺寸不可读 → 不裁, 用候选原样 (判定顺序 2).
+    "thumb_unreadable_no_crop": [
+        ({"low_res_height": 800, "thumb_size": None}, CropStrategy.NONE),
+    ],
+    # 候选尺寸不可读 (thumb 可读) → 用裁剪产物; 期望与 thumb_unreadable_no_crop 相反.
+    "candidate_unreadable_crops": [
+        ({"low_res_height": 800, "candidate_size": None}, CropStrategy.RIGHT),
+    ],
+    # b/h < skip_ratio 但候选 ≥ 阈值 → 用候选 (阈值取代 skip_ratio 短路).
+    "threshold_overrides_skip_ratio": [
+        ({"low_res_height": 400}, CropStrategy.NONE),
+    ],
+    # 阈值模式下改 skip_ratio (0.9↔0.95) 选择不变: 质量底线两侧都不随 skip_ratio 翻转
+    # (对照: 默认态下 b/h≈0.929 在 0.9/0.95 间翻转, 见 test_skip_ratio_is_explicit_input).
+    "threshold_ignores_skip_ratio_value": [
+        ({"low_res_height": 400, "skip_ratio": 0.9, "candidate_size": (379, 500)}, CropStrategy.NONE),
+        ({"low_res_height": 400, "skip_ratio": 0.95, "candidate_size": (379, 500)}, CropStrategy.NONE),
+        ({"low_res_height": 800, "skip_ratio": 0.9, "candidate_size": (379, 500)}, CropStrategy.RIGHT),
+        ({"low_res_height": 800, "skip_ratio": 0.95, "candidate_size": (379, 500)}, CropStrategy.RIGHT),
+    ],
+    # low_res=None → skip_ratio 短路现状算法 (4a/4b, 逐字节).
+    "default_none_matches_current": [
+        ({"low_res_height": None, "skip_ratio": 0.9, "candidate_size": (379, 500)}, CropStrategy.NONE),
+        ({"low_res_height": None, "skip_ratio": 0.95, "candidate_size": (379, 500)}, CropStrategy.RIGHT),
+    ],
+}
+
+
+@pytest.mark.parametrize("case", list(_LOW_RES_CASES))
+def test_low_res_decision_matrix(case: str) -> None:
+    """低清阈值模式全边界判定矩阵 (规格 §3.3 判定顺序): 逐 case 断言 executed 编码的产物选择."""
+    for resolve_kwargs, expected in _LOW_RES_CASES[case]:
+        plan = _resolve_plan(**resolve_kwargs)
+        assert plan.executed is expected, f"{case}: {resolve_kwargs}"
+        assert plan.requested is CropStrategy.RIGHT, f"{case}: 判定不改变 requested"
+
+
+def test_threshold_reachability_changes_selection() -> None:
+    """可达性断言 (规格 §3.3 复审验收): b=500/h=538/skip_ratio=0.9 下仅改阈值即产生不同选择.
+
+    T=None → 4a (b/h≈0.929 ≥ 0.9) 用候选; T=800 → 5b (b=500 < 800 且 h=538 > 500) 裁剪.
+    """
+    kwargs: dict[str, Any] = {"thumb_size": (800, 538), "candidate_size": (379, 500), "skip_ratio": 0.9}
+    default_plan = _resolve_plan(low_res_height=None, **kwargs)
+    threshold_plan = _resolve_plan(low_res_height=800, **kwargs)
+    assert default_plan.executed is CropStrategy.NONE
+    assert threshold_plan.executed is CropStrategy.RIGHT
+    assert default_plan.executed is not threshold_plan.executed
+
+
 # ---------------------------------------------------------------- Face 执行 (任务 7)
 
 

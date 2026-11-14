@@ -66,8 +66,15 @@ def _select_candidate(
     candidate_size: tuple[int, int] | None,
     *,
     skip_ratio: float,
+    low_res_height: int | None,
 ) -> bool:
-    """默认态的候选选择: True 表示入选候选原样. 尺寸口径与 images.should_crop_poster 一致."""
+    """候选选择 (规格 §3.3 判定顺序 2–5): True 表示入选候选原样. 尺寸口径与 images.should_crop_poster 一致.
+
+    low_res_height=None 为默认态 (4a/4b): 候选 b/h ≥ skip_ratio 用候选, 否则裁剪.
+    配置阈值 T 时进入阈值模式并取代 skip_ratio 短路 (5a/5b): 候选 b ≥ T 用候选 (质量底线达标);
+    b < T 时仅 thumb 高于候选 (h > b, 裁剪有高度提升) 才裁剪, 否则用候选.
+    阈值非正值使 b ≥ T 恒成立, 恒用候选.
+    """
     if thumb_size is None:
         return True
     if candidate_size is None:
@@ -76,6 +83,10 @@ def _select_candidate(
     candidate_height = candidate_size[1]
     if thumb_height <= 0 or candidate_height <= 0:
         return True
+    if low_res_height is not None:
+        if candidate_height >= low_res_height:
+            return True
+        return thumb_height <= candidate_height
     return candidate_height / thumb_height >= skip_ratio
 
 
@@ -90,14 +101,17 @@ def resolve_crop_plan(
     thumb_size: tuple[int, int] | None,
     candidate_size: tuple[int, int] | None,
 ) -> CropPlan:
-    """解析单次裁剪决策 (规格 §3.3 默认态): 策略读取 strategy_map, 缺键回退默认矩阵 (censored/uncensored=right, 其余=none).
+    """解析单次裁剪决策 (规格 §3.3 判定顺序): 策略读取 strategy_map, 缺键回退默认矩阵 (censored/uncensored=right, 其余=none).
 
-    产物选择: 无 thumb 或候选 b/h ≥ skip_ratio → 候选原样 (executed=NONE);
-    无候选或 b/h < skip_ratio → 执行裁剪 (executed=requested).
-    skip_ratio 为既有可配置阈值 (0.5–1.0), 由调用方显式传入.
+    产物选择: 无 thumb → 候选原样 (executed=NONE); 无候选 → 执行裁剪 (executed=requested).
+    low_res_height=None (默认) 按 skip_ratio 短路: 候选 b/h ≥ skip_ratio → 候选原样, 否则裁剪.
+    配置阈值时阈值模式取代短路: 候选高度 ≥ 阈值用候选原样 (即使 b/h < skip_ratio), 否则仅 thumb
+    高于候选才裁剪. skip_ratio 为既有可配置阈值 (0.5–1.0), 由调用方显式传入.
     """
     requested = strategy_map.get(content_type, _DEFAULT_STRATEGIES.get(content_type, CropStrategy.NONE))
-    if requested is CropStrategy.NONE or _select_candidate(thumb_size, candidate_size, skip_ratio=skip_ratio):
+    if requested is CropStrategy.NONE or _select_candidate(
+        thumb_size, candidate_size, skip_ratio=skip_ratio, low_res_height=low_res_height
+    ):
         executed = CropStrategy.NONE
     else:
         executed = requested
