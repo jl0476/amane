@@ -1,9 +1,10 @@
-"""测试刮削期资源管线 materialize_images (选源/裁剪/就地超分)."""
+"""测试刮削期资源管线 materialize_images (选源/裁剪/就地超分) 与双入口策略分派."""
 
 import asyncio
 import contextlib
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
@@ -12,16 +13,18 @@ from PIL import Image
 
 from amane.config import HotSettings, MetadataConfig, ScrapingConfig, SrConfig
 from amane.enums import DownloadableResource
+from amane.handlers import OrganizeHandler, OrganizePayload
 from amane.handlers.file import _place_library_images
 from amane.media import CropRotation, ResourceStore, crop_poster, manual_crop_image, materialize_images
 from amane.media import pipeline as pipeline_mod
+from amane.media.resource_store import TMP_MARK
 from amane.organize import ResolvedPaths
 from amane.parsing import ContentType
+from tests.handlers.test_file_ops import MappedClient, _pixel_close, _seed_library
 from tests.helpers import LOAD_TOLERANT_TIMEOUT, await_for
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from amane.db.repository import Repository
     from amane.net.http import WebClient
 
 
@@ -803,3 +806,164 @@ async def test_custom_skip_ratio_respected_both_entries(resource_store: Resource
         watermark_dir=None,
     )
     assert not skipped.poster.exists()
+
+
+# --- quality/priority 双入口分派 (先择优后裁剪, R2 PLAN-09) ---
+
+# thumb 低清在前高清在后, 两者高度不同 → 裁剪产物高度可区分裁剪源 (600=首个, 538=胜者).
+_THUMB_URLS = ["https://s/t-low.jpg", "https://s/t-high.jpg"]
+_THUMB_SIZES = {"https://s/t-low.jpg": (600, 600), "https://s/t-high.jpg": (800, 538)}
+# poster 候选一矮一高: 对 600 高 thumb b/h≈0.733 → 裁; 对 538 高 thumb b/h≈0.929 → 候选原样.
+_POSTER_URLS = ["https://s/p-low.jpg", "https://s/p-high.jpg"]
+_POSTER_SIZES = {"https://s/p-low.jpg": (500, 440), "https://s/p-high.jpg": (500, 500)}
+
+_ORGANIZE_IMAGES = {
+    "https://s/t-low.jpg": ((600, 600), "blue"),
+    "https://s/t-high.jpg": ((800, 538), "green"),
+    "https://s/p-low.jpg": ((500, 440), "purple"),
+    "https://s/p-high.jpg": ((500, 500), "orange"),
+    "https://s/s-low.jpg": ((460, 460), "purple"),
+    "https://s/s-high.jpg": ((500, 440), "purple"),
+}
+
+
+def _tmp_leftovers(store: ResourceStore) -> list[Path]:
+    """base_dir 下残留的独占临时; 择优轮结束后必须为空, priority 路径则从不产生."""
+    return sorted(store._base_dir.rglob(f"*{TMP_MARK}*"))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_priority_strategy_matches_current_behavior(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """priority 沿用 acquire_first 零改动: 刮削与整理两入口产物与现状一致 — 取首个候选与首个 thumb, 无独占临时."""
+    client = FakeClient({**_THUMB_SIZES, **_POSTER_SIZES})
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="priority"))
+    out = await materialize_images(
+        _POSTER_URLS,
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    # 刮削入口: 首个候选偏矮 → 从首个 thumb 右侧裁剪; 逐 URL acquire, 全候选落缓存.
+    assert len(out.poster_urls) == 1
+    assert out.poster_urls[0].startswith(pipeline_mod.RESOURCE_URL_PREFIX)
+    got = await resource_store.get_by_url_hash(out.poster_urls[0].rsplit("/", 1)[-1])
+    assert got is not None
+    crop_res, crop_path = got
+    assert crop_res.meta is not None
+    assert crop_res.meta.get("args") == "right:legacy:0.7000"
+    assert crop_res.meta.get("src") == "https://s/t-low.jpg"  # 裁剪源 = 首个 thumb
+    assert Image.open(crop_path).size == (420, 600)  # 高度 600 → 来自首个 thumb, 非胜者 (538)
+    for url in (*_THUMB_URLS, *_POSTER_URLS):
+        assert await resource_store.get_by_url(url) is not None
+    assert _tmp_leftovers(resource_store) == []
+
+    # 整理入口: 库未覆盖 → priority, poster = 首个 thumb 的裁剪产物, thumb 沿现状取首个候选.
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=_THUMB_URLS,
+        raw={"dmm": {"poster_urls": _POSTER_URLS}},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(repo, tmp_path, name="p", metadata_id=meta.id, number="MIDV-123")
+    assert lib.id is not None
+    handler = OrganizeHandler(
+        repo, HotSettings(), resource_store, web_client=cast("WebClient", MappedClient(_ORGANIZE_IMAGES))
+    )
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+    poster = root / "MIDV-123" / "poster.jpg"
+    assert Image.open(poster).size == (420, 600)
+    assert _pixel_close(poster, (0, 0, 255))
+    with Image.open(root / "MIDV-123" / "thumb.jpg") as img:
+        assert img.size == (600, 600)  # thumb 取首个候选 (现状行为)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_strategy_picks_best_both_entries(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """quality 全候选独占临时下载后择优: 两入口低清在前高清在后 → 高分辨率者胜出; 只提交胜者, 裁剪源取胜者 (先择优后裁剪)."""
+    # 刮削入口: 胜者 p-high 够高 → 免裁, poster 沿外部 URL 原序; 磁盘与缓存只有胜者.
+    client = MappedClient(_ORGANIZE_IMAGES)
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+    out = await materialize_images(
+        _POSTER_URLS,
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    assert out.poster_urls == _POSTER_URLS
+    assert out.thumb_urls == _THUMB_URLS  # 全部成功 → 原序 (失败者置尾语义保持)
+    thumb_winner = await resource_store.get_by_url("https://s/t-high.jpg")
+    assert thumb_winner is not None
+    assert Image.open(resource_store.full_path(thumb_winner)).size == (800, 538)  # 磁盘字节 = 高清胜者
+    assert await resource_store.get_by_url("https://s/t-low.jpg") is None  # 落选者不提交
+    assert await resource_store.get_by_url("https://s/p-high.jpg") is not None
+    assert await resource_store.get_by_url("https://s/p-low.jpg") is None
+    assert _tmp_leftovers(resource_store) == []
+
+    # 刮削入口 (两个候选都偏矮): 裁剪执行, 裁剪源 = thumb 择优胜者 → 先择优后裁剪.
+    out2 = await materialize_images(
+        ["https://s/s-low.jpg", "https://s/s-high.jpg"],
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    assert len(out2.poster_urls) == 1
+    got = await resource_store.get_by_url_hash(out2.poster_urls[0].rsplit("/", 1)[-1])
+    assert got is not None
+    crop_res, crop_path = got
+    assert crop_res.meta is not None
+    assert crop_res.meta.get("args") == "right:legacy:0.7000"
+    assert crop_res.meta.get("src") == "https://s/t-high.jpg"  # 裁剪源 = quality 胜者, 非首个
+    assert Image.open(crop_path).size == (376, 538)  # 高度 538 → 来自胜者 thumb
+    assert await resource_store.get_by_url("https://s/s-high.jpg") is not None  # poster 胜者提交
+    assert await resource_store.get_by_url("https://s/s-low.jpg") is None
+
+    # 整理入口: 库级 quality → 重选胜者 p-high 原样成为产物 (免裁), 落选者不落缓存.
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=_THUMB_URLS,
+        raw={"dmm": {"poster_urls": _POSTER_URLS}},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="q",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "quality"},
+    )
+    assert lib.id is not None
+    handler = OrganizeHandler(
+        repo, HotSettings(), resource_store, web_client=cast("WebClient", MappedClient(_ORGANIZE_IMAGES))
+    )
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+    poster = root / "MIDV-123" / "poster.jpg"
+    assert Image.open(poster).size == (500, 500)  # 胜者候选原样, 非首个候选也非裁剪产物
+    assert _pixel_close(poster, (255, 165, 0))
+    assert await resource_store.get_by_url("https://s/p-low.jpg") is None  # 重选落选者不落缓存
+    assert _tmp_leftovers(resource_store) == []

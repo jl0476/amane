@@ -12,14 +12,14 @@ from structlog.testing import capture_logs
 
 from amane.api.models.media import MediaFileResponse, to_media_file_response
 from amane.api.models.tasks import OrganizeSubmission
-from amane.config import HotSettings, ScrapingConfig, WatermarkConfig
+from amane.config import HotSettings, MetadataConfig, ScrapingConfig, WatermarkConfig
 from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
 from amane.db.repo_types import WriteMode
 from amane.enums import DownloadableResource
 from amane.handlers import OrganizeHandler, OrganizePayload
 from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
-from amane.media import ResourceStore
-from amane.media.resource_store import internal_url_hash
+from amane.media import ResourceStore, materialize_images
+from amane.media.resource_store import TMP_MARK, internal_url_hash
 from amane.organize import MoveMode, PlaceOutcome, ResolvedPaths, resolve_paths
 from amane.parsing import ContentType, parse_file_info
 
@@ -1681,3 +1681,71 @@ async def test_locked_empty_poster_urls_falls_back(
         assert img.size == (376, 538)
     assert _pixel_close(poster, (0, 0, 255))
     assert any(e["event"] == "poster reselect fallback" and e.get("reason") == "no_candidates" for e in logs)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_dispatch_respects_library_scope(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """两入口按各自生效 thumb_download_strategy 分派: 刮削入口取全局 quality, 整理入口库 A 覆盖 priority、库 B 继承全局."""
+    images = {
+        "https://s/t-low.jpg": ((600, 600), "blue"),
+        "https://s/t-high.jpg": ((800, 538), "green"),
+        "https://s/p-low.jpg": ((500, 440), "purple"),
+        "https://s/p-high.jpg": ((500, 500), "orange"),
+    }
+    client = cast("WebClient", MappedClient(images))
+    thumb_urls = ["https://s/t-low.jpg", "https://s/t-high.jpg"]
+    poster_urls = ["https://s/p-low.jpg", "https://s/p-high.jpg"]
+    global_cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+
+    # 刮削入口 (全局配置): quality 生效 — poster 胜者免裁, 外部 URL 原样, 落选者不提交.
+    out = await materialize_images(
+        poster_urls,
+        thumb_urls,
+        [],
+        resource_store,
+        client,
+        global_cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=global_cfg.metadata,
+    )
+    assert out.poster_urls == poster_urls
+    assert await resource_store.get_by_url("https://s/p-low.jpg") is None
+    assert await resource_store.get_by_url("https://s/p-high.jpg") is not None
+
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=thumb_urls,
+        raw={"dmm": {"poster_urls": poster_urls}},
+    )
+    assert meta.id is not None
+    lib_a, root_a = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "priority"},
+    )
+    lib_b, root_b = await _seed_library(repo, tmp_path, name="b", metadata_id=meta.id, number="MIDV-123")
+    assert lib_a.id is not None and lib_b.id is not None
+
+    handler = OrganizeHandler(repo, global_cfg, resource_store, web_client=client)
+    result_a = await handler.handle(OrganizePayload(library_id=lib_a.id, path=str(root_a)))
+    result_b = await handler.handle(OrganizePayload(library_id=lib_b.id, path=str(root_b)))
+    assert result_a.success and result_b.success
+    assert result_a.result is not None and result_a.result.failed == 0
+    assert result_b.result is not None and result_b.result.failed == 0
+
+    # 库 A (priority 覆盖): 首个候选偏矮 → 从首个 thumb 裁剪 (420x600 蓝).
+    poster_a = root_a / "MIDV-123" / "poster.jpg"
+    assert Image.open(poster_a).size == (420, 600)
+    assert _pixel_close(poster_a, (0, 0, 255))
+    # 库 B (继承全局 quality): 胜者 p-high 免裁原样 (500x500 橙).
+    poster_b = root_b / "MIDV-123" / "poster.jpg"
+    assert Image.open(poster_b).size == (500, 500)
+    assert _pixel_close(poster_b, (255, 165, 0))
+    assert sorted(resource_store._base_dir.rglob(f"*{TMP_MARK}*")) == []

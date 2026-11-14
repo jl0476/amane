@@ -505,6 +505,44 @@ async def _acquire_first_local_url(
     return None, None
 
 
+async def _acquire_candidates_local_url(
+    urls: Sequence[str], store: ResourceStore, client: WebClient, *, quality: bool
+) -> tuple[Path | None, str | None]:
+    """候选获取按生效 ``thumb_download_strategy`` 分派 (R2 PLAN-09): priority 沿用顺序首个
+    (:func:`_acquire_first_local_url`, 零改动), quality 全候选独占临时择优
+    (:func:`amane.media.resource_store.ResourceStore.acquire_best`) 后取胜者.
+
+    内部 URL 是本地引用, 不经独占下载: quality 下先解析为本地文件, 与外部择优胜者按比较键
+    (分辨率面积 → 字节数, 与 store 择优同口径) 同轮取优.
+    """
+    if not quality:
+        return await _acquire_first_local_url(urls, store, client)
+
+    internal: list[tuple[str, Path]] = []
+    external: list[str] = []
+    for url in urls:
+        if internal_url_hash(url) is None:
+            external.append(url)
+            continue
+        local = await store.acquire(url, client)
+        if local is not None:
+            internal.append((url, local))
+
+    def rank(path: Path) -> tuple[int, int]:
+        size = probe_size(path)
+        return (size[0] * size[1] if size is not None else 0, path.stat().st_size)
+
+    best: tuple[str, Path] | None = None
+    if external:
+        result = await store.acquire_best(external, client, task_token="reselect")
+        if result.success and result.path is not None and result.used_url is not None:
+            best = (result.used_url, result.path)
+    for url, local in internal:
+        if best is None or rank(local) > rank(best[1]):
+            best = (url, local)
+    return (best[1], best[0]) if best is not None else (None, None)
+
+
 async def _resolve_locator_args(poster_urls: Sequence[str], store: ResourceStore) -> dict[str, str]:
     """poster_urls 内部 URL 的派生 args 反解 (规格 §3.6 候选重建步骤 1).
 
@@ -688,6 +726,8 @@ async def _prepare_poster_product(
     执行条件: poster 在本轮复制集合内, 总开关 ``scraping.crop_poster`` True, 且 ``metadata_cfg``
     已注入 (库级生效配置, 任务入口经 resolve_effective_config 解析). none 与 right/face 同样进入
     重选 — none 的重选动作 = 从重建候选取原样产物, 不执行像素裁剪 (R3 P1 修订).
+    候选与 thumb 获取按生效 ``thumb_download_strategy`` 分派 (_acquire_candidates_local_url),
+    择优胜者先于裁剪决策成为 CropPlan 选样与像素执行的输入.
 
     用户产物优先 (决策 18, 双路径): poster_urls 含手动派生内部 URL (``box:`` args) 或
     ``poster_urls`` ∈ locked_fields, 命中任一即不重选, 以 poster_urls 首项为本轮产物.
@@ -724,7 +764,10 @@ async def _prepare_poster_product(
         logger.info("poster reselect fallback", number=metadata.number, reason="no_candidates")
         return None
 
-    candidate_local, candidate_src = await _acquire_first_local_url(rebuilt.candidates, store, client)
+    quality = metadata_cfg.thumb_download_strategy == "quality"
+    candidate_local, candidate_src = await _acquire_candidates_local_url(
+        rebuilt.candidates, store, client, quality=quality
+    )
     if candidate_local is None or candidate_src is None:
         logger.info("poster reselect fallback", number=metadata.number, reason="no_candidate_acquired")
         return None
@@ -751,7 +794,7 @@ async def _prepare_poster_product(
         )
         return PreparedPoster(local_path=candidate_local, origin="reselect")
 
-    thumb_local, thumb_src = await _acquire_first_local_url(metadata.thumb_urls, store, client)
+    thumb_local, thumb_src = await _acquire_candidates_local_url(metadata.thumb_urls, store, client, quality=quality)
     thumb_size = probe_size(thumb_local) if thumb_local is not None else None
     plan = crop_plan(thumb_size, probe_size(candidate_local))
     if plan.executed is CropStrategy.NONE or thumb_local is None or thumb_src is None:

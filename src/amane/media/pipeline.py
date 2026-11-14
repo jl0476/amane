@@ -13,7 +13,7 @@ from ..config import DownloadableResource
 from ..enums import CropStrategy
 from ..parsing import ContentType
 from ..sr import get_preset_meta, run_SR
-from .crop import CropPlan, resolve_crop_plan
+from .crop import CropPlan, acquire_face_crop, format_crop_args, resolve_crop_plan
 from .images import (
     CropRotation,
     crop_box,
@@ -104,36 +104,54 @@ async def materialize_images(
     extrafanart 仅下载到 Resource, 站点分组结构不重排.
     海报裁切按 ``metadata_cfg`` 的策略矩阵解析 (`media/crop.py::resolve_crop_plan`);
     ``executed=NONE`` 表示候选原样入选, 不执行像素裁剪.
+    thumb / poster 候选获取按 ``metadata_cfg.thumb_download_strategy`` 分派 (R2 PLAN-09):
+    quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入.
     """
     kinds = set(config.scraping.download_resources)
     crop_enabled = config.scraping.crop_poster
+    quality = metadata_cfg.thumb_download_strategy == "quality"
 
     # 下载 thumb.
     thumb_ok: set[str] = set()
     thumb_local: Path | None = None
     thumb_src: str | None = None
     if DownloadableResource.thumb in kinds:
-        for url in thumb_urls:
-            local = await store.acquire(url, client)
-            if local:
-                thumb_ok.add(url)
-                if thumb_local is None:
-                    thumb_local, thumb_src = local, url
-                    res = await store.get_by_url(url)
-                    if res:
-                        await _maybe_upscale(store, res, config, data_dir)
+        if quality:
+            best = await store.acquire_best(thumb_urls, client, task_token="materialize")
+            if best.success and best.path is not None and best.used_url is not None:
+                thumb_ok = set(thumb_urls) - set(best.failed or ())
+                thumb_local, thumb_src = best.path, best.used_url
+                res = await store.get_by_url(best.used_url)
+                if res:
+                    await _maybe_upscale(store, res, config, data_dir)
+        else:
+            for url in thumb_urls:
+                local = await store.acquire(url, client)
+                if local:
+                    thumb_ok.add(url)
+                    if thumb_local is None:
+                        thumb_local, thumb_src = local, url
+                        res = await store.get_by_url(url)
+                        if res:
+                            await _maybe_upscale(store, res, config, data_dir)
 
     # 下载 poster; 候选偏矮则从 thumb 裁剪.
     poster_ok: set[str] = set()
     poster_candidate_local: Path | None = None
     result_poster_urls = list(poster_urls)
     if DownloadableResource.poster in kinds:
-        for url in poster_urls:
-            local = await store.acquire(url, client)
-            if local:
-                poster_ok.add(url)
-                if poster_candidate_local is None:
-                    poster_candidate_local = local
+        if quality:
+            best = await store.acquire_best(poster_urls, client, task_token="materialize")
+            if best.success and best.path is not None:
+                poster_ok = set(poster_urls) - set(best.failed or ())
+                poster_candidate_local = best.path
+        else:
+            for url in poster_urls:
+                local = await store.acquire(url, client)
+                if local:
+                    poster_ok.add(url)
+                    if poster_candidate_local is None:
+                        poster_candidate_local = local
 
         cand_size = probe_size(poster_candidate_local) if poster_candidate_local else None
 
@@ -149,27 +167,44 @@ async def materialize_images(
                 candidate_size=cand_size,
             )
 
-        # 裁剪需要 thumb 本地文件; 若未选 thumb 下载, 为裁切临时 acquire 首个 thumb.
+        # 裁剪需要 thumb 本地文件; 若未选 thumb 下载, 为裁切临时获取 thumb (quality 下同样先择优).
         # 策略矩阵未请求像素裁剪的类型 (requested=none) 不临时下载.
         if thumb_local is None and thumb_urls and crop_enabled and crop_plan(None).requested is not CropStrategy.NONE:
-            for url in thumb_urls:
-                local = await store.acquire(url, client)
-                if local:
-                    thumb_local, thumb_src = local, url
-                    break
+            if quality:
+                best = await store.acquire_best(thumb_urls, client, task_token="materialize")
+                if best.success and best.path is not None and best.used_url is not None:
+                    thumb_local, thumb_src = best.path, best.used_url
+            else:
+                for url in thumb_urls:
+                    local = await store.acquire(url, client)
+                    if local:
+                        thumb_local, thumb_src = local, url
+                        break
 
         thumb_size = probe_size(thumb_local) if thumb_local else None
         plan = crop_plan(thumb_size)
 
         if crop_enabled and plan.executed is not CropStrategy.NONE and thumb_local:
-            ratio = plan.ratio
-            args = f"{plan.executed.value}:{metadata_cfg.crop_aspect}:{ratio:.4f}"
-            local_thumb = thumb_local
+            if plan.executed is CropStrategy.FACE:
+                # Face 请求走检测先于键构造流程 (`media/crop.py::acquire_face_crop`): 无人脸或后端
+                # 不可用降级 right, 键编码与像素执行恒一致.
+                crop_res = await acquire_face_crop(
+                    store,
+                    thumb_src or "",
+                    thumb_local,
+                    plan=plan,
+                    aspect=metadata_cfg.crop_aspect,
+                    jpeg_quality=config.scraping.jpeg_quality,
+                )
+            else:
+                ratio = plan.ratio
+                args = format_crop_args(plan.executed, metadata_cfg.crop_aspect, ratio)
+                local_thumb = thumb_local
 
-            async def crop_producer(dest: Path) -> bool:
-                return crop_poster(local_thumb, dest, poster_ratio=ratio, jpeg_quality=config.scraping.jpeg_quality)
+                async def crop_producer(dest: Path) -> bool:
+                    return crop_poster(local_thumb, dest, poster_ratio=ratio, jpeg_quality=config.scraping.jpeg_quality)
 
-            crop_res = await store.acquire_derived(thumb_src or "", "crop", args, crop_producer)
+                crop_res = await store.acquire_derived(thumb_src or "", "crop", args, crop_producer)
             if crop_res:
                 await _maybe_upscale(store, crop_res, config, data_dir)
                 result_poster_urls = [_internal_url(store, crop_res.url)]
