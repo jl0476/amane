@@ -248,8 +248,11 @@ def format_crop_args(executed: CropStrategy, aspect: CropAspect, ratio: float) -
     return f"{executed.value}:{aspect}:{ratio:.4f}"
 
 
-def _crop_face_window(src_path: Path, dest_path: Path, box: tuple[int, int, int, int], *, jpeg_quality: int) -> bool:
-    """按预计算窗裁剪落盘. box 与检测同一坐标系 (原始像素, 不做 EXIF 转正)."""
+def crop_face_window(src_path: Path, dest_path: Path, box: tuple[int, int, int, int], *, jpeg_quality: int) -> bool:
+    """按预计算窗裁剪落盘, 刮削物化 (acquire_face_crop) 与整理兜底 (handlers/file.py) 双入口共用.
+
+    box 与检测同一坐标系 (原始像素, 不做 EXIF 转正).
+    """
     try:
         with Image.open(src_path) as img:
             cropped = img.crop(box)
@@ -281,7 +284,7 @@ async def acquire_face_crop(
         box = execution.box
 
         async def producer(dest: Path) -> bool:
-            return _crop_face_window(thumb_path, dest, box, jpeg_quality=jpeg_quality)
+            return crop_face_window(thumb_path, dest, box, jpeg_quality=jpeg_quality)
     else:
         ratio = execution.plan.ratio
 

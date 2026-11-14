@@ -24,7 +24,14 @@ from ..media import (
 )
 from ..media import write_nfo as write_nfo_file
 from ..media.candidates import rebuild_poster_candidates
-from ..media.crop import CropAspect, CropPlan, acquire_face_crop, format_crop_args
+from ..media.crop import (
+    CropAspect,
+    CropPlan,
+    acquire_face_crop,
+    crop_face_window,
+    format_crop_args,
+    resolve_face_execution,
+)
 from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
 from ..observability.models import OrganizeConflict, OrganizeConflictReason
@@ -612,7 +619,7 @@ def _place_library_images(
 ) -> int:
     """复制封面 / 海报 / 预告片 / extrafanart 到库路径, 返回因目标已有产物而跳过的张数.
 
-    ``poster_local`` 由整理期重选 (_prepare_poster_product) 预先准备, 本函数不做 IO 读取;
+    ``poster_local`` 由整理期重选 (_prepare_poster_product) 预先准备, 本函数不访问 Resource store;
     兜底裁剪策略取 ``metadata_cfg`` (整理链上游显式传递), None 时回全局 ``config.metadata``.
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
@@ -640,7 +647,9 @@ def _place_library_images(
             poster_written = True
         elif thumb_local is not None and config is not None and config.scraping.crop_poster:
             # 现状兜底路径: 重选未产出产物 (回退) 且 poster_urls 无可用文件时, 无候选比较,
-            # 策略矩阵放行的类型直接从 thumb 右侧裁剪; 策略取生效 MetadataConfig (缺省回全局).
+            # 策略矩阵放行的类型直接从 thumb 裁剪; 策略取生效 MetadataConfig (缺省回全局).
+            # face 与刮削入口同语义: 经 resolve_face_execution 检测固化执行策略, 检出按人脸窗
+            # 裁剪, 无人脸或后端不可用降级右裁并按契约告警, 不静默右裁.
             crop_cfg = metadata_cfg if metadata_cfg is not None else config.metadata
             plan = resolve_crop_plan(
                 content_type,
@@ -654,12 +663,18 @@ def _place_library_images(
             )
             if plan.executed is not CropStrategy.NONE:
                 paths.poster.parent.mkdir(parents=True, exist_ok=True)
-                crop_poster(
-                    paths.thumb,
-                    paths.poster,
-                    poster_ratio=plan.ratio,
-                    jpeg_quality=config.scraping.jpeg_quality,
-                )
+                face_box: tuple[int, int, int, int] | None = None
+                if plan.executed is CropStrategy.FACE:
+                    face_box = resolve_face_execution(plan, paths.thumb).box
+                if face_box is not None:
+                    crop_face_window(paths.thumb, paths.poster, face_box, jpeg_quality=config.scraping.jpeg_quality)
+                else:
+                    crop_poster(
+                        paths.thumb,
+                        paths.poster,
+                        poster_ratio=plan.ratio,
+                        jpeg_quality=config.scraping.jpeg_quality,
+                    )
                 poster_written = True
 
     if trailer_local is not None and DownloadableResource.trailer in kinds:

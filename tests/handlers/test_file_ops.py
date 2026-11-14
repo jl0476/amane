@@ -1,13 +1,15 @@
 """测试 file ops 消费已物化 URL (内部派生 / 外部) + trailer 落盘."""
 
+import io
 import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from structlog.testing import capture_logs
 
 from amane.api.models.media import MediaFileResponse, to_media_file_response
@@ -16,10 +18,11 @@ from amane.config import HotSettings, MetadataConfig, ScrapingConfig, WatermarkC
 from amane.crawlers.models import FetchOptions, MediaMetadata, SearchQuery
 from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
 from amane.db.repo_types import WriteMode
-from amane.enums import DownloadableResource
+from amane.enums import CropStrategy, DownloadableResource
 from amane.handlers import OrganizeHandler, OrganizePayload, ScrapeHandler, ScrapePayload
 from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
-from amane.media import ResourceStore, materialize_images
+from amane.media import ResourceStore, crop_poster, materialize_images, optional_cv2
+from amane.media import crop as crop_mod
 from amane.media.resource_store import TMP_MARK, internal_url_hash
 from amane.organize import MoveMode, PlaceOutcome, ResolvedPaths, resolve_paths
 from amane.parsing import ContentType, parse_file_info
@@ -1685,6 +1688,166 @@ async def test_locked_empty_poster_urls_falls_back(
         assert img.size == (376, 538)
     assert _pixel_close(poster, (0, 0, 255))
     assert any(e["event"] == "poster reselect fallback" and e.get("reason") == "no_candidates" for e in logs)
+
+
+# --- 最终审查修复: 兜底裁剪 face 经检测固化执行策略, 与刮削入口同语义 (规格 §4) ---
+
+
+_FACE_FIXTURE = Path(__file__).parent.parent / "media" / "fixtures" / "yunet_face.jpg"
+_FACE_THUMB_URL = "https://s/face.jpg"
+_FACE_POSTER_URL = "https://s/face-poster.jpg"
+_DEGRADE_EVENT = "face crop degraded to right"
+
+
+def _jpeg_bytes(size: tuple[int, int], color: str) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+class _ImageBytesClient:
+    """按 URL 写出预设图片字节: 兜底裁剪用例借此投喂真实人脸 fixture."""
+
+    def __init__(self, images: dict[str, bytes]) -> None:
+        self._images = images
+
+    async def download(self, url: str, dest: Path, **kwargs: object) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(self._images[url])
+        return True
+
+    async def get_filesize(self, url: str, **kwargs: object) -> int | None:
+        return None
+
+    async def resolve_final_url(self, url: str, **kwargs: object) -> str:
+        return url
+
+
+def _oracle_face_window(thumb: Path, ratio: float) -> tuple[int, int, int, int]:
+    """测试内独立检测 (不经被测实现): YuNet 检出最大人脸, 按契约口径推导期望裁剪窗."""
+    cv2 = optional_cv2.module()
+    assert cv2 is not None
+    with Image.open(thumb) as img:
+        rgb = img.convert("RGB")
+        width, height = rgb.size
+        bgr = np.asarray(rgb)[:, :, ::-1]
+    detector = cv2.FaceDetectorYN.create(str(crop_mod._model_path()), "", (width, height), 0.6)
+    detector.setInputSize((width, height))
+    _, faces = detector.detect(bgr)
+    assert faces is not None
+    box = max(
+        ((int(f[0]), int(f[1]), int(f[2]), int(f[3])) for f in faces),
+        key=lambda b: (b[2] * b[3], -b[0]),
+    )
+    target_w = int(height * ratio)
+    left = max(0, min(round(box[0] + box[2] / 2 - target_w / 2), width - target_w))
+    return (left, 0, left + target_w, height)
+
+
+def _no_face_thumb(path: Path) -> None:
+    """无人脸样例: 平滑渐变不含可检人脸 (与 tests/media/test_crop.py 的无人脸样本同口径)."""
+    gradient = Image.new("RGB", (800, 538))
+    draw = ImageDraw.Draw(gradient)
+    for x in range(800):
+        draw.line((x, 0, x, 538), fill=(x % 256, (x * 2) % 256, 128))
+    gradient.save(path, format="JPEG", quality=95)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    ("thumb_case", "cv2_available"),
+    [("face", True), ("plain", True), ("face", False)],
+    ids=["face_window", "no_face_right", "backend_unavailable_right"],
+)
+async def test_fallback_crop_respects_face_strategy(
+    repo: Repository,
+    resource_store: ResourceStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    thumb_case: str,
+    cv2_available: bool,
+) -> None:
+    """重选回退 + face 配置的兜底裁剪与刮削入口同语义: 检出按人脸窗对齐, 产物与刮削物化字节一致;
+    无人脸是预期回退右裁无告警, 后端不可用降级右裁并告警 — 不再静默右裁."""
+    if not cv2_available:
+        monkeypatch.setattr(optional_cv2, "cv2", None)
+    if thumb_case == "plain":
+        plain = tmp_path / "no_face_thumb.jpg"
+        _no_face_thumb(plain)
+        thumb_bytes = plain.read_bytes()
+    else:
+        thumb_bytes = _FACE_FIXTURE.read_bytes()
+    client = cast(
+        "WebClient",
+        _ImageBytesClient({_FACE_THUMB_URL: thumb_bytes, _FACE_POSTER_URL: _jpeg_bytes((300, 400), "purple")}),
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=[_FACE_THUMB_URL],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    # 锁定空列表是病态数据 (R-empty-locked): 视为无可用用户产物, 重选回退, poster 落入从已落盘
+    # thumb 裁剪的兜底路径.
+    patched = await repo.update_metadata(meta.id, mode=WriteMode.MANUAL, poster_urls=[])
+    assert patched is not None
+    assert "poster_urls" in patched.locked_fields
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "face"}},
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    with capture_logs() as logs:
+        result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    poster = root / "MIDV-123" / "poster.jpg"
+    assert poster.exists()
+    reference = tmp_path / "reference_thumb.jpg"
+    reference.write_bytes(thumb_bytes)
+    degrade_warnings = [e for e in logs if e["event"] == _DEGRADE_EVENT]
+    if thumb_case == "face" and cv2_available:
+        window = _oracle_face_window(reference, 0.7)
+        with Image.open(reference) as img:
+            width, height = img.size
+        # fixture 人脸中心偏左: 人脸窗与右裁窗不同, 字节断言才能区分两种执行.
+        assert window != (width - int(height * 0.7), 0, width, height)
+        expected = io.BytesIO()
+        Image.open(reference).convert("RGB").crop(window).save(expected, format="JPEG", quality=95)
+        assert poster.read_bytes() == expected.getvalue()
+        # 与刮削入口同配置同语义: 刮削物化的 face 派生产物与整理兜底产物字节一致.
+        scrape_cfg = HotSettings(metadata=MetadataConfig(crop_type={ContentType.CENSORED: CropStrategy.FACE}))
+        materialized = await materialize_images(
+            [_FACE_POSTER_URL],
+            [_FACE_THUMB_URL],
+            [],
+            resource_store,
+            client,
+            scrape_cfg,
+            tmp_path / "scrape",
+            content_type=ContentType.CENSORED,
+            metadata_cfg=scrape_cfg.metadata,
+        )
+        product_hash = internal_url_hash(materialized.poster_urls[0])
+        assert product_hash is not None
+        found = await resource_store.get_by_url_hash(product_hash)
+        assert found is not None
+        assert poster.read_bytes() == found[1].read_bytes()
+        assert degrade_warnings == []
+    else:
+        # 无人脸 (预期回退) 与后端不可用 (降级) 都执行右裁; 后者按契约告警, 前者无告警.
+        reference_right = tmp_path / "reference_right.jpg"
+        assert crop_poster(reference, reference_right, poster_ratio=0.7, jpeg_quality=95) is True
+        assert poster.read_bytes() == reference_right.read_bytes()
+        assert len(degrade_warnings) == (0 if cv2_available else 1)
 
 
 @pytest.mark.asyncio(loop_scope="function")
