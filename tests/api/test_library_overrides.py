@@ -11,12 +11,13 @@ import pytest
 from httpx2 import ASGITransport, AsyncClient
 
 from amane.api.routes import API_PREFIX
-from amane.config import HotSettings, NamingConfig, NfoConfig, OrganizeCommonConfig
+from amane.config import HotSettings, MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig
 from tests.api.conftest import make_app
 
 _GLOBAL_NAMING = NamingConfig().model_dump(mode="json")
 _GLOBAL_COMMON = OrganizeCommonConfig().model_dump(mode="json")
 _GLOBAL_NFO = NfoConfig().model_dump(mode="json")
+_GLOBAL_METADATA = MetadataConfig().model_dump(mode="json")
 
 
 async def _create_library(client: AsyncClient, safe_path: Path, name: str, **extra: Any) -> int:
@@ -53,7 +54,12 @@ async def test_overrides_crud_roundtrip(client: AsyncClient, safe_path: Path) ->
     assert (await client.get(f"libraries/{library_id}/overrides")).json() == {"overrides": {}}
 
     effective = await client.get(f"libraries/{library_id}/effective-config")
-    assert effective.json() == {"common": _GLOBAL_COMMON, "naming": _GLOBAL_NAMING, "nfo": _GLOBAL_NFO}
+    assert effective.json() == {
+        "common": _GLOBAL_COMMON,
+        "naming": _GLOBAL_NAMING,
+        "nfo": _GLOBAL_NFO,
+        "metadata": _GLOBAL_METADATA,
+    }
 
 
 @pytest.mark.asyncio
@@ -72,9 +78,9 @@ async def test_put_empty_payload_replaces_whole_section(client: AsyncClient, saf
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("section", ["download", "watermark", "metadata", "provider", "parser"])
+@pytest.mark.parametrize("section", ["download", "watermark", "provider", "parser"])
 async def test_write_rejects_reserved_sections(client: AsyncClient, safe_path: Path, section: str) -> None:
-    """白名单外的预留 section 一律 422 (PUT 与 DELETE 同判), 不落库."""
+    """白名单外的预留 section 一律 422 (PUT 与 DELETE 同判), 不落库; metadata 已激活不再在此列."""
     library_id = await _create_library(client, safe_path, "reserved")
     base = f"libraries/{library_id}/overrides"
 
@@ -82,6 +88,46 @@ async def test_write_rejects_reserved_sections(client: AsyncClient, safe_path: P
     assert resp.status_code == 422
     assert (await client.delete(f"{base}/{section}")).status_code == 422
     assert (await client.get(f"libraries/{library_id}/overrides")).json() == {"overrides": {}}
+
+
+@pytest.mark.asyncio
+async def test_reserved_list_no_longer_contains_metadata(client: AsyncClient, safe_path: Path) -> None:
+    """metadata 节已激活: PUT/DELETE 不再 422; download / watermark / provider 仍预留."""
+    library_id = await _create_library(client, safe_path, "reserved-metadata")
+    base = f"libraries/{library_id}/overrides"
+
+    assert (await client.put(f"{base}/metadata", json={"crop_aspect": "emby"})).status_code == 200
+    assert (await client.delete(f"{base}/metadata")).status_code == 204
+    for section in ("download", "watermark", "provider"):
+        assert (await client.put(f"{base}/{section}", json={"overwrite_video": True})).status_code == 422
+        assert (await client.delete(f"{base}/{section}")).status_code == 422
+    assert (await client.get(f"libraries/{library_id}/overrides")).json() == {"overrides": {}}
+
+
+@pytest.mark.asyncio
+async def test_metadata_section_put_effective_delete_roundtrip(client: AsyncClient, safe_path: Path) -> None:
+    """PUT metadata (稀疏 crop_type) → effective-config 含 metadata 节 (与全局默认矩阵合成) → DELETE 回到继承."""
+    library_id = await _create_library(client, safe_path, "metadata")
+    base = f"libraries/{library_id}/overrides"
+    payload = {"crop_type": {"fc2": "right"}, "crop_aspect": "emby", "extra_fanarts_behind_scenes": True}
+
+    put = await client.put(f"{base}/metadata", json=payload)
+    assert put.status_code == 200
+    assert put.json() == {"section": "metadata", "payload": payload}
+
+    effective = await client.get(f"libraries/{library_id}/effective-config")
+    assert effective.status_code == 200
+    metadata = effective.json()["metadata"]
+    # 稀疏覆盖: 覆盖键与全局默认矩阵逐键合并, 未覆盖键继承
+    assert metadata["crop_type"] == {"censored": "right", "uncensored": "right", "fc2": "right"}
+    assert metadata["crop_aspect"] == "emby"
+    assert metadata["thumb_download_strategy"] == "priority"
+    assert metadata["crop_low_res_height"] is None
+    assert metadata["extra_fanarts_behind_scenes"] is True
+
+    assert (await client.delete(f"{base}/metadata")).status_code == 204
+    effective = await client.get(f"libraries/{library_id}/effective-config")
+    assert effective.json()["metadata"] == _GLOBAL_METADATA
 
 
 @pytest.mark.asyncio

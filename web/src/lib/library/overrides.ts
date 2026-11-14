@@ -10,7 +10,12 @@ import { exhaustiveTuple } from "@/lib/exhaustive";
 
 export type OverrideSection = keyof EffectiveConfigResponse & string;
 
-export const OVERRIDE_SECTIONS = exhaustiveTuple<OverrideSection>()("common", "naming", "nfo");
+export const OVERRIDE_SECTIONS = exhaustiveTuple<OverrideSection>()(
+  "common",
+  "naming",
+  "nfo",
+  "metadata",
+);
 
 /** Deep equality for config values (primitives, arrays, plain objects). */
 export function deepEqual(a: unknown, b: unknown): boolean {

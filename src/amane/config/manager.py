@@ -28,6 +28,7 @@ from ..enums import (
     ApiType,
     BrowserBackendName,
     BrowserMode,
+    CropStrategy,
     DownloadableResource,
     Language,
     LinkMode,
@@ -903,6 +904,32 @@ class NfoConfig(BaseModel):
     additional_tags: list[str] = []
 
 
+class MetadataConfig(BaseModel):
+    """海报裁剪与缩略图下载策略 (规格 §3.1). 消费方: media.crop 策略解析与刮削图片管线."""
+
+    model_config = {"extra": "forbid"}
+
+    crop_type: dict[ContentType, CropStrategy] = Field(
+        default_factory=lambda: {
+            ContentType.CENSORED: CropStrategy.RIGHT,
+            ContentType.UNCENSORED: CropStrategy.RIGHT,
+        }
+    )
+    """按内容类型的海报裁剪策略; 稀疏覆盖, 缺键回退 media.crop 的缺键矩阵 (censored/uncensored=right, 其余=none)."""
+
+    crop_aspect: Literal["legacy", "emby", "full"] = "legacy"
+    """海报产物宽高比: legacy 沿用 ``scraping.poster_ratio`` (含用户自定义值), emby=2/3, full=2.12/3."""
+
+    thumb_download_strategy: Literal["priority", "quality"] = "priority"
+    """缩略图候选获取: priority 沿用现状顺序优先, quality 全候选独占临时下载后择优."""
+
+    crop_low_res_height: int | None = None
+    """候选质量底线高度阈值; None 为默认态判定 (skip_ratio 短路), 启用时取代 skip_ratio."""
+
+    extra_fanarts_behind_scenes: bool = False
+    """整理/物化期把幕后图并入 extrafanart 候选."""
+
+
 class HotSettings(BaseModel):
     """运行时可更新, 持久化到 TOML. extra=forbid, 未知字段须校验失败."""
 
@@ -954,6 +981,7 @@ class HotSettings(BaseModel):
     common: OrganizeCommonConfig = OrganizeCommonConfig()
     naming: NamingConfig = NamingConfig()
     nfo: NfoConfig = NfoConfig()
+    metadata: MetadataConfig = MetadataConfig()
     media_server: MediaServerConfig = MediaServerConfig()
     actor_scraping: ActorScrapingConfig = ActorScrapingConfig()
     agent: AgentConfig = AgentConfig()

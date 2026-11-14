@@ -62,11 +62,11 @@ Worker 替换不取消运行中任务: `_rebuild()` 构建新 worker 后旧 work
 
 ## 库级配置覆盖 (DB, 与 Hot 并存)
 
-覆盖层使单个库脱离全局值: `config_overrides` 表存稀疏 payload, `Library.template_overrides` 名单记录参与合成的库行模板字段, 经 `src/amane/config/overrides.py::ConfigResolver` 四层合成 (低到高): 全局 HotSettings → 库行 (仅名单内字段, `None` 是显式值) → 覆盖表 → 任务显式字段. dict 值逐键深合并, 其余 (含 list) 整体替换; 名单外字段视为继承. `common` 不含库行同义字段 (`move_mode` 等恒定生效), `nfo` 无库行对应.
+覆盖层使单个库脱离全局值: `config_overrides` 表存稀疏 payload, `Library.template_overrides` 名单记录参与合成的库行模板字段, 经 `src/amane/config/overrides.py::ConfigResolver` 四层合成 (低到高): 全局 HotSettings → 库行 (仅名单内字段, `None` 是显式值) → 覆盖表 → 任务显式字段. dict 值逐键深合并, 其余 (含 list) 整体替换; 名单外字段视为继承. `common` 不含库行同义字段 (`move_mode` 等恒定生效), `nfo` / `metadata` 无库行对应.
 
 名单只增不减: 历史库由数据迁移把全部 15 个模板字段写入名单 (迁移时刻的库行值就是生效输入, 全量保留才能保持落盘); 建库 / 改库请求中显式给出的模板字段由 `src/amane/api/routes/libraries.py` 按 `model_fields_set` 追加; 新建库名单为空, 全部跟随全局.
 
-payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空模板字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo, scope_type 只收 library, 预留节 (download / watermark / metadata / provider) 与 watch_dir 的写操作 (PUT / DELETE) 一律 422; parser 不是 section, 识别词存 `parse_rules` 表. 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
+payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo / metadata, scope_type 只收 library, 预留节 (download / watermark / provider) 与 watch_dir 的写操作 (PUT / DELETE) 一律 422; parser 不是 section, 识别词存 `parse_rules` 表. `metadata.crop_type` 是稀疏矩阵, 缺键回退策略定义在 `src/amane/media/crop.py::resolve_crop_plan` (config 默认与该回退须一致, 不然跨层漂移). 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
 
 ## 配置项增补规范
 

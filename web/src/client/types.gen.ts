@@ -1112,6 +1112,13 @@ export type CropPosterRequest = {
 };
 
 /**
+ * CropStrategy
+ *
+ * 海报裁剪策略.
+ */
+export type CropStrategy = 'none' | 'right' | 'face';
+
+/**
  * DeleteResult
  */
 export type DeleteResult = {
@@ -1225,12 +1232,13 @@ export type DownloadableResource = 'thumb' | 'poster' | 'extrafanart' | 'trailer
 /**
  * EffectiveConfigResponse
  *
- * GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层).
+ * GET /api/libraries/{id}/effective-config: 四节四层合成的生效配置 (无任务层).
  */
 export type EffectiveConfigResponse = {
     common: OrganizeCommonConfig;
     naming: NamingConfig;
     nfo: NfoConfig;
+    metadata: MetadataConfig;
 };
 
 /**
@@ -1857,6 +1865,7 @@ export type HotSettings = {
     common?: OrganizeCommonConfig;
     naming?: NamingConfig;
     nfo?: NfoConfig;
+    metadata?: MetadataConfig;
     media_server?: MediaServerConfig;
     actor_scraping?: ActorScrapingConfig;
     agent?: AgentConfig;
@@ -2791,6 +2800,36 @@ export type MetadataBatchScrapeResponse = {
      * 提交的任务 id 列表
      */
     task_ids: Array<number>;
+};
+
+/**
+ * MetadataConfig
+ *
+ * 海报裁剪与缩略图下载策略 (规格 §3.1). 消费方: media.crop 策略解析与刮削图片管线.
+ */
+export type MetadataConfig = {
+    /**
+     * Crop Type
+     */
+    crop_type?: {
+        [key in ContentType]?: CropStrategy;
+    };
+    /**
+     * Crop Aspect
+     */
+    crop_aspect?: 'legacy' | 'emby' | 'full';
+    /**
+     * Thumb Download Strategy
+     */
+    thumb_download_strategy?: 'priority' | 'quality';
+    /**
+     * Crop Low Res Height
+     */
+    crop_low_res_height?: number | null;
+    /**
+     * Extra Fanarts Behind Scenes
+     */
+    extra_fanarts_behind_scenes?: boolean;
 };
 
 /**

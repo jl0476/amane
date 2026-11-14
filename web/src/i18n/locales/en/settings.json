@@ -15,7 +15,8 @@
     "semantic": "Semantic Search",
     "common": "Organize",
     "naming": "Naming",
-    "nfo": "NFO"
+    "nfo": "NFO",
+    "metadata": "Images"
   },
   "config": {
     "loadError": "Failed to load configuration"
@@ -1100,6 +1101,53 @@
       },
       "additional_tags": {
         "label": "Additional Tags"
+      }
+    },
+    "metadata": {
+      "crop_type": {
+        "label": "Crop strategy",
+        "description": "Poster crop strategy per content type; unlisted types keep the default (censored/uncensored crop right, others none)",
+        "options": {
+          "censored": "Censored",
+          "uncensored": "Uncensored",
+          "chinese": "Chinese",
+          "western": "Western",
+          "fc2": "FC2",
+          "amateur": "Amateur",
+          "hentai": "Hentai"
+        },
+        "$": {
+          "options": {
+            "none": "No crop",
+            "right": "Crop right",
+            "face": "Face align"
+          }
+        }
+      },
+      "crop_aspect": {
+        "label": "Poster ratio",
+        "description": "legacy keeps the poster ratio from scraping settings; emby is 2:3; full is 2.12:3",
+        "options": {
+          "legacy": "Use scraping ratio",
+          "emby": "Emby (2:3)",
+          "full": "Full (2.12:3)"
+        }
+      },
+      "thumb_download_strategy": {
+        "label": "Thumb download strategy",
+        "description": "priority takes the first adequate candidate in order; quality downloads all candidates and picks the best",
+        "options": {
+          "priority": "Speed first",
+          "quality": "Quality first"
+        }
+      },
+      "crop_low_res_height": {
+        "label": "Low-res threshold",
+        "description": "Candidates at or above this height are kept as-is, lower ones are cropped instead; leave empty to keep the current behavior"
+      },
+      "extra_fanarts_behind_scenes": {
+        "label": "Behind scenes into extrafanart",
+        "description": "Merge behind-the-scenes images into extrafanart candidates during organize and scraping materialization"
       }
     }
   }

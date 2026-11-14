@@ -12,7 +12,7 @@ import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from amane.config import HotSettings, NamingConfig
+from amane.config import HotSettings, MetadataConfig, NamingConfig
 from amane.config.overrides import (
     SECTION_MODELS,
     ConfigResolver,
@@ -22,7 +22,10 @@ from amane.config.overrides import (
 from amane.db.engine import get_session
 from amane.db.models import CONFIG_OVERRIDE_SCOPE_LIBRARY, ConfigOverride, Library
 from amane.db.repository import Repository
+from amane.enums import CropStrategy
 from amane.library import DEFAULT_SUBTITLE_EXTENSIONS
+from amane.media.crop import resolve_crop_plan
+from amane.parsing import ContentType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -90,8 +93,8 @@ async def resolver_env(tmp_path: Path) -> AsyncIterator[tuple[Repository, AsyncE
 
 
 def test_section_whitelist_matches_implemented_sections():
-    """白名单恰好是三个已实现 section, 且模型都拒绝未知键."""
-    assert set(SECTION_MODELS) == {"common", "naming", "nfo"}
+    """白名单恰好是四个已实现 section, 且模型都拒绝未知键."""
+    assert set(SECTION_MODELS) == {"common", "naming", "nfo", "metadata"}
     for model in SECTION_MODELS.values():
         assert model.model_config.get("extra") == "forbid"
 
@@ -289,7 +292,7 @@ async def test_four_layer_synthesis(
     assert _projection(resolved) == expected
 
 
-@pytest.mark.parametrize("section", ["download", "watermark", "metadata", "provider", "parser"])
+@pytest.mark.parametrize("section", ["download", "watermark", "provider", "parser"])
 def test_validate_rejects_reserved_sections(section: str) -> None:
     """白名单外的预留 section 一律拒绝; parser 不是 section."""
     with pytest.raises(ValueError, match="未实现"):
@@ -310,3 +313,72 @@ def test_validate_rejects_invalid_payloads(payload: dict[str, Any], match: str |
     with pytest.raises(ValidationError, match=match):
         validate_override_payload("naming", payload)
     validate_override_payload("naming", {"thumb_template": {}})
+
+
+# --- 任务 4: metadata 节激活 (规格 §3.1) ---
+
+
+def test_metadata_config_defaults() -> None:
+    """MetadataConfig 默认值 (规格 §3.1 表): 稀疏默认矩阵 / legacy / priority / None / False."""
+    config = MetadataConfig()
+    assert config.crop_type == {
+        ContentType.CENSORED: CropStrategy.RIGHT,
+        ContentType.UNCENSORED: CropStrategy.RIGHT,
+    }
+    assert all(isinstance(strategy, CropStrategy) for strategy in config.crop_type.values())
+    assert config.crop_aspect == "legacy"
+    assert config.thumb_download_strategy == "priority"
+    assert config.crop_low_res_height is None
+    assert config.extra_fanarts_behind_scenes is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"crop_type": {}}, id="empty_dict_sentinel_not_for_crop_type"),
+        pytest.param({"crop_type": {"mosaic": "right"}}, id="unknown_content_type_key"),
+        pytest.param({"crop_type": {"censored": "bogus"}}, id="unknown_strategy_value"),
+        pytest.param({"crop_type": None}, id="null_rejected"),
+        pytest.param({"crop_aspect": "cinema"}, id="unknown_aspect"),
+        pytest.param({"thumb_download_strategy": "fastest"}, id="unknown_download_strategy"),
+        pytest.param({"crop_low_res_height": "high"}, id="non_int_threshold"),
+        pytest.param({"no_such_field": True}, id="unknown_key"),
+    ],
+)
+def test_metadata_payload_rejects_invalid(payload: dict[str, Any]) -> None:
+    """crop_type 值 {} / 未知 ContentType 键 / 非法策略值 / null / 越界字面量 / 未知键全部拒绝."""
+    with pytest.raises(ValidationError):
+        validate_override_payload("metadata", payload)
+
+
+def test_metadata_payload_accepts_sparse_crop_type() -> None:
+    """稀疏 crop_type 键集非冻结 (任意 ContentType 键合法); 可空阈值字段的 {} 哨兵通过."""
+    validate_override_payload("metadata", {"crop_type": {"fc2": "face"}})
+    validate_override_payload("metadata", {"crop_low_res_height": {}})
+
+
+@pytest.mark.parametrize("content_type", list(ContentType))
+def test_metadata_default_matrix_matches_crop_fallback(content_type: ContentType) -> None:
+    """R-default-matrix 守卫: config 默认矩阵喂入 resolve_crop_plan 的有效策略, 与其缺键回退矩阵一致 (防跨层漂移)."""
+    config = MetadataConfig()
+    with_config = resolve_crop_plan(
+        content_type,
+        strategy_map=config.crop_type,
+        aspect=config.crop_aspect,
+        low_res_height=config.crop_low_res_height,
+        poster_ratio=0.7,
+        skip_ratio=0.9,
+        thumb_size=None,
+        candidate_size=None,
+    )
+    fallback = resolve_crop_plan(
+        content_type,
+        strategy_map={},
+        aspect=config.crop_aspect,
+        low_res_height=config.crop_low_res_height,
+        poster_ratio=0.7,
+        skip_ratio=0.9,
+        thumb_size=None,
+        candidate_size=None,
+    )
+    assert with_config.requested == fallback.requested
