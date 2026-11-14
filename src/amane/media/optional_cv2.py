@@ -6,7 +6,7 @@ cv2: types.ModuleType | None
 
 try:
     import cv2  # ty: ignore[unresolved-import]
-except ModuleNotFoundError:
+except ImportError:
     cv2 = None
 
 
