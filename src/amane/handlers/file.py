@@ -11,10 +11,17 @@ from ..config.overrides import ConfigResolver
 from ..db.models import Library, MediaFile
 from ..db.parse_rules import ParseRuleProvider
 from ..db.repo_types import MediaFileUpdates
-from ..enums import ActorGender, DownloadableResource, LinkMode, OrganizeJournalPhase
+from ..enums import ActorGender, CropStrategy, DownloadableResource, LinkMode, OrganizeJournalPhase
 from ..library import MEDIA_EXTENSIONS, LibraryFileKind, LibraryScan, ancestor_dirs, prune_empty_dirs
 from ..library.rules import is_in_trash
-from ..media import NfoOptions, ResourceStore, allows_poster_crop, apply_cover_watermarks_from_info, crop_poster
+from ..media import (
+    NfoOptions,
+    ResourceStore,
+    apply_cover_watermarks_from_info,
+    crop_poster,
+    probe_size,
+    resolve_crop_plan,
+)
 from ..media import write_nfo as write_nfo_file
 from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
@@ -516,20 +523,28 @@ def _place_library_images(
             paths.poster.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(poster_local, paths.poster)
             poster_written = True
-        elif (
-            thumb_local is not None
-            and config is not None
-            and config.scraping.crop_poster
-            and allows_poster_crop(content_type)
-        ):
-            paths.poster.parent.mkdir(parents=True, exist_ok=True)
-            crop_poster(
-                paths.thumb,
-                paths.poster,
+        elif thumb_local is not None and config is not None and config.scraping.crop_poster:
+            # 现状兜底路径: 无候选比较, 策略矩阵放行的类型直接从 thumb 右侧裁剪 (整理期重选在后续任务接入).
+            metadata_cfg = config.metadata
+            plan = resolve_crop_plan(
+                content_type,
+                strategy_map=metadata_cfg.crop_type,
+                aspect=metadata_cfg.crop_aspect,
+                low_res_height=metadata_cfg.crop_low_res_height,
                 poster_ratio=config.scraping.poster_ratio,
-                jpeg_quality=config.scraping.jpeg_quality,
+                skip_ratio=config.scraping.poster_crop_skip_ratio,
+                thumb_size=probe_size(paths.thumb),
+                candidate_size=None,
             )
-            poster_written = True
+            if plan.executed is not CropStrategy.NONE:
+                paths.poster.parent.mkdir(parents=True, exist_ok=True)
+                crop_poster(
+                    paths.thumb,
+                    paths.poster,
+                    poster_ratio=plan.ratio,
+                    jpeg_quality=config.scraping.jpeg_quality,
+                )
+                poster_written = True
 
     if trailer_local is not None and DownloadableResource.trailer in kinds:
         if not overwrite_image and paths.trailer.exists():

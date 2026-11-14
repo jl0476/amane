@@ -2,16 +2,20 @@
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, cast
+import subprocess
+import sys
+from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
 import sqlalchemy.exc
 from PIL import Image
 
-from amane.config import HotSettings, ScrapingConfig, SrConfig
+from amane.config import HotSettings, MetadataConfig, ScrapingConfig, SrConfig
 from amane.enums import DownloadableResource
-from amane.media import CropRotation, ResourceStore, manual_crop_image, materialize_images
+from amane.handlers.file import _place_library_images
+from amane.media import CropRotation, ResourceStore, crop_poster, manual_crop_image, materialize_images
 from amane.media import pipeline as pipeline_mod
+from amane.organize import ResolvedPaths
 from amane.parsing import ContentType
 from tests.helpers import LOAD_TOLERANT_TIMEOUT, await_for
 
@@ -80,17 +84,18 @@ async def test_poster_cropped_when_candidate_small(resource_store: ResourceStore
         cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.thumb_urls == ["https://s/t.jpg"]  # 外部列表原样
     assert len(out.poster_urls) == 1
     assert out.poster_urls[0].startswith(pipeline_mod.RESOURCE_URL_PREFIX)  # 内部派生
-    # 派生 args 为配置比例, 非候选 300/420
+    # 派生 args 编码 executed:aspect:ratio, 比例取配置 0.7, 非候选 300/420
     url_hash = out.poster_urls[0].rsplit("/", 1)[-1]
     got = await resource_store.get_by_url_hash(url_hash)
     assert got is not None
     crop_res, crop_path = got
     assert crop_res.meta is not None
-    assert crop_res.meta.get("args") == "0.7000"
+    assert crop_res.meta.get("args") == "right:legacy:0.7000"
     poster = Image.open(crop_path)
     assert poster.size == (376, 538)  # int(538 * 0.7), 非 int(538 * 300/420)=384
 
@@ -104,15 +109,17 @@ async def test_poster_external_when_candidate_tall(resource_store: ResourceStore
             "https://s/p.jpg": (379, 538),  # b/h=1.0 ≥ 0.9 → 不裁
         }
     )
+    cfg = HotSettings()
     out = await materialize_images(
         ["https://s/p.jpg"],
         ["https://s/t.jpg"],
         [],
         resource_store,
         cast("WebClient", client),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/p.jpg"]  # 外部列表原样
 
@@ -121,15 +128,17 @@ async def test_poster_external_when_candidate_tall(resource_store: ResourceStore
 async def test_no_poster_source_crops_from_thumb(resource_store: ResourceStore, tmp_path: Path):
     """无 poster 候选 → 从 thumb 裁剪 (内部 URL)."""
     client = FakeClient({"https://s/t.jpg": (800, 538)})
+    cfg = HotSettings()
     out = await materialize_images(
         [],
         ["https://s/t.jpg"],
         [],
         resource_store,
         cast("WebClient", client),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert len(out.poster_urls) == 1
     assert out.poster_urls[0].startswith(pipeline_mod.RESOURCE_URL_PREFIX)
@@ -152,7 +161,7 @@ async def test_poster_crop_gated_by_content_type(
     expect_crop: bool,
     desc: str,
 ):
-    """只对允许的类型裁切; 不允许时也不为裁切临时下载 thumb."""
+    """只对策略矩阵放行的类型裁切; 不允许时也不为裁切临时下载 thumb."""
     cfg = HotSettings(scraping=ScrapingConfig(download_resources=[DownloadableResource.poster]))
     client = FakeClient({"https://s/t.jpg": (800, 538)})
     out = await materialize_images(
@@ -164,6 +173,7 @@ async def test_poster_crop_gated_by_content_type(
         cfg,
         tmp_path,
         content_type=content_type,
+        metadata_cfg=cfg.metadata,
     )
     if expect_crop:
         assert len(out.poster_urls) == 1, desc
@@ -188,6 +198,7 @@ async def test_trailer_downloaded_external_url(resource_store: ResourceStore, tm
         settings,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=settings.metadata,
     )
     assert out.trailer_urls == ["https://s/trailer.mp4"]
     assert "https://s/trailer.mp4" in client.downloaded  # 已下载到本地
@@ -195,15 +206,17 @@ async def test_trailer_downloaded_external_url(resource_store: ResourceStore, tm
 
 @pytest.mark.asyncio
 async def test_empty_sources(resource_store: ResourceStore, tmp_path: Path):
+    cfg = HotSettings()
     out = await materialize_images(
         [],
         [],
         [],
         resource_store,
         cast("WebClient", FakeClient({})),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == []
     assert out.thumb_urls == []
@@ -233,6 +246,7 @@ async def test_eager_sr_overwrites(resource_store: ResourceStore, tmp_path: Path
         cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
 
     thumb_res = await resource_store.get_by_url("https://s/t.jpg")
@@ -277,7 +291,6 @@ async def test_concurrent_materialize_keeps_sr_result(
     任务走完下载 / 落库 / 超分, 第二个任务若仍去下载, 就把超分结果覆盖回原图, 其落库被 url UNIQUE
     拒绝 — 磁盘退回原图而记录仍记 sr 标记.
     """
-    from amane.config import ScrapingConfig
     from amane.sr.run import SrResult
 
     calls = 0
@@ -309,6 +322,7 @@ async def test_concurrent_materialize_keeps_sr_result(
                 cfg,
                 tmp_path,
                 content_type=ContentType.CENSORED,
+                metadata_cfg=cfg.metadata,
             )
 
     async def first_download_started() -> bool:
@@ -343,8 +357,6 @@ async def test_concurrent_materialize_keeps_sr_result(
 @pytest.mark.asyncio
 async def test_download_resources_gates_acquire(resource_store: ResourceStore, tmp_path: Path):
     """未选中的类型不写入 Resource."""
-    from amane.config import DownloadableResource, ScrapingConfig
-
     client = FakeClient(
         {
             "https://s/t.jpg": (800, 538),
@@ -362,6 +374,7 @@ async def test_download_resources_gates_acquire(resource_store: ResourceStore, t
         cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
         extrafanart_urls={"javdb": ["https://s/e1.jpg"]},
     )
     assert await resource_store.get_by_url("https://s/t.jpg") is not None
@@ -390,15 +403,17 @@ def test_success_first_partition():
 async def test_poster_reordered_when_first_url_dead(resource_store: ResourceStore, tmp_path: Path):
     """poster 首位 URL 下载失败 → 成功者前置 (无 thumb 不触发裁剪)."""
     client = FakeClient(sizes={"https://s/live.jpg": (400, 600)}, fail={"https://s/dead.jpg"})
+    cfg = HotSettings()
     out = await materialize_images(
         ["https://s/dead.jpg", "https://s/live.jpg"],
         [],
         [],
         resource_store,
         cast("WebClient", client),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/live.jpg", "https://s/dead.jpg"]
     assert "https://s/dead.jpg" in client.downloaded  # 死 URL 仍尝试下载
@@ -419,6 +434,7 @@ async def test_thumb_trailer_reordered_when_first_dead(resource_store: ResourceS
         settings,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=settings.metadata,
     )
     assert out.thumb_urls == ["https://s/live.jpg", "https://s/dead.jpg"]
     assert out.trailer_urls == ["https://s/trailer.mp4", "https://s/dead.mp4"]
@@ -551,15 +567,17 @@ async def test_manual_crop_image_invalid_inputs(
 async def test_all_urls_fail_keeps_order(resource_store: ResourceStore, tmp_path: Path):
     """全部 URL 下载失败 → 列表保持原序 (死 URL 留尾供来源恢复后重试)."""
     client = FakeClient(sizes={}, fail={"https://s/a.jpg", "https://s/b.jpg"})
+    cfg = HotSettings()
     out = await materialize_images(
         ["https://s/a.jpg", "https://s/b.jpg"],
         [],
         [],
         resource_store,
         cast("WebClient", client),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/a.jpg", "https://s/b.jpg"]
 
@@ -567,8 +585,6 @@ async def test_all_urls_fail_keeps_order(resource_store: ResourceStore, tmp_path
 @pytest.mark.asyncio
 async def test_unselected_kind_not_reordered(resource_store: ResourceStore, tmp_path: Path):
     """未选中下载的类型不重排 (无逐 URL 成败信息)."""
-    from amane.config import DownloadableResource, ScrapingConfig
-
     cfg = HotSettings(scraping=ScrapingConfig(download_resources=[DownloadableResource.thumb], field_priority={}))
     client = FakeClient(sizes={"https://s/t.jpg": (800, 538)})
     out = await materialize_images(
@@ -580,6 +596,7 @@ async def test_unselected_kind_not_reordered(resource_store: ResourceStore, tmp_
         cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/p1.jpg", "https://s/p2.jpg"]
 
@@ -591,16 +608,198 @@ async def test_cache_hit_counts_as_success(resource_store: ResourceStore, tmp_pa
     assert await resource_store.acquire("https://s/live.jpg", cast("WebClient", seed)) is not None
 
     client = FakeClient(sizes={}, fail={"https://s/dead.jpg"})
+    cfg = HotSettings()
     out = await materialize_images(
         ["https://s/dead.jpg", "https://s/live.jpg"],
         [],
         [],
         resource_store,
         cast("WebClient", client),
-        HotSettings(),
+        cfg,
         tmp_path,
         content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/live.jpg", "https://s/dead.jpg"]
     assert "https://s/live.jpg" not in client.downloaded  # 缓存命中, 无网络请求
     assert "https://s/dead.jpg" in client.downloaded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("aspect", "expected_args", "expected_size"),
+    [
+        ("legacy", "right:legacy:0.7000", (376, 538)),
+        ("emby", "right:emby:0.6667", (358, 538)),
+        ("full", "right:full:0.7067", (380, 538)),
+    ],
+)
+async def test_derived_args_encode_executed_strategy(
+    resource_store: ResourceStore,
+    tmp_path: Path,
+    aspect: Literal["legacy", "emby", "full"],
+    expected_args: str,
+    expected_size: tuple[int, int],
+):
+    """派生键按实际执行策略编码: args = f"{executed}:{aspect}:{ratio:.4f}", 比例由 crop_aspect 解析."""
+    client = FakeClient(
+        {
+            "https://s/t.jpg": (800, 538),
+            "https://s/p.jpg": (300, 420),  # b/h=0.78 < 0.9 → 裁
+        }
+    )
+    cfg = HotSettings(metadata=MetadataConfig(crop_aspect=aspect))
+    out = await materialize_images(
+        ["https://s/p.jpg"],
+        ["https://s/t.jpg"],
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    got = await resource_store.get_by_url_hash(out.poster_urls[0].rsplit("/", 1)[-1])
+    assert got is not None
+    crop_res, crop_path = got
+    assert crop_res.meta is not None
+    assert crop_res.meta.get("args") == expected_args
+    assert Image.open(crop_path).size == expected_size
+
+
+@pytest.mark.asyncio
+async def test_materialize_global_scope_right(resource_store: ResourceStore, tmp_path: Path):
+    """物化按全局 MetadataConfig 裁剪: 默认 legacy 0.7 的产物与 legacy 右侧裁剪算法逐字节一致."""
+    client = FakeClient(
+        {
+            "https://s/t.jpg": (800, 538),
+            "https://s/p.jpg": (300, 420),
+        }
+    )
+    cfg = HotSettings()
+    out = await materialize_images(
+        ["https://s/p.jpg"],
+        ["https://s/t.jpg"],
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    got = await resource_store.get_by_url_hash(out.poster_urls[0].rsplit("/", 1)[-1])
+    assert got is not None
+    _, crop_path = got
+
+    # 独立重放 legacy 右侧裁剪 (poster_ratio=0.7, q=95), 与派生产物逐字节比对.
+    thumb_record = await resource_store.get_by_url("https://s/t.jpg")
+    assert thumb_record is not None
+    reference = tmp_path / "reference.jpg"
+    assert crop_poster(resource_store.full_path(thumb_record), reference, poster_ratio=0.7, jpeg_quality=95) is True
+
+    assert crop_path.read_bytes() == reference.read_bytes()
+    assert Image.open(crop_path).size == (376, 538)
+
+
+def test_allows_poster_crop_removed() -> None:
+    """media 包不再导出 allows_poster_crop; 干净进程导入 media 与 handlers 无残留引用."""
+    import amane.media as media_pkg
+    from amane.media import images as images_mod
+
+    assert not hasattr(images_mod, "allows_poster_crop")
+    assert not hasattr(media_pkg, "allows_poster_crop")
+    assert "allows_poster_crop" not in media_pkg.__all__
+
+    for statement in (
+        "import amane.media, amane.handlers.file, amane.handlers.scrape",
+        "import amane.handlers.scrape; import amane.handlers.file; import amane.media",
+    ):
+        result = subprocess.run([sys.executable, "-c", statement], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, f"导入失败: {statement}\n{result.stderr}"
+
+
+def _organize_paths(base: Path) -> ResolvedPaths:
+    return ResolvedPaths(
+        video=base / "MIDV-123.mp4",
+        thumb=base / "thumb.jpg",
+        poster=base / "poster.jpg",
+        fanart=base / "fanart.jpg",
+        extrafanart_dir=base / "extrafanart",
+        nfo=base / "MIDV-123.nfo",
+        trailer=base / "trailer.mp4",
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_skip_ratio_respected_both_entries(resource_store: ResourceStore, tmp_path: Path):
+    """skip_ratio 为既有可配置阈值: 同一组尺寸 0.9 → 候选原样, 0.95 → 裁剪 (不得硬编码 0.9).
+
+    刮削入口 materialize_images 对两个取值分别验证; 整理入口现状路径 (_place_library_images)
+    无候选高度比较, skip_ratio 不参与, 本任务阶段仅验证迁移后类型门槛保持:
+    有码从 thumb 裁剪, fc2 不裁 (整理期重选在任务 8 接入).
+    """
+    sizes = {"https://s/t.jpg": (800, 538), "https://s/p.jpg": (379, 500)}  # b/h ≈ 0.929
+
+    keep_cfg = HotSettings(scraping=ScrapingConfig(poster_crop_skip_ratio=0.9))
+    out_keep = await materialize_images(
+        ["https://s/p.jpg"],
+        ["https://s/t.jpg"],
+        [],
+        resource_store,
+        cast("WebClient", FakeClient(sizes)),
+        keep_cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=keep_cfg.metadata,
+    )
+    assert out_keep.poster_urls == ["https://s/p.jpg"]  # 0.929 ≥ 0.9 → 候选原样
+
+    crop_cfg = HotSettings(scraping=ScrapingConfig(poster_crop_skip_ratio=0.95))
+    out_crop = await materialize_images(
+        ["https://s/p.jpg"],
+        ["https://s/t.jpg"],
+        [],
+        resource_store,
+        cast("WebClient", FakeClient(sizes)),
+        crop_cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=crop_cfg.metadata,
+    )
+    assert out_crop.poster_urls[0].startswith(pipeline_mod.RESOURCE_URL_PREFIX)  # 0.929 < 0.95 → 裁剪
+
+    # 整理入口 (现状路径): 类型门槛经策略矩阵保持 — 有码裁剪, fc2 不裁.
+    thumb_local = tmp_path / "src.jpg"
+    Image.new("RGB", (800, 538), "blue").save(thumb_local)
+    organize_cfg = HotSettings()
+    cropped = _organize_paths(tmp_path / "lib" / "MIDV-123")
+    await _place_library_images(
+        cropped,
+        thumb_local=thumb_local,
+        poster_local=None,
+        trailer_local=None,
+        extrafanart_targets=[],
+        kinds={DownloadableResource.thumb, DownloadableResource.poster},
+        config=organize_cfg,
+        file_info=None,
+        content_type=ContentType.CENSORED,
+        watermark_dir=None,
+    )
+    assert Image.open(cropped.poster).size == (376, 538)
+
+    skipped = _organize_paths(tmp_path / "lib2" / "FC2-1")
+    await _place_library_images(
+        skipped,
+        thumb_local=thumb_local,
+        poster_local=None,
+        trailer_local=None,
+        extrafanart_targets=[],
+        kinds={DownloadableResource.thumb, DownloadableResource.poster},
+        config=organize_cfg,
+        file_info=None,
+        content_type=ContentType.FC2,
+        watermark_dir=None,
+    )
+    assert not skipped.poster.exists()
