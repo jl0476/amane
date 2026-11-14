@@ -1,11 +1,26 @@
 """海报裁剪策略中立面: 策略解析与产物选择判定的唯一定义, 刮削物化与整理期重选双入口共用 (设计规格 §3.2/§3.3)."""
 
+import functools
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Literal
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol
+
+import numpy as np
+import structlog
+from PIL import Image
 
 from ..enums import CropStrategy
 from ..parsing import ContentType
+from . import optional_cv2
+from .images import crop_poster
+
+if TYPE_CHECKING:
+    from ..db.models import Resource
+    from .resource_store import ResourceStore
+
+logger = structlog.get_logger()
 
 CropAspect = Literal["legacy", "emby", "full"]
 
@@ -92,3 +107,171 @@ def resolve_crop_plan(
         ratio=_resolve_ratio(aspect, poster_ratio),
         low_res_height=low_res_height,
     )
+
+
+# ---------------------------------------------------------------- Face 执行: 检测先于键构造 (设计规格 §3.2/§4)
+
+_FACE_MODEL_RELPATH = Path("models") / "face_detection_yunet_2023mar.onnx"
+_FACE_SCORE_THRESHOLD = 0.6
+
+# 降级告警每任务一次: 调度器在独立 contextvars 中执行每个任务, 标记随任务上下文隔离.
+_face_degrade_warned: ContextVar[bool] = ContextVar("face_crop_degrade_warned", default=False)
+
+
+class _FaceDetector(Protocol):
+    """YuNet 检测器被使用的表面; 实现对象由 cv2.FaceDetectorYN.create 产出, 静态类型不依赖 cv2."""
+
+    def setInputSize(self, size: tuple[int, int]) -> None: ...
+
+    def detect(self, image: np.ndarray) -> tuple[int, np.ndarray | None]: ...
+
+
+def _model_path() -> Path:
+    return Path(__file__).parent / _FACE_MODEL_RELPATH
+
+
+@functools.cache
+def _load_detector() -> _FaceDetector | None:
+    """惰性创建 YuNet 检测器: 首次使用时执行 create, 结果进程内复用; 失败态同样缓存, 不再重试."""
+    cv2 = optional_cv2.module()
+    if cv2 is None:
+        return None
+    try:
+        # cv2 5.0 的新图引擎在 create 时输出 net_impl_backend WARN, 级别调整为 ERROR 保证日志输出干净.
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+        return cv2.FaceDetectorYN.create(str(_model_path()), "", (0, 0), _FACE_SCORE_THRESHOLD)
+    except Exception as exc:
+        logger.debug("face detector create failed", error=str(exc))
+        return None
+
+
+def _backend_failure() -> str | None:
+    """Face 后端探针 (须在派生键构造之前执行): 可用返回 None, 否则返回不可用原因."""
+    if not optional_cv2.available():
+        return "cv2 not installed"
+    if _load_detector() is None:
+        return "yunet model load failed"
+    return None
+
+
+def _warn_face_degrade_once(reason: str) -> None:
+    """Face 降级告警每任务一次."""
+    if _face_degrade_warned.get():
+        return
+    logger.warning("face crop degraded to right", reason=reason)
+    _face_degrade_warned.set(True)
+
+
+def _detect_faces(thumb_path: Path) -> tuple[tuple[int, int], list[tuple[int, int, int, int]]]:
+    """YuNet 检测图内全部人脸框. 坐标为原始像素 (不做 EXIF 转正), 与裁剪窗同一坐标系; 异常向上传播."""
+    with Image.open(thumb_path) as img:
+        rgb = img.convert("RGB")
+        size = rgb.size
+        bgr = np.asarray(rgb)[:, :, ::-1]
+    detector = _load_detector()
+    if detector is None:
+        raise RuntimeError("face backend unavailable")
+    detector.setInputSize(size)
+    _, faces = detector.detect(bgr)
+    if faces is None:
+        return size, []
+    return size, [(int(face[0]), int(face[1]), int(face[2]), int(face[3])) for face in faces]
+
+
+def pick_face_box(boxes: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:
+    """多人脸选择 (决策 10): 面积最大者, 并列取最左; 无框返回 None."""
+    if not boxes:
+        return None
+    return max(boxes, key=lambda box: (box[2] * box[3], -box[0]))
+
+
+def _face_window(
+    face: tuple[int, int, int, int], image_size: tuple[int, int], *, ratio: float
+) -> tuple[int, int, int, int]:
+    """Face 裁剪窗: 宽 = 高度 × ratio, 水平中心对齐人脸中心, 越界钳制, 高度取全图."""
+    width, height = image_size
+    target_w = int(height * ratio)
+    if target_w >= width:
+        return (0, 0, width, height)
+    left = round(face[0] + face[2] / 2 - target_w / 2)
+    left = max(0, min(left, width - target_w))
+    return (left, 0, left + target_w, height)
+
+
+@dataclass(frozen=True)
+class FaceExecution:
+    """Face 请求经检测固化的结果: executed 已按检测定案的新 plan 与预计算裁剪窗 (right 降级时无窗)."""
+
+    plan: CropPlan
+    box: tuple[int, int, int, int] | None
+
+
+def resolve_face_execution(plan: CropPlan, thumb_path: Path) -> FaceExecution:
+    """检测先于键构造 (R2 PLAN-05): 探针与检测都在派生键构造之前执行, 按检测结果固化 executed 与裁剪窗.
+
+    检出 → executed=FACE + 预计算窗; 无人脸 → executed=RIGHT (预期回退, 无告警);
+    后端不可用或检测异常 → executed=RIGHT + 每任务一次告警. frozen 实例不修改, 固化经 replace 产生新 plan.
+    """
+    if plan.executed is not CropStrategy.FACE:
+        raise ValueError(f"Face 检测固化只处理 FACE 请求, 实际 executed={plan.executed.value}")
+    failure = _backend_failure()
+    if failure is not None:
+        _warn_face_degrade_once(failure)
+        return FaceExecution(plan=replace(plan, executed=CropStrategy.RIGHT), box=None)
+    try:
+        size, boxes = _detect_faces(thumb_path)
+    except Exception as exc:
+        _warn_face_degrade_once(f"detection failed: {exc}")
+        return FaceExecution(plan=replace(plan, executed=CropStrategy.RIGHT), box=None)
+    face = pick_face_box(boxes)
+    if face is None:
+        return FaceExecution(plan=replace(plan, executed=CropStrategy.RIGHT), box=None)
+    return FaceExecution(plan=plan, box=_face_window(face, size, ratio=plan.ratio))
+
+
+def format_crop_args(executed: CropStrategy, aspect: CropAspect, ratio: float) -> str:
+    """派生键 args (决策 15): 按实际执行策略编码 ``{executed}:{aspect}:{ratio:.4f}``; Face 降级落 right 键."""
+    return f"{executed.value}:{aspect}:{ratio:.4f}"
+
+
+def _crop_face_window(src_path: Path, dest_path: Path, box: tuple[int, int, int, int], *, jpeg_quality: int) -> bool:
+    """按预计算窗裁剪落盘. box 与检测同一坐标系 (原始像素, 不做 EXIF 转正)."""
+    try:
+        with Image.open(src_path) as img:
+            cropped = img.crop(box)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            cropped.convert("RGB").save(dest_path, format="JPEG", quality=jpeg_quality)
+        return True
+    except Exception as exc:
+        logger.warning("face window crop failed", path=str(src_path), error=str(exc))
+        return False
+
+
+async def acquire_face_crop(
+    store: ResourceStore,
+    thumb_src: str,
+    thumb_path: Path,
+    *,
+    plan: CropPlan,
+    aspect: CropAspect,
+    jpeg_quality: int,
+) -> Resource | None:
+    """Face 请求的派生产物获取 (检测先于键构造). ``thumb_path`` 须已在本地, 由调用方保证.
+
+    流程: 检测固化 executed → 以固化 executed 构造派生键 → acquire_derived. face 检出时 producer
+    闭包使用预计算窗裁剪, 缓存 miss 重跑同窗, 结果确定性一致; 降级产物落 right 键, face 键永不存储 right 产物.
+    """
+    execution = resolve_face_execution(plan, thumb_path)
+    args = format_crop_args(execution.plan.executed, aspect, execution.plan.ratio)
+    if execution.box is not None:
+        box = execution.box
+
+        async def producer(dest: Path) -> bool:
+            return _crop_face_window(thumb_path, dest, box, jpeg_quality=jpeg_quality)
+    else:
+        ratio = execution.plan.ratio
+
+        async def producer(dest: Path) -> bool:
+            return crop_poster(thumb_path, dest, poster_ratio=ratio, jpeg_quality=jpeg_quality)
+
+    return await store.acquire_derived(thumb_src, "crop", args, producer)

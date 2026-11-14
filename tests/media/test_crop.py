@@ -1,21 +1,126 @@
-"""测试裁剪策略中立面: 策略解析、默认态判定与 cv2 可用性访问器."""
+"""测试裁剪策略中立面: 策略解析、默认态判定、cv2 可用性访问器与 Face 检测执行 (检测先于键构造)."""
 
+import shutil
 import subprocess
 import sys
 import types
+from dataclasses import replace
 from enum import StrEnum
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
+import numpy as np
 import pytest
+from PIL import Image, ImageDraw
+from structlog.testing import capture_logs
+from structlog.types import EventDict
 
 from amane.enums import CropStrategy
-from amane.media import optional_cv2
-from amane.media.crop import CropPlan, resolve_crop_plan
+from amane.media import crop as crop_mod
+from amane.media import derived_locator, optional_cv2
+from amane.media.crop import (
+    CropPlan,
+    acquire_face_crop,
+    pick_face_box,
+    resolve_crop_plan,
+    resolve_face_execution,
+)
 from amane.parsing import ContentType
 
 # 基线尺寸: thumb 为标准封面 (800, 538); 候选高 430, b/h ≈ 0.799 < 0.9, 命中裁剪路径.
 _BASE_THUMB = (800, 538)
 _CROP_CANDIDATE = (379, 430)
+
+# ---------------------------------------------------------------- Face (检测先于键构造)
+
+# 含人脸样例: opencv/opencv 4.x samples/data/lena.jpg (512x512), YuNet 检出框约 (207,182,145,206).
+_FACE_FIXTURE = Path(__file__).parent / "fixtures" / "yunet_face.jpg"
+_RATIO = 0.7
+_DEGRADE_EVENT = "face crop degraded to right"
+
+
+def _face_plan() -> CropPlan:
+    """Face 请求的基线 plan: 有码类型请求 face, 无 poster 候选 → executed=FACE, legacy 比例 0.7."""
+    return resolve_crop_plan(
+        ContentType.CENSORED,
+        strategy_map={ContentType.CENSORED: CropStrategy.FACE},
+        aspect="legacy",
+        low_res_height=None,
+        poster_ratio=_RATIO,
+        skip_ratio=0.9,
+        thumb_size=(512, 512),
+        candidate_size=None,
+    )
+
+
+async def _acquire_face(
+    store: Any,
+    thumb_path: Path,
+    src_url: str,
+    plan: CropPlan | None = None,
+) -> Any:
+    return await acquire_face_crop(
+        store,
+        src_url,
+        thumb_path,
+        plan=plan if plan is not None else _face_plan(),
+        aspect="legacy",
+        jpeg_quality=95,
+    )
+
+
+def _reset_face_warn() -> None:
+    """重置降级告警的每任务一次标记, 隔离各状态的告警计数."""
+    crop_mod._face_degrade_warned.set(False)
+
+
+def _degrade_warnings(logs: list[EventDict]) -> list[EventDict]:
+    return [entry for entry in logs if entry.get("event") == _DEGRADE_EVENT]
+
+
+class _ExplodingDetector:
+    """探针可用而 detect 必抛的检测器替代实现: 模拟运行期检测异常."""
+
+    def setInputSize(self, size: tuple[int, int]) -> None:
+        return None
+
+    def detect(self, image: np.ndarray) -> tuple[int, np.ndarray | None]:
+        raise RuntimeError("detector exploded")
+
+
+def _oracle_faces(img_path: Path) -> list[tuple[int, int, int, int]]:
+    """测试内独立检测 (不经被测实现): 直接调用 YuNet, 用于推导期望裁剪窗."""
+    cv2 = optional_cv2.module()
+    assert cv2 is not None
+    img = Image.open(img_path).convert("RGB")
+    width, height = img.size
+    bgr = np.asarray(img)[:, :, ::-1]
+    detector = cv2.FaceDetectorYN.create(str(crop_mod._model_path()), "", (width, height), 0.6)
+    detector.setInputSize((width, height))
+    _, faces = detector.detect(bgr)
+    if faces is None:
+        return []
+    return [(int(face[0]), int(face[1]), int(face[2]), int(face[3])) for face in faces]
+
+
+def _expected_window(
+    boxes: list[tuple[int, int, int, int]], image_size: tuple[int, int], ratio: float
+) -> tuple[int, int, int, int]:
+    """契约口径的期望裁剪窗: 面积最大者 (并列取最左), 窗口水平中心对齐人脸中心, 越界钳制, 高度取全图."""
+    assert boxes, "样例图必须检出人脸"
+    face = max(boxes, key=lambda box: (box[2] * box[3], -box[0]))
+    width, height = image_size
+    target_w = int(height * ratio)
+    left = max(0, min(round(face[0] + face[2] / 2 - target_w / 2), width - target_w))
+    return (left, 0, left + target_w, height)
+
+
+def _assert_same_window(product: Path, source: Path, window: tuple[int, int, int, int]) -> None:
+    """产物像素与源图期望窗口一致 (JPEG 重编码容忍小差异)."""
+    produced = np.asarray(Image.open(product).convert("RGB"), dtype=np.int16)
+    expected = np.asarray(Image.open(source).convert("RGB").crop(window), dtype=np.int16)
+    assert produced.shape == expected.shape
+    assert float(np.abs(produced - expected).mean()) < 3.0
 
 
 def _resolve_plan(
@@ -136,3 +241,258 @@ def test_skip_ratio_is_explicit_input() -> None:
 
     plan_crop = _resolve_plan(skip_ratio=0.95, thumb_size=(800, 538), candidate_size=(379, 500))
     assert plan_crop.executed is CropStrategy.RIGHT
+
+
+# ---------------------------------------------------------------- Face 执行 (任务 7)
+
+
+@pytest.mark.asyncio
+async def test_face_detection_before_key_construction(
+    resource_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """检测先于键构造的四态 (经真实 acquire_derived 核对 locator/meta):
+
+    face 检出 → "face:*" 键; 无人脸 → "right:*" 键 (无 warning); 检测异常 → "right:*" 键 + warning;
+    后端不可用 → "right:*" 键 + warning. face 键永不存储 right 降级产物; frozen plan 不被修改.
+    """
+    plan = _face_plan()
+    src_url = "https://img.example.com/covers/face.jpg"
+    plain_url = "https://img.example.com/covers/plain.jpg"
+
+    # 流程前提: thumb 已下载到本地 (调用方保证), 这里以本地文件模拟.
+    thumb = tmp_path / "thumb_face.jpg"
+    shutil.copyfile(_FACE_FIXTURE, thumb)
+
+    # 无人脸样例: 平滑渐变不含可检人脸.
+    plain = tmp_path / "thumb_gradient.jpg"
+    gradient = Image.new("RGB", (800, 538))
+    draw = ImageDraw.Draw(gradient)
+    for x in range(800):
+        draw.line((x, 0, x, 538), fill=(x % 256, (x * 2) % 256, 128))
+    gradient.save(plain, format="JPEG", quality=95)
+
+    # 前置 (非法用例): 非 Face 请求不接受检测固化 — 流程只服务 Face 请求.
+    right_plan = replace(plan, requested=CropStrategy.RIGHT, executed=CropStrategy.RIGHT)
+    with pytest.raises(ValueError, match="FACE"):
+        resolve_face_execution(right_plan, thumb)
+
+    _reset_face_warn()
+    with capture_logs() as logs:
+        # 态 1: face 检出 → face 键.
+        face_res = await _acquire_face(resource_store, thumb, src_url, plan)
+        assert face_res is not None
+        assert face_res.meta == {"op": "crop", "src": src_url, "args": "face:legacy:0.7000"}
+        assert face_res.url == derived_locator(src_url, "crop", "face:legacy:0.7000")
+        assert _degrade_warnings(logs) == []
+
+        # 态 2: 无人脸 → right 键 (预期回退, 无 warning).
+        res = await _acquire_face(resource_store, plain, plain_url, plan)
+        assert res is not None
+        assert res.meta == {"op": "crop", "src": plain_url, "args": "right:legacy:0.7000"}
+        assert res.url == derived_locator(plain_url, "crop", "right:legacy:0.7000")
+        assert _degrade_warnings(logs) == []
+    face_key_of_plain = derived_locator(plain_url, "crop", "face:legacy:0.7000")
+    assert await resource_store.get_by_url(face_key_of_plain) is None
+
+    # 态 3: 运行期检测异常 → right 键 + warning (每任务一次标记重置后重新计数).
+    _reset_face_warn()
+    monkeypatch.setattr(crop_mod, "_load_detector", lambda: _ExplodingDetector())
+    with capture_logs() as logs:
+        res = await _acquire_face(resource_store, thumb, src_url, plan)
+        assert res is not None
+        assert res.meta == {"op": "crop", "src": src_url, "args": "right:legacy:0.7000"}
+        assert len(_degrade_warnings(logs)) == 1
+
+    # 态 4: 后端不可用 (cv2 缺失) → right 键 + warning; 原 plan 仍是 FACE (固化产生新实例).
+    _reset_face_warn()
+    monkeypatch.setattr(optional_cv2, "cv2", None)
+    with capture_logs() as logs:
+        res = await _acquire_face(resource_store, thumb, src_url, plan)
+        assert res is not None
+        assert res.meta == {"op": "crop", "src": src_url, "args": "right:legacy:0.7000"}
+        assert len(_degrade_warnings(logs)) == 1
+    assert plan.executed is CropStrategy.FACE
+    # face 键未被降级产物覆盖: 态 1 的 face 产物字节仍在.
+    face_record = await resource_store.get_by_url(derived_locator(src_url, "crop", "face:legacy:0.7000"))
+    assert face_record is not None
+    assert face_record.content_hash == face_res.content_hash
+
+
+@pytest.mark.asyncio
+async def test_face_crop_aligns_face_window(resource_store: Any, tmp_path: Path) -> None:
+    """含人脸样例图 → 裁剪窗水平对齐人脸中心; 人脸贴左缘 / 右缘时越界钳制."""
+    plan = _face_plan()
+
+    # 中央: fixture 原样; 左钳制: 裁去 fixture 左侧 120px 使人脸中心落入窗口半径内; 右钳制: 裁去右侧.
+    center = tmp_path / "center.jpg"
+    shutil.copyfile(_FACE_FIXTURE, center)
+    left_clamped = tmp_path / "left_clamped.jpg"
+    Image.open(_FACE_FIXTURE).convert("RGB").crop((120, 0, 512, 512)).save(left_clamped, format="JPEG", quality=95)
+    right_clamped = tmp_path / "right_clamped.jpg"
+    Image.open(_FACE_FIXTURE).convert("RGB").crop((0, 0, 392, 512)).save(right_clamped, format="JPEG", quality=95)
+    cases = [("center", center), ("left-clamp", left_clamped), ("right-clamp", right_clamped)]
+
+    _reset_face_warn()
+    center_product: Path | None = None
+    center_height = 0
+    with capture_logs() as logs:
+        for i, (desc, thumb) in enumerate(cases):
+            url = f"https://img.example.com/cases/{i}.jpg"
+            res = await _acquire_face(resource_store, thumb, url, plan)
+            assert res is not None, desc
+            assert res.meta is not None and res.meta["args"] == "face:legacy:0.7000", desc
+
+            width, height = Image.open(thumb).size
+            expected = _expected_window(_oracle_faces(thumb), (width, height), plan.ratio)
+            left = expected[0]
+            if desc == "center":
+                assert 0 < left < width - int(height * plan.ratio), desc  # 未钳制, 窗口真正随人脸移动
+                center_product = resource_store.full_path(res)
+                center_height = height
+            elif desc == "left-clamp":
+                assert left == 0, desc
+            else:
+                assert left == width - int(height * plan.ratio), desc
+            _assert_same_window(resource_store.full_path(res), thumb, expected)
+
+    assert center_product is not None
+    # 对齐的行为面: 无钳制时人脸中心落在产物窗口中心 (允许 JPEG 重编码引起 ±1px 检测抖动).
+    product_faces = _oracle_faces(center_product)
+    assert product_faces, "产物应保留人脸"
+    face_cx = product_faces[0][0] + product_faces[0][2] / 2
+    target_w = int(center_height * plan.ratio)
+    assert abs(face_cx - target_w / 2) <= 2
+    assert _degrade_warnings(logs) == []
+
+
+@pytest.mark.asyncio
+async def test_multi_face_largest_area_leftmost_tie(resource_store: Any, tmp_path: Path) -> None:
+    """多人脸取面积最大者 (真实双脸画布); 并列取最左 (纯选择函数表测试 — 编码噪声使真实框无法严格并列)."""
+    plan = _face_plan()
+    lena = Image.open(_FACE_FIXTURE).convert("RGB")
+    face_src = lena.crop((148, 123, 414, 450))
+    canvas = Image.new("RGB", (900, 600), (40, 40, 48))
+    canvas.paste(face_src.resize((200, 246)), (60, 120))  # 左侧小脸
+    canvas.paste(face_src.resize((320, 394)), (480, 100))  # 右侧大脸
+    canvas_path = tmp_path / "multi_face.jpg"
+    canvas.save(canvas_path, format="JPEG", quality=95)
+
+    _reset_face_warn()
+    with capture_logs() as logs:
+        res = await _acquire_face(resource_store, canvas_path, "https://img.example.com/covers/multi.jpg", plan)
+        assert res is not None
+        assert res.meta is not None and res.meta["args"] == "face:legacy:0.7000"
+        assert _degrade_warnings(logs) == []
+
+    boxes = _oracle_faces(canvas_path)
+    assert len(boxes) >= 2, "样例画布必须检出两张人脸"
+    expected = _expected_window(boxes, canvas.size, plan.ratio)
+    largest = max(boxes, key=lambda box: box[2] * box[3])
+    assert largest[0] > 400  # 面积最大者是被贴在右侧的大脸: 选窗必须随它而非最左脸
+    _assert_same_window(resource_store.full_path(res), canvas_path, expected)
+
+    # 并列取最左; 面积大者胜, 不论位置.
+    assert pick_face_box([(200, 0, 100, 100), (100, 5, 100, 100), (0, 9, 100, 100)]) == (0, 9, 100, 100)
+    assert pick_face_box([(0, 0, 50, 50), (300, 0, 100, 100)]) == (300, 0, 100, 100)
+    assert pick_face_box([(7, 8, 9, 10)]) == (7, 8, 9, 10)
+    assert pick_face_box([]) is None
+
+
+@pytest.mark.asyncio
+async def test_backend_unavailable_probe_degrades_right(
+    resource_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cv2 缺失与模型加载失败都在键构造前探出 → right 键缓存; warning 每任务一次; face 键不落产物."""
+    thumb = tmp_path / "thumb.jpg"
+    shutil.copyfile(_FACE_FIXTURE, thumb)
+    url_a = "https://img.example.com/covers/degrade-a.jpg"
+
+    producer_calls: list[Path] = []
+    real_crop_poster = crop_mod.crop_poster
+
+    def counting_crop_poster(src: Path, dest: Path, **kwargs: Any) -> bool:
+        producer_calls.append(dest)
+        return real_crop_poster(src, dest, **kwargs)
+
+    monkeypatch.setattr(crop_mod, "crop_poster", counting_crop_poster)
+    real_cv2 = optional_cv2.cv2
+    face_key_a = derived_locator(url_a, "crop", "face:legacy:0.7000")
+
+    # 态 A: cv2 未安装.
+    _reset_face_warn()
+    monkeypatch.setattr(optional_cv2, "cv2", None)
+    with capture_logs() as logs:
+        res = await _acquire_face(resource_store, thumb, url_a)
+        assert res is not None
+        assert res.meta == {"op": "crop", "src": url_a, "args": "right:legacy:0.7000"}
+        assert len(_degrade_warnings(logs)) == 1
+        assert len(producer_calls) == 1
+
+        # 同任务第二次调用: 命中 right 键缓存, 不再告警也不再重跑 producer.
+        again = await _acquire_face(resource_store, thumb, url_a)
+        assert again is not None and again.url == res.url
+        assert len(_degrade_warnings(logs)) == 1
+        assert len(producer_calls) == 1
+    assert await resource_store.get_by_url(face_key_a) is None
+
+    # 态 B: cv2 在而模型不可加载 (探针在键构造前执行, 新 src 避开态 A 的缓存).
+    _reset_face_warn()
+    monkeypatch.setattr(optional_cv2, "cv2", real_cv2)
+    monkeypatch.setattr(crop_mod, "_model_path", lambda: tmp_path / "missing.onnx")
+    crop_mod._load_detector.cache_clear()
+    try:
+        with capture_logs() as logs:
+            res_b = await _acquire_face(resource_store, thumb, "https://img.example.com/covers/degrade-b.jpg")
+            assert res_b is not None
+            assert res_b.meta == {
+                "op": "crop",
+                "src": "https://img.example.com/covers/degrade-b.jpg",
+                "args": "right:legacy:0.7000",
+            }
+            assert len(_degrade_warnings(logs)) == 1
+    finally:
+        crop_mod._load_detector.cache_clear()
+    assert (
+        await resource_store.get_by_url(
+            derived_locator("https://img.example.com/covers/degrade-b.jpg", "crop", "face:legacy:0.7000")
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_detection_exception_degrades_right_key(
+    resource_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """运行期检测异常 → 降级 right + 每任务一次 warning, 产物仍落 right 键 (设计 §4: 不中断, 不回退原候选)."""
+    thumb = tmp_path / "thumb.jpg"
+    shutil.copyfile(_FACE_FIXTURE, thumb)
+    url = "https://img.example.com/covers/exc.jpg"
+    monkeypatch.setattr(crop_mod, "_load_detector", lambda: _ExplodingDetector())
+
+    producer_calls: list[Path] = []
+    real_crop_poster = crop_mod.crop_poster
+
+    def counting_crop_poster(src: Path, dest: Path, **kwargs: Any) -> bool:
+        producer_calls.append(dest)
+        return real_crop_poster(src, dest, **kwargs)
+
+    monkeypatch.setattr(crop_mod, "crop_poster", counting_crop_poster)
+
+    _reset_face_warn()
+    with capture_logs() as logs:
+        res = await _acquire_face(resource_store, thumb, url)
+        assert res is not None
+        assert res.meta == {"op": "crop", "src": url, "args": "right:legacy:0.7000"}
+        assert len(_degrade_warnings(logs)) == 1
+
+        # 产物确实是右窗裁剪.
+        width, height = Image.open(thumb).size
+        _assert_same_window(resource_store.full_path(res), thumb, (width - int(height * _RATIO), 0, width, height))
+
+        # 缓存幂等: 第二次调用命中 right 键, 不重跑 producer 也不再告警.
+        again = await _acquire_face(resource_store, thumb, url)
+        assert again is not None and again.url == res.url
+        assert len(producer_calls) == 1
+        assert len(_degrade_warnings(logs)) == 1
+    assert await resource_store.get_by_url(derived_locator(url, "crop", "face:legacy:0.7000")) is None
