@@ -495,7 +495,10 @@ class ResourceStore:
 
         并发内容冲突 (提交时该 URL 已有内容 hash 不同的缓存) 把既有内容纳入比较重选:
         既有胜 → 删本轮临时返回既有路径; 本轮胜 → 覆盖缓存 (记录与文件同步更新) 并记 warning;
-        同内容 hash → 幂等成功. 提交失败 (磁盘错误等) 删本轮临时返回 FAILED.
+        同内容 hash → 幂等成功, 异内容冲突双方同面积同字节时同样保既有. 提交失败 (磁盘错误,
+        含既有缓存文件读失败) 删本轮临时返回 FAILED.
+
+        记录在而文件缺失视作无既有内容: 直接覆盖并更新既有记录, 不落重复行.
         """
         async with self._serialized(url):
             return await self._commit_temp_locked(url, temp)
@@ -514,7 +517,7 @@ class ResourceStore:
                     temp.unlink(missing_ok=True)
                     return AcquireResult(success=True, path=existing_path, used_url=url)
                 if _content_rank(existing_path) >= _content_rank(temp):
-                    # 既有更优: 本轮落选, 只删本轮临时.
+                    # 既有不劣于本轮 (含同面积同字节的并列): 本轮落选, 只删本轮临时.
                     temp.unlink(missing_ok=True)
                     return AcquireResult(success=True, path=existing_path, used_url=url)
                 overwrite = True
