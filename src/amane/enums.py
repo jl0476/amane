@@ -184,3 +184,17 @@ class WatermarkCorner(StrEnum):
     TOP_RIGHT = "top_right"
     BOTTOM_LEFT = "bottom_left"
     BOTTOM_RIGHT = "bottom_right"
+
+
+# 海报裁剪策略. 定义于 enums 中立层: config 与 media 两侧均需引用, enums 不依赖任何一侧 (避免包初始化循环).
+class CropStrategy(StrEnum):
+    """海报裁剪策略."""
+
+    NONE = "none"
+    """入选原始候选, 不执行像素裁剪."""
+
+    RIGHT = "right"
+    """裁剪封面右侧, 宽度 = 高度 × 比例."""
+
+    FACE = "face"
+    """人脸对齐裁剪; 检出失败回退 right."""
