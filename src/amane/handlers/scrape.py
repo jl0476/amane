@@ -164,6 +164,7 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
                     content_type=content_type,
                     metadata_cfg=self._config.metadata,
                     extrafanart_urls=result.metadata.extrafanart_urls,
+                    behind_scenes=[u for urls in result.metadata.behind_scenes.values() for u in urls],
                 )
                 poster_out = materialized.poster_urls
                 thumb_out = materialized.thumb_urls
@@ -195,6 +196,8 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
             thumb_urls=thumb_out,
             trailer_urls=trailer_out,
             extrafanart_urls=result.metadata.extrafanart_urls,
+            # 幕后图无论开关状态都持久化: 原始数据归属 (规格 §3.5), 消费时机由整理/物化决定.
+            behind_scenes=result.metadata.behind_scenes,
             scores={s.site: s.score for s in result.metadata.scores},
             external_ids=result.metadata.external_ids,
             source_urls=result.metadata.source_urls,

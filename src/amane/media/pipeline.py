@@ -97,11 +97,14 @@ async def materialize_images(
     content_type: ContentType,
     metadata_cfg: MetadataConfig,
     extrafanart_urls: dict[str, list[str]] | None = None,
+    behind_scenes: list[str] | None = None,
 ) -> MaterializedImages:
     """仅下载集合内的类型; 未选中的保留聚合 URL.
 
     死 URL 保序置于尾部, 供来源恢复后重试.
     extrafanart 仅下载到 Resource, 站点分组结构不重排.
+    幕后图 (规格 §3.5): 全局开关 ``metadata_cfg.extra_fanarts_behind_scenes`` 开启时并入 extrafanart
+    物化集合; 关闭时仅持久化 URL, 整理期按库开关现场获取.
     海报裁切按 ``metadata_cfg`` 的策略矩阵解析 (`media/crop.py::resolve_crop_plan`);
     ``executed=NONE`` 表示候选原样入选, 不执行像素裁剪.
     thumb / poster 候选获取按 ``metadata_cfg.thumb_download_strategy`` 分派 (R2 PLAN-09):
@@ -232,6 +235,10 @@ async def materialize_images(
     if DownloadableResource.extrafanart in kinds and extrafanart_urls:
         priority = list(extrafanart_urls.keys())
         await store.acquire_extrafanart(extrafanart_urls, priority, client)
+
+    # 幕后图: 单独一组获取, 不受普通剧照「有结果即停」影响 (规格 §3.5).
+    if DownloadableResource.extrafanart in kinds and metadata_cfg.extra_fanarts_behind_scenes and behind_scenes:
+        await store.acquire_extrafanart({"behind_scenes": behind_scenes}, ["behind_scenes"], client)
 
     out = MaterializedImages(
         poster_urls=result_poster_urls,

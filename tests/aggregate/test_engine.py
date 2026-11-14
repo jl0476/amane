@@ -725,6 +725,20 @@ class TestAggregate:
         assert len(crawler.fetch_calls) == 0
         assert result.metadata.plot == "旧\n快照"
 
+    @pytest.mark.asyncio
+    async def test_no_source_noop(self):
+        """来源未提供 behind_scenes: 聚合为空集合, 幕后开关无从消费 (no-op, 已知限制)."""
+        result = await aggregate(
+            SearchQuery("X"),
+            {K1: MockCrawler(result=MediaMetadata(number="X", title="T", extrafanart=["http://e.jpg"]))},
+            defaultdict(lambda: [DB]),
+        )
+
+        assert result.metadata.behind_scenes == {}
+        # 独立字段不影响普通剧照聚合.
+        assert result.metadata.extrafanart_urls == {"javdb": ["http://e.jpg"]}
+        assert result.raw["javdb"]["behind_scenes"] == []
+
 
 # ============================================================
 # 复杂场景: 混合优先级 + 多源字段拼接

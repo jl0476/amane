@@ -490,6 +490,8 @@ class MetadataRepoMixin(RepositoryMixinBase):
                 metadata.trailer_urls = updates["trailer_urls"]
             if "extrafanart_urls" in updates:
                 metadata.extrafanart_urls = updates["extrafanart_urls"]
+            if "behind_scenes" in updates:
+                metadata.behind_scenes = updates["behind_scenes"]
             if "scores" in updates:
                 metadata.scores = updates["scores"]
             if "external_ids" in updates:

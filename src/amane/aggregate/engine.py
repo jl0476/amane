@@ -474,6 +474,13 @@ def _assemble_aggregate_fields(graph: FetchGraph, state: ExecutionState) -> None
             extrafanart[ck] = data.extrafanart
     state.result.extrafanart_urls = extrafanart
 
+    # 幕后图: 独立字段不并入 extrafanart_urls; 无字段链, 按节点登记顺序 (字段链首现顺序) 收集.
+    behind_scenes: dict[str, list[str]] = {}
+    for ck, data in state.fetched.items():
+        if data is not None and data.behind_scenes:
+            behind_scenes[ck] = data.behind_scenes
+    state.result.behind_scenes = behind_scenes
+
     scores: list[SourcedScore] = []
     for node in graph.field_chains[MetadataField.SCORE]:
         ck = node.cache_key

@@ -848,6 +848,30 @@ async def _acquire_crop_product(
     return store.full_path(derived) if derived is not None else None
 
 
+def _behind_scenes_candidates(
+    metadata: Metadata,
+    extrafanart_by_site: dict[str, list[str]],
+    config: HotSettings | None,
+    metadata_cfg: MetadataConfig | None,
+) -> list[str]:
+    """整理期幕后图候选 (规格 §3.5): 库级生效开关开启时把 ``Metadata.behind_scenes`` 追加到剧照下载集合.
+
+    普通剧照在前、幕后在后; 与普通剧照候选重复的地址跳过 (同一 URL 只落一张, 幕后组内同样去重).
+    开关取库级生效 MetadataConfig (任务入口经 resolve_effective_config 解析), 未注入时回全局.
+    """
+    toggle_cfg = metadata_cfg if metadata_cfg is not None else (config.metadata if config is not None else None)
+    if toggle_cfg is None or not toggle_cfg.extra_fanarts_behind_scenes:
+        return []
+    seen = {url for urls in extrafanart_by_site.values() for url in urls}
+    out: list[str] = []
+    for urls in (metadata.behind_scenes or {}).values():
+        for url in urls:
+            if url and url not in seen:
+                seen.add(url)
+                out.append(url)
+    return out
+
+
 async def _download_images_via_store(
     metadata: Metadata,
     store: ResourceStore,
@@ -869,6 +893,7 @@ async def _download_images_via_store(
     poster 来源: ``prepared_poster`` 非 None 时直接使用整理期重选 / 用户产物 (规格 §3.6),
     不再按 poster_urls 现场获取.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
+    幕后图候选按库开关追加到剧照集合 (规格 §3.5), 经同一命名模板接续编号.
     """
     thumb_local = None
     if DownloadableResource.thumb in kinds:
@@ -894,6 +919,9 @@ async def _download_images_via_store(
         if extrafanart_by_site:
             priority = list(extrafanart_by_site.keys())
             extrafanart = await store.acquire_extrafanart(extrafanart_by_site, priority, client)
+        behind_urls = _behind_scenes_candidates(metadata, extrafanart_by_site, config, metadata_cfg)
+        if behind_urls:
+            extrafanart += await store.acquire_extrafanart({"behind_scenes": behind_urls}, ["behind_scenes"], client)
 
     # 名字与源文件成对落地: 文件名模板只能在这里渲染, 宽度取决于本轮张数.
     extrafanart_targets: list[tuple[str, Path]] = []
@@ -1208,6 +1236,9 @@ async def _collect_live_resource_refs(repo: Repository) -> tuple[set[str], set[s
             for u in (*meta.poster_urls, *meta.thumb_urls, *meta.trailer_urls):
                 _add_resource_ref(u, live_urls, live_hashes)
             for site_urls in meta.extrafanart_urls.values():
+                for u in site_urls:
+                    _add_resource_ref(u, live_urls, live_hashes)
+            for site_urls in (meta.behind_scenes or {}).values():
                 for u in site_urls:
                     _add_resource_ref(u, live_urls, live_hashes)
         offset += len(batch)

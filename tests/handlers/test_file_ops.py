@@ -13,10 +13,11 @@ from structlog.testing import capture_logs
 from amane.api.models.media import MediaFileResponse, to_media_file_response
 from amane.api.models.tasks import OrganizeSubmission
 from amane.config import HotSettings, MetadataConfig, ScrapingConfig, WatermarkConfig
+from amane.crawlers.models import FetchOptions, MediaMetadata, SearchQuery
 from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
 from amane.db.repo_types import WriteMode
 from amane.enums import DownloadableResource
-from amane.handlers import OrganizeHandler, OrganizePayload
+from amane.handlers import OrganizeHandler, OrganizePayload, ScrapeHandler, ScrapePayload
 from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
 from amane.media import ResourceStore, materialize_images
 from amane.media.resource_store import TMP_MARK, internal_url_hash
@@ -24,6 +25,9 @@ from amane.organize import MoveMode, PlaceOutcome, ResolvedPaths, resolve_paths
 from amane.parsing import ContentType, parse_file_info
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from amane.aggregate import CrawlerLike
     from amane.db.repository import Repository
     from amane.net.http import WebClient
 
@@ -1749,3 +1753,190 @@ async def test_quality_dispatch_respects_library_scope(
     assert Image.open(poster_b).size == (500, 500)
     assert _pixel_close(poster_b, (255, 165, 0))
     assert sorted(resource_store._base_dir.rglob(f"*{TMP_MARK}*")) == []
+
+
+# --- 任务 12: 剧照幕后场景 — 三层字段与双消费 (规格 §3.5) ---
+
+
+class BehindScenesCrawler:
+    """样例来源: 普通剧照 + 幕后图地址; 地址随番号变化, 同库多次刮削互不串扰."""
+
+    async def fetch(self, query: SearchQuery, options: FetchOptions | None = None) -> MediaMetadata | None:
+        number = query.number
+        return MediaMetadata(
+            number=number,
+            title="T",
+            extrafanart=[f"https://s/{number}/e1.jpg", f"https://s/{number}/e2.jpg"],
+            behind_scenes=[f"https://s/{number}/b1.jpg", f"https://s/{number}/b2.jpg"],
+        )
+
+
+class BehindScenesFactory:
+    def __init__(self, crawlers: dict[str, CrawlerLike]):
+        self._crawlers = crawlers
+
+    async def get_crawlers(self, names: Iterable[str]) -> dict[str, CrawlerLike]:
+        wanted = set(names)
+        return {name: crawler for name, crawler in self._crawlers.items() if name in wanted}
+
+
+_BEHIND_NUMBER = "MIDV-123"
+
+
+def _behind_scrape_handler(
+    repo: Repository,
+    resource_store: ResourceStore,
+    client: WebClient,
+    behind_enabled: bool,
+) -> ScrapeHandler:
+    return ScrapeHandler(
+        repo=repo,
+        factory=BehindScenesFactory({"javdb": BehindScenesCrawler()}),
+        resource_store=resource_store,
+        pipeline_config=HotSettings(metadata=MetadataConfig(extra_fanarts_behind_scenes=behind_enabled)),
+        web_client=client,
+    )
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("behind_enabled", [False, True], ids=["toggle_off", "toggle_on"])
+async def test_behind_scenes_persisted_regardless_of_toggle(
+    repo: Repository, resource_store: ResourceStore, behind_enabled: bool
+) -> None:
+    """幕后图地址是原始数据: 无论全局开关状态都随刮削落库 (按来源分组)."""
+    client = cast("WebClient", FakeClient())
+    handler = _behind_scrape_handler(repo, resource_store, client, behind_enabled)
+
+    result = await handler.handle(ScrapePayload(number=_BEHIND_NUMBER, content_type=ContentType.CENSORED))
+    assert result.success is True
+
+    row = await repo.get_metadata_by_number(_BEHIND_NUMBER)
+    assert row is not None
+    assert row.behind_scenes == {"javdb": [f"https://s/{_BEHIND_NUMBER}/b1.jpg", f"https://s/{_BEHIND_NUMBER}/b2.jpg"]}
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_materialize_consumes_behind_scenes_global(repo: Repository, resource_store: ResourceStore) -> None:
+    """无媒体文件的番号刮削: 全局开关开启时幕后图实际物化进 Resource; 关闭时仍持久化但不物化."""
+    client = cast("WebClient", MappedClient({"https://s/MIDV-123/b1.jpg": ((640, 480), "green")}))
+
+    on_handler = _behind_scrape_handler(repo, resource_store, client, behind_enabled=True)
+    result = await on_handler.handle(ScrapePayload(number=_BEHIND_NUMBER, content_type=ContentType.CENSORED))
+    assert result.success is True
+
+    row = await repo.get_metadata_by_number(_BEHIND_NUMBER)
+    assert row is not None
+    assert row.behind_scenes == {"javdb": [f"https://s/{_BEHIND_NUMBER}/b1.jpg", f"https://s/{_BEHIND_NUMBER}/b2.jpg"]}
+    for i in (1, 2):
+        assert await resource_store.get_by_url(f"https://s/{_BEHIND_NUMBER}/b{i}.jpg") is not None
+
+    off_number = "MIDV-456"
+    off_handler = _behind_scrape_handler(repo, resource_store, client, behind_enabled=False)
+    result = await off_handler.handle(ScrapePayload(number=off_number, content_type=ContentType.CENSORED))
+    assert result.success is True
+
+    row = await repo.get_metadata_by_number(off_number)
+    assert row is not None
+    assert row.behind_scenes == {"javdb": [f"https://s/{off_number}/b1.jpg", f"https://s/{off_number}/b2.jpg"]}
+    for i in (1, 2):
+        assert await resource_store.get_by_url(f"https://s/{off_number}/b{i}.jpg") is None
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_filters_behind_scenes_by_library(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """同番号两库相反开关: 幕后图各按库开关追加到剧照集合, 普通剧照不受影响, 与普通候选重复的地址不重落."""
+    client = cast("WebClient", MappedClient({"https://s/b1.jpg": ((640, 480), "green")}))  # 普通剧照蓝, 幕后图绿
+    meta = await repo.upsert_metadata(
+        number=_BEHIND_NUMBER,
+        content_type=ContentType.CENSORED,
+        extrafanart_urls={"dmm": ["https://s/e1.jpg", "https://s/e2.jpg"]},
+        behind_scenes={"javdb": ["https://s/e2.jpg", "https://s/b1.jpg"]},
+    )
+    assert meta.id is not None
+    lib_a, root_a = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number=_BEHIND_NUMBER,
+        metadata_override={"extra_fanarts_behind_scenes": True},
+    )
+    lib_b, root_b = await _seed_library(
+        repo,
+        tmp_path,
+        name="b",
+        metadata_id=meta.id,
+        number=_BEHIND_NUMBER,
+        metadata_override={"extra_fanarts_behind_scenes": False},
+    )
+    assert lib_a.id is not None and lib_b.id is not None
+    # payload 整体替换: 与 _seed_library 的 video_template 合并成一次写入.
+    naming_override = {
+        "video_template": "{number}/{number}.{ext}",
+        "extrafanart_name_template": "{number}-{index_padded}.jpg",
+    }
+    await repo.upsert_config_override(lib_a.id, "naming", naming_override)
+    await repo.upsert_config_override(lib_b.id, "naming", naming_override)
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result_a = await handler.handle(OrganizePayload(library_id=lib_a.id, path=str(root_a)))
+    result_b = await handler.handle(OrganizePayload(library_id=lib_b.id, path=str(root_b)))
+    assert result_a.success and result_b.success
+
+    names_a = sorted(p.name for p in (root_a / _BEHIND_NUMBER / "extrafanart").iterdir())
+    names_b = sorted(p.name for p in (root_b / _BEHIND_NUMBER / "extrafanart").iterdir())
+    # 开: 普通两张在前, 幕后接续编号, 重复的 e2 不重落; 同一命名模板 (补零宽度 = 本轮张数).
+    assert names_a == [
+        f"{_BEHIND_NUMBER}-1.jpg",
+        f"{_BEHIND_NUMBER}-2.jpg",
+        f"{_BEHIND_NUMBER}-3.jpg",
+    ]
+    assert _pixel_close(root_a / _BEHIND_NUMBER / "extrafanart" / f"{_BEHIND_NUMBER}-3.jpg", (0, 128, 0))
+    # 关: 只有普通剧照, 与库 A 的前两张一致 (普通剧照不受开关影响).
+    assert names_b == [f"{_BEHIND_NUMBER}-1.jpg", f"{_BEHIND_NUMBER}-2.jpg"]
+    assert _pixel_close(root_b / _BEHIND_NUMBER / "extrafanart" / f"{_BEHIND_NUMBER}-1.jpg", (0, 0, 255))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_scrape_off_organize_on_no_rescrape(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """刮削时关闭 → 整理时开启: 幕后地址已在刮削期持久化, 无需重刮, 重新整理即生效."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                f"https://s/{_BEHIND_NUMBER}/b1.jpg": ((640, 480), "green"),
+                f"https://s/{_BEHIND_NUMBER}/b2.jpg": ((640, 480), "orange"),
+            }
+        ),
+    )
+    handler = _behind_scrape_handler(repo, resource_store, client, behind_enabled=False)
+    result = await handler.handle(ScrapePayload(number=_BEHIND_NUMBER, content_type=ContentType.CENSORED))
+    assert result.success is True
+
+    row = await repo.get_metadata_by_number(_BEHIND_NUMBER)
+    assert row is not None
+    assert row.id is not None
+    assert row.behind_scenes
+
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=row.id,
+        number=_BEHIND_NUMBER,
+        metadata_override={"extra_fanarts_behind_scenes": True},
+    )
+    assert lib.id is not None
+
+    organize = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await organize.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success is True
+
+    names = sorted(p.name for p in (root / _BEHIND_NUMBER / "extrafanart").iterdir())
+    assert names == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]  # 普通 1..2 在前, 幕后 3..4 在后
+    assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / "3.jpg", (0, 128, 0))
+    assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / "4.jpg", (255, 165, 0))

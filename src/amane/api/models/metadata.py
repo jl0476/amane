@@ -79,7 +79,7 @@ class MetadataResponse(BaseModel):
 if TYPE_CHECKING:
     type PartialMetadata = Metadata
 
-# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources/field_languages 由刮削写入) 与锁列 (经 PUT locks 管理); website 为聚合派生列, 一并排除.
+# 外部可写字段: 排除只读列 (id/number/content_type/时间戳), 仅后端可写字段 (raw/field_sources/field_languages/behind_scenes 由刮削写入) 与锁列 (经 PUT locks 管理); website 为聚合派生列, 一并排除.
 PartialMetadata = create_partial_model(
     Metadata,
     ignore_fields=(
@@ -91,6 +91,7 @@ PartialMetadata = create_partial_model(
         "raw",
         "field_sources",
         "field_languages",
+        "behind_scenes",
         "website",
         "locked_fields",
     ),

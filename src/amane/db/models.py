@@ -322,6 +322,10 @@ class Metadata(SQLModel, table=True):
 
     # 按站点分组, 禁止扁平合并.
     extrafanart_urls: dict[str, list[str]] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 幕后图: 按来源分组, 独立于 extrafanart_urls (规格 §3.5); 无论开关状态都持久化, 整理/物化期按开关消费.
+    behind_scenes: dict[str, list[str]] = Field(
+        default_factory=dict, sa_column=Column(JSON, server_default=text("'{}'"))
+    )
     # 每站独立, 禁止折成单值.
     scores: dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))
     external_ids: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))

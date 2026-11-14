@@ -1,5 +1,7 @@
 """Metadata 仓储的原文字段写入: 显式赋值 / 长文本归一 / PATCH 派生列隔离."""
 
+import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -148,3 +150,46 @@ async def test_update_original_plot_keeps_plot(repo: Repository):
     assert updated is not None
     assert updated.original_plot == "新原文"
     assert updated.plot == "旧简介"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_metadata_repo_roundtrip_and_patch_excluded(repo: Repository, tmp_path: Path):
+    """behind_scenes: update_metadata 显式写入并读回; PATCH (PartialMetadata) 不可写; 升级前的旧行得到空集合."""
+    meta = await repo.upsert_metadata("ABP-123")
+    assert meta.id is not None
+    assert meta.behind_scenes == {}
+
+    updated = await repo.update_metadata(meta.id, behind_scenes={"javdb": ["https://s/b1.jpg"]})
+    assert updated is not None
+    assert updated.behind_scenes == {"javdb": ["https://s/b1.jpg"]}
+
+    fetched = await repo.get_metadata(meta.id)
+    assert fetched is not None
+    assert fetched.behind_scenes == {"javdb": ["https://s/b1.jpg"]}
+
+    # PATCH 不可写: 后端写入字段, 沿 field_sources 先例; 可写字段护栏.
+    partial_fields = PartialMetadata.model_fields
+    assert "behind_scenes" not in partial_fields
+    assert "field_sources" not in partial_fields
+    assert "extrafanart_urls" in partial_fields
+    assert "title" in partial_fields
+
+    # 旧行 (无该列写入) 由 server_default 升级为空集合: 迁移给存量行回填 '{}'.
+    db_path = tmp_path / "amane.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO metadata (number, title, actors, directors, tags, studio, publisher, series, "
+            "poster_urls, thumb_urls, trailer_urls, extrafanart_urls, scores, external_ids, source_urls, "
+            "field_sources, raw, created_at, updated_at) "
+            "VALUES ('ABP-999', 'Legacy', '[]', '[]', '[]', NULL, NULL, NULL, "
+            "'[]', '[]', '[]', '{}', '{}', '{}', '{}', '{}', '{}', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    legacy = await repo.get_metadata_by_number("ABP-999")
+    assert legacy is not None
+    assert legacy.behind_scenes == {}

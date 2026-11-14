@@ -97,6 +97,8 @@ class MediaMetadata(BaseModel):
     field_languages: dict[str, str] | None = None
     directors: list[str] = Field(default_factory=list)
     extrafanart: list[str] = Field(default_factory=list)
+    # 幕后图地址 (片场 / 花絮): 聚合按来源分组 (AggregatedMetadata.behind_scenes), 不并入 extrafanart.
+    behind_scenes: list[str] = Field(default_factory=list)
 
     @field_validator("actors", mode="before")
     @classmethod

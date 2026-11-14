@@ -33,6 +33,8 @@ class AggregatedMetadata:
     trailer_urls: list[str] = field(default_factory=list)
 
     extrafanart_urls: dict[str, list[str]] = field(default_factory=dict)
+    # 幕后图: 按来源分组, 独立于 extrafanart_urls (规格 §3.5); 无字段链, 不参与字段路由.
+    behind_scenes: dict[str, list[str]] = field(default_factory=dict)
 
     # 不同站点评分体系不同, 必须保留来源.
     scores: list[SourcedScore] = field(default_factory=list)
