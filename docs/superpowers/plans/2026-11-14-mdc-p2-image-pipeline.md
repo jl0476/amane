@@ -138,6 +138,9 @@ def test_legacy_ratio_uses_poster_ratio():
 
 def test_low_res_none_uses_skip_ratio_short_circuit():
     ...  # low_res=None: b/h ≥ skip_ratio → 用候选 (现状); b/h < skip_ratio → 裁剪 (现状)
+
+def test_skip_ratio_is_explicit_input():
+    ...  # 同一组尺寸, skip_ratio=0.9 → 用候选; skip_ratio=0.95 → 裁剪 (既有可配置值, 非固定 0.9)
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -147,7 +150,7 @@ def test_low_res_none_uses_skip_ratio_short_circuit():
 
 - [ ] **步骤 3：实现**
 
-`enums.py` 加 `CropStrategy(StrEnum)`（none/right/face——**中立层：enums 不依赖 config/media**，两侧均可导入）。`optional_cv2.py`：模块级 `try: import cv2 / except ModuleNotFoundError: cv2 = None`，提供 `available()` / `module()`。`crop.py`（从 `..enums` 导入 CropStrategy）：`CropPlan(requested, executed, ratio, low_res_height)`；`resolve_crop_plan(content_type, *, strategy_map, aspect, low_res_height, poster_ratio, thumb_size, candidate_size) -> CropPlan` —— **纯输入参数签名，不引用 MetadataConfig**（该模型任务 4 才存在）；含 §3.3 默认态算法（skip_ratio 短路）。本任务不含 Face 执行与任何接线。
+`enums.py` 加 `CropStrategy(StrEnum)`（none/right/face——**中立层：enums 不依赖 config/media**，两侧均可导入）。`optional_cv2.py`：模块级 `try: import cv2 / except ModuleNotFoundError: cv2 = None`，提供 `available()` / `module()`。`crop.py`（从 `..enums` 导入 CropStrategy）：`CropPlan(requested, executed, ratio, low_res_height)`；`resolve_crop_plan(content_type, *, strategy_map, aspect, low_res_height, poster_ratio, skip_ratio, thumb_size, candidate_size) -> CropPlan` —— **纯输入参数签名，不引用 MetadataConfig**（该模型任务 4 才存在），**`skip_ratio` 显式传入**（R3 PLAN-10：既有可配置值 0.5–1.0，默认模式短路语义的阈值来源，不得固定 0.9）；含 §3.3 默认态算法（skip_ratio 短路）。本任务不含 Face 执行与任何接线。
 
 - [ ] **步骤 4：运行测试验证通过**
 
@@ -275,6 +278,10 @@ def test_materialize_global_scope_right(tmp_path):
 
 def test_allows_poster_crop_removed():
     ...  # media 包不再导出 allows_poster_crop; handlers 无残留引用 (导入检查)
+
+def test_custom_skip_ratio_respected_both_entries(tmp_path):
+    ...  # 同一组尺寸, scraping.poster_crop_skip_ratio=0.9 → 不裁; =0.95 → 裁
+    # 刮削与整理两入口分别验证 (R3 PLAN-10: 既有可配置值不得固定 0.9)
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -284,7 +291,7 @@ def test_allows_poster_crop_removed():
 
 - [ ] **步骤 3：实现**
 
-`materialize_images` 增加 `metadata_cfg: MetadataConfig` 参数（**调用者 `handlers/scrape.py` 同步迁移**，从 `config.hot.metadata` 传入——全局作用域；新参数与调用者同提交）；裁剪判定改走 `resolve_crop_plan`（§3.3 默认态）+ `crop.py` Right 执行；派生 args 扩展。**`allows_poster_crop` 删除与 `media/__init__.py` 导出、`handlers/file.py` 导入/调用迁移同一提交**（提交结束可导入）。
+`materialize_images` 增加 `metadata_cfg: MetadataConfig` 参数（**调用者 `handlers/scrape.py` 同步迁移**，从 `config.hot.metadata` 传入——全局作用域；新参数与调用者同提交）；裁剪判定改走 `resolve_crop_plan`（§3.3 默认态，**`skip_ratio=config.scraping.poster_crop_skip_ratio` 显式传入**）+ `crop.py` Right 执行；派生 args 扩展。**`allows_poster_crop` 删除与 `media/__init__.py` 导出、`handlers/file.py` 导入/调用迁移同一提交**（提交结束可导入）。
 
 - [ ] **步骤 4：运行测试验证通过**
 
@@ -382,7 +389,7 @@ def test_empty_rebuild_falls_back(tmp_path):
 
 - [ ] **步骤 3：实现（同步/异步边界，R1 PLAN-02 已闭合项的落实）**
 
-**异步协调函数** `handlers/file.py::_prepare_poster_product(...)`（async，`execute_file_operations` 内、`_download_images_via_store` 之前调用）：完成 `rebuild_poster_candidates`（含 repo/raw/locked/Resource 反解等异步读取）、`resolve_crop_plan` 与策略执行——none 用 `store.acquire` 下载选中候选，right/face 经 `acquire_derived`（任务 7 的检测先于键构造流程）——产出 `PreparedPoster(local_path, origin)`。**同步 helper `_place_library_images` 只接收已准备的本地路径**，保持 `@in_thread` 文件复制/水印职责；user_product / fallback 信号决定 poster 来源与 skipped 计数；`overwrite_image=False` 既有跳过语义保留。
+**异步协调函数** `handlers/file.py::_prepare_poster_product(...)`（async，`execute_file_operations` 内、`_download_images_via_store` 之前调用）：完成 `rebuild_poster_candidates`（含 repo/raw/locked/Resource 反解等异步读取）、`resolve_crop_plan`（**`skip_ratio=config.scraping.poster_crop_skip_ratio`**）与策略执行——none 用 `store.acquire` 下载选中候选，right/face 经 `acquire_derived`（任务 7 的检测先于键构造流程）——产出 `PreparedPoster(local_path, origin)`。**同步 helper `_place_library_images` 只接收已准备的本地路径**，保持 `@in_thread` 文件复制/水印职责；user_product / fallback 信号决定 poster 来源与 skipped 计数；`overwrite_image=False` 既有跳过语义保留。
 
 **metadata 参数传递路径**（完整链）：`OrganizeHandler.handle → resolve_effective_config（+metadata 节）→ EffectiveOrganizeConfig → apply_file_operations → execute_file_operations → _prepare_poster_product → _download_images_via_store → _place_library_images`。刮削入口：`ScrapeHandler.handle → materialize_images(metadata_cfg=config.hot.metadata)`（全局作用域，任务 6 已接）。
 
@@ -519,6 +526,7 @@ git commit -m "feat(media): quality/priority 双入口分派 (先择优后裁剪
     "thumb_unreadable_no_crop",         # thumb 尺寸不可读 → 不裁
     "candidate_unreadable_crops",       # 候选尺寸不可读 → 裁剪产物 (thumb 可用)
     "threshold_overrides_skip_ratio",   # b/h < skip_ratio 但候选 ≥ 阈值 → 用候选 (阈值取代短路)
+    "threshold_ignores_skip_ratio_value",  # 阈值模式下改变 skip_ratio (0.9↔0.95) → 选择不变
     "default_none_matches_current",     # low_res=None → skip_ratio 短路 (现状逐字节)
 ])
 def test_low_res_decision_matrix(case):
