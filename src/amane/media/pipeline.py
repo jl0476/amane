@@ -10,11 +10,12 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ..config import DownloadableResource
+from ..enums import CropStrategy
 from ..parsing import ContentType
 from ..sr import get_preset_meta, run_SR
+from .crop import CropPlan, resolve_crop_plan
 from .images import (
     CropRotation,
-    allows_poster_crop,
     crop_box,
     crop_poster,
     format_crop_box_args,
@@ -22,13 +23,12 @@ from .images import (
     probe_oriented_size,
     probe_size,
     rotated_size,
-    should_crop_poster,
     validate_crop_box,
 )
 from .resource_store import RESOURCE_URL_PREFIX
 
 if TYPE_CHECKING:
-    from ..config import HotSettings, SrConfig
+    from ..config import HotSettings, MetadataConfig, SrConfig
     from ..db.models import Resource
     from ..net.http import WebClient
     from .resource_store import ResourceStore
@@ -95,16 +95,18 @@ async def materialize_images(
     data_dir: Path,
     *,
     content_type: ContentType,
+    metadata_cfg: MetadataConfig,
     extrafanart_urls: dict[str, list[str]] | None = None,
 ) -> MaterializedImages:
     """仅下载集合内的类型; 未选中的保留聚合 URL.
 
     死 URL 保序置于尾部, 供来源恢复后重试.
     extrafanart 仅下载到 Resource, 站点分组结构不重排.
-    海报裁切只对 ``allows_poster_crop`` 放行的类型执行.
+    海报裁切按 ``metadata_cfg`` 的策略矩阵解析 (`media/crop.py::resolve_crop_plan`);
+    ``executed=NONE`` 表示候选原样入选, 不执行像素裁剪.
     """
     kinds = set(config.scraping.download_resources)
-    crop_enabled = config.scraping.crop_poster and allows_poster_crop(content_type)
+    crop_enabled = config.scraping.crop_poster
 
     # 下载 thumb.
     thumb_ok: set[str] = set()
@@ -133,8 +135,23 @@ async def materialize_images(
                 if poster_candidate_local is None:
                     poster_candidate_local = local
 
+        cand_size = probe_size(poster_candidate_local) if poster_candidate_local else None
+
+        def crop_plan(thumb_size: tuple[int, int] | None) -> CropPlan:
+            return resolve_crop_plan(
+                content_type,
+                strategy_map=metadata_cfg.crop_type,
+                aspect=metadata_cfg.crop_aspect,
+                low_res_height=metadata_cfg.crop_low_res_height,
+                poster_ratio=config.scraping.poster_ratio,
+                skip_ratio=config.scraping.poster_crop_skip_ratio,
+                thumb_size=thumb_size,
+                candidate_size=cand_size,
+            )
+
         # 裁剪需要 thumb 本地文件; 若未选 thumb 下载, 为裁切临时 acquire 首个 thumb.
-        if thumb_local is None and thumb_urls and crop_enabled:
+        # 策略矩阵未请求像素裁剪的类型 (requested=none) 不临时下载.
+        if thumb_local is None and thumb_urls and crop_enabled and crop_plan(None).requested is not CropStrategy.NONE:
             for url in thumb_urls:
                 local = await store.acquire(url, client)
                 if local:
@@ -142,15 +159,11 @@ async def materialize_images(
                     break
 
         thumb_size = probe_size(thumb_local) if thumb_local else None
-        cand_size = probe_size(poster_candidate_local) if poster_candidate_local else None
+        plan = crop_plan(thumb_size)
 
-        if (
-            crop_enabled
-            and should_crop_poster(thumb_size, cand_size, skip_ratio=config.scraping.poster_crop_skip_ratio)
-            and thumb_local
-        ):
-            ratio = config.scraping.poster_ratio
-            args = f"{ratio:.4f}"
+        if crop_enabled and plan.executed is not CropStrategy.NONE and thumb_local:
+            ratio = plan.ratio
+            args = f"{plan.executed.value}:{metadata_cfg.crop_aspect}:{ratio:.4f}"
             local_thumb = thumb_local
 
             async def crop_producer(dest: Path) -> bool:
@@ -163,6 +176,7 @@ async def materialize_images(
             else:
                 result_poster_urls = _success_first(poster_urls, poster_ok)
         else:
+            # executed=NONE: 候选原样入选, 不执行像素裁剪; 对候选就地超分.
             result_poster_urls = _success_first(poster_urls, poster_ok)
             if poster_candidate_local:
                 for url in poster_urls:

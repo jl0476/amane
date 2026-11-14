@@ -1,6 +1,6 @@
+from .crop import resolve_crop_plan
 from .images import (
     CropRotation,
-    allows_poster_crop,
     apply_cover_watermarks,
     apply_cover_watermarks_from_info,
     crop_box,
@@ -24,7 +24,6 @@ __all__ = [
     "NfoOptions",
     "ResourceStore",
     "UpscaleOutcome",
-    "allows_poster_crop",
     "apply_cover_watermarks",
     "apply_cover_watermarks_from_info",
     "crop_box",
@@ -36,6 +35,7 @@ __all__ = [
     "needs_upscale",
     "probe_oriented_size",
     "probe_size",
+    "resolve_crop_plan",
     "rotated_size",
     "should_crop_poster",
     "validate_crop_box",

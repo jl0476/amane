@@ -162,6 +162,7 @@ class ScrapeHandler(TaskHandler[ScrapePayload, ScrapeResult]):
                     self._config,
                     self._resource_store.data_dir,
                     content_type=content_type,
+                    metadata_cfg=self._config.metadata,
                     extrafanart_urls=result.metadata.extrafanart_urls,
                 )
                 poster_out = materialized.poster_urls
