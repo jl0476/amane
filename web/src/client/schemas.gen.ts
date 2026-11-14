@@ -1910,6 +1910,17 @@ export const CropPosterRequestSchema = {
     description: '从封面图按像素框裁切海报 (相对 thumb 当前本地文件像素; 含就地超分后尺寸).'
 } as const;
 
+export const CropStrategySchema = {
+    type: 'string',
+    enum: [
+        'none',
+        'right',
+        'face'
+    ],
+    title: 'CropStrategy',
+    description: '海报裁剪策略.'
+} as const;
+
 export const DeleteResultSchema = {
     properties: {
         type: {
@@ -2065,16 +2076,20 @@ export const EffectiveConfigResponseSchema = {
         },
         nfo: {
             $ref: '#/components/schemas/NfoConfig'
+        },
+        metadata: {
+            $ref: '#/components/schemas/MetadataConfig'
         }
     },
     type: 'object',
     required: [
         'common',
         'naming',
-        'nfo'
+        'nfo',
+        'metadata'
     ],
     title: 'EffectiveConfigResponse',
-    description: 'GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层).'
+    description: 'GET /api/libraries/{id}/effective-config: 四节四层合成的生效配置 (无任务层).'
 } as const;
 
 export const EmbeddingKindSchema = {
@@ -3630,6 +3645,18 @@ export const HotSettingsSchema = {
                 set_by_serial_name: false,
                 set_by_series: false,
                 additional_tags: []
+            }
+        },
+        metadata: {
+            $ref: '#/components/schemas/MetadataConfig',
+            default: {
+                crop_type: {
+                    censored: 'right',
+                    uncensored: 'right'
+                },
+                crop_aspect: 'legacy',
+                thumb_download_strategy: 'priority',
+                extra_fanarts_behind_scenes: false
             }
         },
         media_server: {
@@ -5616,6 +5643,60 @@ export const MetadataBatchScrapeResponseSchema = {
         'task_ids'
     ],
     title: 'MetadataBatchScrapeResponse'
+} as const;
+
+export const MetadataConfigSchema = {
+    properties: {
+        crop_type: {
+            additionalProperties: {
+                $ref: '#/components/schemas/CropStrategy'
+            },
+            propertyNames: {
+                $ref: '#/components/schemas/ContentType'
+            },
+            type: 'object',
+            title: 'Crop Type'
+        },
+        crop_aspect: {
+            type: 'string',
+            enum: [
+                'legacy',
+                'emby',
+                'full'
+            ],
+            title: 'Crop Aspect',
+            default: 'legacy'
+        },
+        thumb_download_strategy: {
+            type: 'string',
+            enum: [
+                'priority',
+                'quality'
+            ],
+            title: 'Thumb Download Strategy',
+            default: 'priority'
+        },
+        crop_low_res_height: {
+            anyOf: [
+                {
+                    type: 'integer'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Crop Low Res Height'
+        },
+        extra_fanarts_behind_scenes: {
+            type: 'boolean',
+            title: 'Extra Fanarts Behind Scenes',
+            default: false
+        }
+    },
+    additionalProperties: false,
+    type: 'object',
+    title: 'MetadataConfig',
+    description: '海报裁剪与缩略图下载策略 (规格 §3.1). 消费方: media.crop 策略解析与刮削图片管线.'
 } as const;
 
 export const MetadataDetailResponseSchema = {

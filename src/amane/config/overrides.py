@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, RootModel, model_validator
 
-from .manager import HotSettings, NamingConfig, NfoConfig, OrganizeCommonConfig
+from .manager import HotSettings, MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -29,10 +29,11 @@ _SECTION_BINDINGS: dict[type[BaseModel], _SectionBinding] = {
     OrganizeCommonConfig: _SectionBinding("common", lambda settings: settings.common),
     NamingConfig: _SectionBinding("naming", lambda settings: settings.naming),
     NfoConfig: _SectionBinding("nfo", lambda settings: settings.nfo),
+    MetadataConfig: _SectionBinding("metadata", lambda settings: settings.metadata),
 }
 
 SECTION_MODELS: dict[str, type[BaseModel]] = {binding.name: section for section, binding in _SECTION_BINDINGS.items()}
-"""section 白名单 → 模型. download / watermark / metadata / provider 预留, parser 不是 section, 写入一律拒绝."""
+"""section 白名单 → 模型. download / watermark / provider 预留, parser 不是 section, 写入一律拒绝."""
 
 
 def _normalize_payload(data: object) -> object:

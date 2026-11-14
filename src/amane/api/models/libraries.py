@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
+from ...config import MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...db import Library
 from ...enums import DownloadableResource, LibraryAutomation, LibraryIngest, LinkMode, MoveMode
 from ...library import (
@@ -136,11 +136,12 @@ class LibraryOverridesResponse(BaseModel):
 
 
 class EffectiveConfigResponse(BaseModel):
-    """GET /api/libraries/{id}/effective-config: 三节四层合成的生效配置 (无任务层)."""
+    """GET /api/libraries/{id}/effective-config: 四节四层合成的生效配置 (无任务层)."""
 
     common: OrganizeCommonConfig
     naming: NamingConfig
     nfo: NfoConfig
+    metadata: MetadataConfig
 
 
 @subset_of(Library, covariant=True)

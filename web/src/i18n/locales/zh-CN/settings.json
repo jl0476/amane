@@ -15,7 +15,8 @@
     "semantic": "语义检索",
     "common": "整理通用",
     "naming": "命名模板",
-    "nfo": "NFO 写入"
+    "nfo": "NFO 写入",
+    "metadata": "图片策略"
   },
   "config": {
     "loadError": "加载配置失败"
@@ -1100,6 +1101,53 @@
       },
       "additional_tags": {
         "label": "附加标签"
+      }
+    },
+    "metadata": {
+      "crop_type": {
+        "label": "裁剪策略",
+        "description": "按影片类型指定海报裁剪策略; 未列出的类型沿用默认 (有码/无码裁右侧, 其余不裁剪)",
+        "options": {
+          "censored": "有码",
+          "uncensored": "无码",
+          "chinese": "国产",
+          "western": "欧美",
+          "fc2": "FC2",
+          "amateur": "素人",
+          "hentai": "动漫"
+        },
+        "$": {
+          "options": {
+            "none": "不裁剪",
+            "right": "裁右侧",
+            "face": "人脸对齐"
+          }
+        }
+      },
+      "crop_aspect": {
+        "label": "海报比例",
+        "description": "legacy 沿用刮削设置中的海报宽高比; emby 为 2:3; full 为 2.12:3",
+        "options": {
+          "legacy": "沿用刮削比例",
+          "emby": "Emby (2:3)",
+          "full": "Full (2.12:3)"
+        }
+      },
+      "thumb_download_strategy": {
+        "label": "缩略图下载策略",
+        "description": "priority 按顺序取首个达标候选; quality 下载全部候选后择优",
+        "options": {
+          "priority": "速度优先",
+          "quality": "质量优先"
+        }
+      },
+      "crop_low_res_height": {
+        "label": "低清阈值",
+        "description": "候选高度达到此阈值才原样入选, 低于则裁剪提升; 留空沿用现有判定"
+      },
+      "extra_fanarts_behind_scenes": {
+        "label": "幕后图并入剧照",
+        "description": "整理与刮削物化期把幕后花絮图并入 extrafanart 候选"
       }
     }
   }

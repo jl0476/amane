@@ -5,7 +5,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import ValidationError
 
-from ...config import NamingConfig, NfoConfig, OrganizeCommonConfig
+from ...config import MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig
 from ...config.overrides import ConfigResolver, section_model, validate_override_payload
 from ...db.models import TEMPLATE_OVERRIDE_FIELDS, Library, Metadata, TaskType
 from ...handlers import RefreshPayload, ScanMode
@@ -378,11 +378,12 @@ async def delete_library_override(library_id: int, section: str, repo: RepoDep) 
 
 @router.get("/{library_id}/effective-config")
 async def get_effective_config(library_id: int, repo: RepoDep, config: ConfigDep) -> EffectiveConfigResponse:
-    """common / naming / nfo 三节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层)."""
+    """common / naming / nfo / metadata 四节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层)."""
     library = await _require_library(library_id, repo)
     resolver = ConfigResolver(config.hot, repo)
     return EffectiveConfigResponse(
         common=await resolver.resolve(OrganizeCommonConfig, scope=library, library=library),
         naming=await resolver.resolve(NamingConfig, scope=library, library=library),
         nfo=await resolver.resolve(NfoConfig, scope=library, library=library),
+        metadata=await resolver.resolve(MetadataConfig, scope=library, library=library),
     )
