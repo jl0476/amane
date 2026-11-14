@@ -20,9 +20,7 @@ async def get_config(config: ConfigDep) -> HotSettings:
     return config.hot
 
 
-async def _validate_naming_patch(
-    req: dict[str, Any], old: NamingConfig, settings: HotSettings, repo: Any
-) -> None:
+async def _validate_naming_patch(req: dict[str, Any], old: NamingConfig, settings: HotSettings, repo: Any) -> None:
     """naming 节写入的语法感知校验 (规格 3.2.3), 与库级覆盖端点同一错误形态.
 
     语法切换或模板字段有写入时, 对合并后的生效模板集 (旧值 ∪ 本次写入) 做保存校验加渲染探针,

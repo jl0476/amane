@@ -1494,9 +1494,7 @@ async def test_organize_other_modes_leave_source_dir(
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_retry_after_failed_takeover_recovers_before_prune(
-    repo, tmp_path: Path, resource_store
-) -> None:
+async def test_retry_after_failed_takeover_recovers_before_prune(repo, tmp_path: Path, resource_store) -> None:
     """接管失败中断后重试整理 (联合审核 P1): prune 不得删除恢复所需的源行, 且本轮完成接管.
 
     同文件系统 MOVE 已落位 (源路径消失, 目标上是源内容) 而索引接管未提交时中断:

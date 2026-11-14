@@ -116,6 +116,10 @@ payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段�
 
 模型身份是代码常量 (`src/amane/semantic/models.py` 的 `DEFAULT_SPEC`), 不进配置: 换模型 = 换清单, 旧模型的向量按清单的 `(name, version)` 保留. 两个塔分别判断就绪 — 检索要 tokenizer + 文本塔, 索引要视觉塔, `/semantic/diagnostics` 的 `search_ready` / `index_ready` 各对应一个; 检索未就绪时 503. 只有 `SEMANTIC_INDEX` 任务会下载缺失文件到 `{data_dir}/models/` (断点续传 + SHA256 校验), 检索与增量维护只认本地文件. 后端按平台决定 (macOS Core ML, 其余 ONNX Runtime); 分发精度: 视觉塔只发 fp16 (量化后余弦明显掉点), 文本塔 Core ML 用 8bit palettization (p8)、ONNX 用 fp16. 文本塔空闲超时后释放.
 
+## `metadata` (Hot)
+
+图片策略节: 策略矩阵、比例三值、候选下载策略与低清阈值的判定语义见 `src/amane/media/crop.py::resolve_crop_plan` (缺键回退与 config 默认须一致, 见上文覆盖层). `face` 策略依赖可选 extra `[opencv]`, 未装或后端失败时按 Right 执行并告警 (契约见 `src/amane/media/crop.py::resolve_face_execution`), 桌面与容器装配必须带该 extra 与模型数据 (见 [desktop.md](desktop.md)). `crop_low_res_height` 启用时取代 `scraping.poster_crop_skip_ratio` 的短路判定. `image_strict_mode` 未实现 — 行为语义未调研, 不臆造 (设计规格 §7), 下载策略只有 priority / quality.
+
 ## `watermark` (Hot)
 
 只在 ORGANIZE 落盘封面时绘制, 不修改 Resource; 片库 CSS overlay 不读 `enabled`. 角标高度 = 图高 × `scale` (不按宽、不按 PNG 原图像素); `corners` 是 `x-frozen-keys` 五类到四角的映射, 同角按中字 / 无码 / 破解 / 流出 / 分辨率向内叠. PNG 覆盖仍是 `{data_dir}/watermarks/{stem}.png`.

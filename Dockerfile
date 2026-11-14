@@ -18,13 +18,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --no-dev --frozen --no-editable
+RUN uv sync --no-dev --frozen --no-editable --extra opencv
 
 # --- 最终镜像 ---
 FROM base
 # libgomp1: 超分二进制的运行时依赖, Real-ESRGAN 与 waifu2x 都动态链接 libgomp.
+# libgl1 / libglib2.0-0 / libatomic1: opencv 的运行时依赖, 缺任一则 import cv2 失败, face 策略降级 Right.
 # postgresql-client: r18.dev dump 导入走 psql -f 子进程 (见 docs/dev/crawlers.md). 不配 r18 时无害.
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 postgresql-client \
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 libatomic1 postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 COPY alembic.ini ./
 COPY --from=web-builder /app/web/dist ./web/dist

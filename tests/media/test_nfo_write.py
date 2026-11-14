@@ -212,7 +212,10 @@ async def test_all_element_switches_off_writes_skeleton(tmp_path: Path) -> None:
 
     assert await write_nfo(full_metadata(), nfo_path, options) is True
 
-    assert nfo_path.read_text(encoding="utf-8") == '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n</movie>\n'
+    assert (
+        nfo_path.read_text(encoding="utf-8")
+        == '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n</movie>\n'
+    )
 
 
 @pytest.mark.asyncio(loop_scope="function")

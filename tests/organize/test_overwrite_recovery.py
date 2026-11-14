@@ -521,11 +521,7 @@ def test_bootstrap_recovers_before_worker_claims() -> None:
     worker_start_line: int | None = None
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            name = (
-                node.func.id
-                if isinstance(node.func, ast.Name)
-                else getattr(node.func, "attr", None)
-            )
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
             if name == "recover_organize_journals" and recover_line is None:
                 recover_line = node.lineno
             if (
@@ -547,14 +543,15 @@ async def test_recovery_library_root_filter(repo: Repository, tmp_path: Path) ->
     other_dir = _video(tmp_path / "other" / "T.mp4", CONTENT_TARGET)
     own_target = tmp_path / "lib" / "own.mp4"
     own_dir = _video(tmp_path / "lib" / "own-src.mp4", CONTENT_SOURCE)
-    await repo.create_media_file(1, path=str(own_dir))
+    own_media = await repo.create_media_file(1, path=str(own_dir))
+    assert own_media.id is not None
     other_media = await repo.create_media_file(2, path=str(other_dir))
     assert other_media.id is not None
     await repo.create_organize_journal(
         task_id=None,
         mode="move",
         source_path=str(own_dir),
-        source_file_id=None,
+        source_file_id=own_media.id,
         source_oshash="0" * 16,
         source_size=own_dir.stat().st_size,
         source_metadata_id=None,

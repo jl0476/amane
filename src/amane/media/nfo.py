@@ -69,6 +69,8 @@ def _set_collection_name(metadata: Metadata, options: NfoOptions) -> str | None:
         if prefix:
             return prefix
     return metadata.series or None
+
+
 _SUMMARY_MAX_BYTES = 120
 
 # 元素名可用字符: cache_key 里的 ``:`` (多语言站) 与空格等字符会使元素名无法解析, 一律替换为 ``_``.

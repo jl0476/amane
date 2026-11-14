@@ -601,9 +601,7 @@ async def test_takeover_reentry_with_source_at_target(repo: Repository, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_uses_live_content_not_cached(
-    repo: Repository, tmp_path: Path
-) -> None:
+async def test_fingerprint_uses_live_content_not_cached(repo: Repository, tmp_path: Path) -> None:
     """行缓存的 oshash/size 过期 (源被外部改写) 时, 阶段 A 按现场内容覆写与核验 (联合审核 P2).
 
     源与目标等长不同内容: 行里的旧指纹与目标相等, 若按缓存核验会在目标核验处失败;

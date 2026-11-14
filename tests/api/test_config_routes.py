@@ -180,9 +180,7 @@ class TestSyntaxSwitchValidatesLibraries:
     """全局语法切换校验所有库的生效模板 (联合审核 P2): 名单内钉住库行模板的库不受全局默认影响."""
 
     @pytest.mark.asyncio(loop_scope="function")
-    async def test_switch_rejected_when_library_pins_native_template(
-        self, client: AsyncClient, safe_path
-    ):
+    async def test_switch_rejected_when_library_pins_native_template(self, client: AsyncClient, safe_path):
         scan_dir = safe_path / "lib-pin"
         scan_dir.mkdir()
         lib = (
