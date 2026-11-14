@@ -2,11 +2,11 @@ import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
-from ..config import HotSettings, NamingConfig, NfoConfig, OrganizeCommonConfig, WatermarkConfig
+from ..config import HotSettings, MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig, WatermarkConfig
 from ..config.overrides import ConfigResolver
 from ..db.models import Library, MediaFile
 from ..db.parse_rules import ParseRuleProvider
@@ -23,6 +23,8 @@ from ..media import (
     resolve_crop_plan,
 )
 from ..media import write_nfo as write_nfo_file
+from ..media.candidates import rebuild_poster_candidates
+from ..media.crop import CropAspect, CropPlan, acquire_face_crop, format_crop_args
 from ..media.resource_store import internal_url_hash
 from ..net.http import WebClient
 from ..observability.models import OrganizeConflict, OrganizeConflictReason
@@ -96,6 +98,23 @@ class EffectiveOrganizeConfig:
     naming: NamingConfig
     common: OrganizeCommonConfig
     nfo_options: NfoOptions
+    metadata: MetadataConfig
+
+
+type PosterOrigin = Literal["user", "reselect"]
+"""PreparedPoster.origin 取值: user 为用户指定产物 (决策 18), reselect 为重选产物."""
+
+
+@dataclass(frozen=True)
+class PreparedPoster:
+    """整理期重选产出的本轮 poster 本地文件 (规格 §3.6).
+
+    ``local_path`` 已就绪 (store 缓存文件或派生裁剪产物): 异步协调边界在 _prepare_poster_product
+    完成, _place_library_images 只负责复制, 不再访问 Resource store.
+    """
+
+    local_path: Path
+    origin: PosterOrigin
 
 
 async def resolve_effective_config(
@@ -104,7 +123,7 @@ async def resolve_effective_config(
     library: Library,
     payload: OrganizePayload,
 ) -> EffectiveOrganizeConfig:
-    """四层合成 common / naming / nfo; 第 4 层只读 payload.explicit_fields 列出的字段.
+    """四层合成 common / naming / nfo / metadata; 第 4 层只读 payload.explicit_fields 列出的字段.
 
     explicit_fields 是入队前持久化的用户显式字段名单 (JSON 往返后 ``model_fields_set`` 不可靠).
     名单与 payload 字段集及非 None 值取交集后才进入合成层: 带外写入的畸形名单 (未知键或 None 值)
@@ -122,7 +141,10 @@ async def resolve_effective_config(
     naming = await resolver.resolve(NamingConfig, scope=library, library=library, payload=explicit)
     common = await resolver.resolve(OrganizeCommonConfig, scope=library, library=library)
     nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
-    return EffectiveOrganizeConfig(naming=naming, common=common, nfo_options=NfoOptions(**nfo.model_dump()))
+    metadata_cfg = await resolver.resolve(MetadataConfig, scope=library, library=library)
+    return EffectiveOrganizeConfig(
+        naming=naming, common=common, nfo_options=NfoOptions(**nfo.model_dump()), metadata=metadata_cfg
+    )
 
 
 async def execute_file_operations(
@@ -143,6 +165,7 @@ async def execute_file_operations(
     actor_genders: dict[str, ActorGender] | None = None,
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
+    metadata_cfg: MetadataConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     repo: Repository | None = None,
@@ -152,7 +175,9 @@ async def execute_file_operations(
 
     未带库列时函数不报错, 直接少打中字角标 — 调用方负责构造.
     ``naming`` 非 None 时模板类字段 (strm 正文 / 链接模式 / 字幕扩展名 / 剧照文件名) 取自生效配置,
-    不回读库行 (规格 3.1.3). ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关:
+    不回读库行 (规格 3.1.3). ``metadata_cfg`` 是任务入口解析的库级生效 MetadataConfig, 驱动整理期
+    海报重选 (规格 §3.6); None 时本轮不重选, poster 走现状物化图复制路径.
+    ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关:
     ``overwrite_video`` 接入 OCCUPIED 分派 (False 维持冲突跳过, True 进入覆写协议, 规格 3.4.2),
     ``overwrite_image`` 接入图片写入. 覆写协议需要 ``repo`` (journal 与索引接管) 与 ``library``
     (库边界); 缺任一开关即开时按失败处理. ``task_id`` 用于备份 / 临时文件命名与 journal 追查.
@@ -213,6 +238,17 @@ async def execute_file_operations(
     if web_client and download_images:
         logger.debug("downloading images via store", number=metadata.number)
         kinds = set(copy_resources) if copy_resources is not None else set(DownloadableResource)
+        # 整理期海报重选 (规格 §3.6): 时机在 poster 复制判定之前. 异步协调边界 — 候选重建 / 策略
+        # 解析 / 产物执行在此完成, _place_library_images 只接收已准备的本地路径 (R1 PLAN-02).
+        prepared_poster = await _prepare_poster_product(
+            metadata,
+            resource_store,
+            web_client,
+            config=config,
+            metadata_cfg=metadata_cfg,
+            content_type=metadata.content_type,
+            kinds=kinds,
+        )
         skipped_images = await _download_images_via_store(
             metadata,
             resource_store,
@@ -226,6 +262,8 @@ async def execute_file_operations(
             library=library,
             naming=naming,
             overwrite_image=overwrite_image,
+            metadata_cfg=metadata_cfg,
+            prepared_poster=prepared_poster,
         )
 
     if overwrite_result is not None:
@@ -337,6 +375,7 @@ async def apply_file_operations(
     watermark_dir: Path | None = None,
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
+    metadata_cfg: MetadataConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     task_id: int | None = None,
@@ -345,8 +384,8 @@ async def apply_file_operations(
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
     Library 由 MediaFile.library_id 派生.
 
-    ``naming`` / ``nfo_options`` / 覆写开关是任务入口解析好的生效配置, 原样下传, 不在此回读库行.
-    ``rules`` 是该库的识别词集 (调用方注入).
+    ``naming`` / ``nfo_options`` / ``metadata_cfg`` / 覆写开关是任务入口解析好的生效配置, 原样下传,
+    不在此回读库行. ``rules`` 是该库的识别词集 (调用方注入).
     """
     if media_file_id is None:
         return None
@@ -390,6 +429,7 @@ async def apply_file_operations(
         actor_genders=actor_genders,
         naming=naming,
         nfo_options=nfo_options,
+        metadata_cfg=metadata_cfg,
         overwrite_video=overwrite_video,
         overwrite_image=overwrite_image,
         repo=repo,
@@ -451,6 +491,40 @@ async def _acquire_first_local(urls: list[str], store: ResourceStore, client: We
     return None
 
 
+async def _acquire_first_local_url(
+    urls: Sequence[str], store: ResourceStore, client: WebClient
+) -> tuple[Path | None, str | None]:
+    """首个可获取的 URL 及其本地文件; 全部失败返回 (None, None).
+
+    与 :func:`_acquire_first_local` 的差别是同时回传 URL: 重选的派生键需要源 URL.
+    """
+    for url in urls:
+        path = await _resolve_local(url, store, client)
+        if path:
+            return path, url
+    return None, None
+
+
+async def _resolve_locator_args(poster_urls: Sequence[str], store: ResourceStore) -> dict[str, str]:
+    """poster_urls 内部 URL 的派生 args 反解 (规格 §3.6 候选重建步骤 1).
+
+    经 ``ResourceStore.get_by_url_hash`` 读取 Resource 记录, 只收录带 args 的派生资源;
+    候选重建据此区分手动裁剪产物 (``box:`` 开头) 与自动裁剪旧产物.
+    """
+    locator_args: dict[str, str] = {}
+    for url in poster_urls:
+        url_hash = internal_url_hash(url)
+        if url_hash is None:
+            continue
+        found = await store.get_by_url_hash(url_hash)
+        if found is None:
+            continue
+        args = found[0].meta.get("args")
+        if isinstance(args, str) and args:
+            locator_args[url] = args
+    return locator_args
+
+
 def _copy_into_library(src: Path, dst: Path) -> None:
     """复制到媒体库, 元数据复制失败不算失败.
 
@@ -492,13 +566,16 @@ def _place_library_images(
     extrafanart_targets: Sequence[tuple[str, Path]],
     kinds: set[DownloadableResource],
     config: HotSettings | None,
-    file_info: FileInfo | None,
+    metadata_cfg: MetadataConfig | None = None,
+    file_info: FileInfo | None = None,
     content_type: ContentType,
     watermark_dir: Path | None,
     overwrite_image: bool = True,
 ) -> int:
     """复制封面 / 海报 / 预告片 / extrafanart 到库路径, 返回因目标已有产物而跳过的张数.
 
+    ``poster_local`` 由整理期重选 (_prepare_poster_product) 预先准备, 本函数不做 IO 读取;
+    兜底裁剪策略取 ``metadata_cfg`` (整理链上游显式传递), None 时回全局 ``config.metadata``.
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
     水印只作用于本轮写出的图, 跳过的既有图不重编码.
@@ -524,13 +601,14 @@ def _place_library_images(
             _copy_into_library(poster_local, paths.poster)
             poster_written = True
         elif thumb_local is not None and config is not None and config.scraping.crop_poster:
-            # 现状兜底路径: 无候选比较, 策略矩阵放行的类型直接从 thumb 右侧裁剪 (整理期重选在后续任务接入).
-            metadata_cfg = config.metadata
+            # 现状兜底路径: 重选未产出产物 (回退) 且 poster_urls 无可用文件时, 无候选比较,
+            # 策略矩阵放行的类型直接从 thumb 右侧裁剪; 策略取生效 MetadataConfig (缺省回全局).
+            crop_cfg = metadata_cfg if metadata_cfg is not None else config.metadata
             plan = resolve_crop_plan(
                 content_type,
-                strategy_map=metadata_cfg.crop_type,
-                aspect=metadata_cfg.crop_aspect,
-                low_res_height=metadata_cfg.crop_low_res_height,
+                strategy_map=crop_cfg.crop_type,
+                aspect=crop_cfg.crop_aspect,
+                low_res_height=crop_cfg.crop_low_res_height,
                 poster_ratio=config.scraping.poster_ratio,
                 skip_ratio=config.scraping.poster_crop_skip_ratio,
                 thumb_size=probe_size(paths.thumb),
@@ -590,6 +668,143 @@ def _place_library_images(
     return skipped
 
 
+async def _prepare_poster_product(
+    metadata: Metadata,
+    store: ResourceStore,
+    client: WebClient,
+    *,
+    config: HotSettings | None,
+    metadata_cfg: MetadataConfig | None,
+    content_type: ContentType,
+    kinds: set[DownloadableResource],
+) -> PreparedPoster | None:
+    """整理期海报重选协调 (规格 §3.6, 决策 12/18): 候选重建 → 策略解析 → 产物执行.
+
+    异步协调边界: rebuild_poster_candidates 是纯函数, Resource 反解与候选 / thumb 获取在此完成后
+    以参数注入; 产出 ``PreparedPoster`` 交 _download_images_via_store → _place_library_images 复制.
+    返回 None 表示本轮无已准备产物, poster 沿现状物化图复制路径 (用户产物获取失败 / 总开关关闭 /
+    候选重建为空或全部获取失败), 回退信号以日志说明.
+
+    执行条件: poster 在本轮复制集合内, 总开关 ``scraping.crop_poster`` True, 且 ``metadata_cfg``
+    已注入 (库级生效配置, 任务入口经 resolve_effective_config 解析). none 与 right/face 同样进入
+    重选 — none 的重选动作 = 从重建候选取原样产物, 不执行像素裁剪 (R3 P1 修订).
+
+    用户产物优先 (决策 18, 双路径): poster_urls 含手动派生内部 URL (``box:`` args) 或
+    ``poster_urls`` ∈ locked_fields, 命中任一即不重选, 以 poster_urls 首项为本轮产物.
+    锁定空列表是病态数据 (R-empty-locked): 视为无可用用户产物, 落入重选 / 回退分支.
+    """
+    if DownloadableResource.poster not in kinds:
+        return None
+    if config is None or metadata_cfg is None:
+        return None
+    if not config.scraping.crop_poster:
+        logger.info("poster reselect skipped", number=metadata.number, reason="crop_disabled")
+        return None
+
+    locator_args = await _resolve_locator_args(metadata.poster_urls, store)
+    rebuilt = rebuild_poster_candidates(
+        raw=metadata.raw,
+        poster_urls=metadata.poster_urls,
+        locator_args=locator_args,
+        locked_fields=metadata.locked_fields,
+        route=config.scraping.content_routes.get(content_type, []),
+        field_priority=config.scraping.field_priority,
+        field_blacklist=config.scraping.field_blacklist,
+    )
+
+    if rebuilt.user_product and metadata.poster_urls:
+        local = await store.acquire(metadata.poster_urls[0], client)
+        if local is None:
+            logger.warning("poster user product acquire failed", number=metadata.number, url=metadata.poster_urls[0])
+            return None
+        logger.debug("poster product prepared", number=metadata.number, origin="user")
+        return PreparedPoster(local_path=local, origin="user")
+
+    if not rebuilt.candidates:
+        logger.info("poster reselect fallback", number=metadata.number, reason="no_candidates")
+        return None
+
+    candidate_local, candidate_src = await _acquire_first_local_url(rebuilt.candidates, store, client)
+    if candidate_local is None or candidate_src is None:
+        logger.info("poster reselect fallback", number=metadata.number, reason="no_candidate_acquired")
+        return None
+
+    crop_cfg = metadata_cfg
+    scraping = config.scraping
+
+    def crop_plan(thumb_size: tuple[int, int] | None, candidate_size: tuple[int, int] | None) -> CropPlan:
+        return resolve_crop_plan(
+            content_type,
+            strategy_map=crop_cfg.crop_type,
+            aspect=crop_cfg.crop_aspect,
+            low_res_height=crop_cfg.crop_low_res_height,
+            poster_ratio=scraping.poster_ratio,
+            skip_ratio=scraping.poster_crop_skip_ratio,
+            thumb_size=thumb_size,
+            candidate_size=candidate_size,
+        )
+
+    # requested 与尺寸无关, 先零成本解析一次: requested=none 的类型不临时下载 thumb (与刮削物化同口径).
+    if crop_plan(None, None).requested is CropStrategy.NONE:
+        logger.debug(
+            "poster product prepared", number=metadata.number, origin="reselect", executed=CropStrategy.NONE.value
+        )
+        return PreparedPoster(local_path=candidate_local, origin="reselect")
+
+    thumb_local, thumb_src = await _acquire_first_local_url(metadata.thumb_urls, store, client)
+    thumb_size = probe_size(thumb_local) if thumb_local is not None else None
+    plan = crop_plan(thumb_size, probe_size(candidate_local))
+    if plan.executed is CropStrategy.NONE or thumb_local is None or thumb_src is None:
+        # 候选已达阈值或无 thumb 可裁: 候选原样入选, 不执行像素裁剪 (规格 §3.3 executed=NONE).
+        logger.debug(
+            "poster product prepared", number=metadata.number, origin="reselect", executed=CropStrategy.NONE.value
+        )
+        return PreparedPoster(local_path=candidate_local, origin="reselect")
+
+    derived = await _acquire_crop_product(
+        store,
+        thumb_local,
+        thumb_src,
+        plan=plan,
+        aspect=crop_cfg.crop_aspect,
+        jpeg_quality=scraping.jpeg_quality,
+    )
+    if derived is None:
+        logger.warning("poster crop product failed", number=metadata.number, executed=plan.executed.value)
+        return None
+    logger.debug("poster product prepared", number=metadata.number, origin="reselect", executed=plan.executed.value)
+    return PreparedPoster(local_path=derived, origin="reselect")
+
+
+async def _acquire_crop_product(
+    store: ResourceStore,
+    thumb_local: Path,
+    thumb_src: str,
+    *,
+    plan: CropPlan,
+    aspect: CropAspect,
+    jpeg_quality: int,
+) -> Path | None:
+    """right / face 的派生产物获取, 派生键含实际执行策略与比例 (决策 15).
+
+    face 走检测先于键构造流程 (:func:`amane.media.crop.acquire_face_crop`): 探针与检测先于派生键
+    构造, 按检测结果固化 executed, 无人脸或后端不可用降级 right 落 right 键; right 直接按 plan 裁剪.
+    """
+    if plan.executed is CropStrategy.FACE:
+        derived = await acquire_face_crop(
+            store, thumb_src, thumb_local, plan=plan, aspect=aspect, jpeg_quality=jpeg_quality
+        )
+    else:
+        args = format_crop_args(plan.executed, aspect, plan.ratio)
+        ratio = plan.ratio
+
+        async def producer(dest: Path) -> bool:
+            return crop_poster(thumb_local, dest, poster_ratio=ratio, jpeg_quality=jpeg_quality)
+
+        derived = await store.acquire_derived(thumb_src, "crop", args, producer)
+    return store.full_path(derived) if derived is not None else None
+
+
 async def _download_images_via_store(
     metadata: Metadata,
     store: ResourceStore,
@@ -603,9 +818,13 @@ async def _download_images_via_store(
     library: Library | None = None,
     naming: NamingConfig | None = None,
     overwrite_image: bool = True,
+    metadata_cfg: MetadataConfig | None = None,
+    prepared_poster: PreparedPoster | None = None,
 ) -> int:
     """优先用 Resource 已有文件; 缺失则现场 acquire. 返回因目标已有图片而跳过的张数.
 
+    poster 来源: ``prepared_poster`` 非 None 时直接使用整理期重选 / 用户产物 (规格 §3.6),
+    不再按 poster_urls 现场获取.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     """
     thumb_local = None
@@ -615,8 +834,11 @@ async def _download_images_via_store(
 
     poster_local = None
     if DownloadableResource.poster in kinds:
-        poster_urls = metadata.poster_urls
-        poster_local = await _acquire_first_local(poster_urls, store, client) if poster_urls else None
+        if prepared_poster is not None:
+            poster_local = prepared_poster.local_path
+        else:
+            poster_urls = metadata.poster_urls
+            poster_local = await _acquire_first_local(poster_urls, store, client) if poster_urls else None
 
     trailer_local = None
     if DownloadableResource.trailer in kinds:
@@ -655,6 +877,7 @@ async def _download_images_via_store(
         extrafanart_targets=extrafanart_targets,
         kinds=kinds,
         config=config,
+        metadata_cfg=metadata_cfg,
         file_info=file_info,
         content_type=content_type,
         watermark_dir=watermark_dir,
@@ -831,6 +1054,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     watermark_dir=self._watermark_dir,
                     naming=effective.naming,
                     nfo_options=effective.nfo_options,
+                    metadata_cfg=effective.metadata,
                     overwrite_video=effective.common.overwrite_video,
                     overwrite_image=effective.common.overwrite_image,
                     task_id=task_id,

@@ -8,15 +8,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from PIL import Image
+from structlog.testing import capture_logs
 
 from amane.api.models.media import MediaFileResponse, to_media_file_response
 from amane.api.models.tasks import OrganizeSubmission
-from amane.config import HotSettings, WatermarkConfig
+from amane.config import HotSettings, ScrapingConfig, WatermarkConfig
 from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
+from amane.db.repo_types import WriteMode
 from amane.enums import DownloadableResource
 from amane.handlers import OrganizeHandler, OrganizePayload
 from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
 from amane.media import ResourceStore
+from amane.media.resource_store import internal_url_hash
 from amane.organize import MoveMode, PlaceOutcome, ResolvedPaths, resolve_paths
 from amane.parsing import ContentType, parse_file_info
 
@@ -1275,3 +1278,406 @@ def test_media_file_response_has_link_path() -> None:
     response = to_media_file_response(media)
     assert response.link_path == "/emby/NSFS-039.mp4"
     assert MediaFileResponse.model_fields["link_path"].annotation == str | None
+
+
+# --- 任务 8: 整理期海报重选 (异步协调边界 + none 参与 + 用户产物优先) ---
+
+
+class MappedClient:
+    """按 URL 映射图内容的下载桩: 重选用例借此区分候选 / thumb / 用户产物的尺寸与颜色.
+
+    未映射的 URL 一律 800x538 纯蓝, 与 FakeClient 的占位图一致.
+    """
+
+    def __init__(self, images: dict[str, tuple[tuple[int, int], str]]) -> None:
+        self._images = images
+
+    async def download(self, url: str, dest: Path, **kwargs) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        size, color = self._images.get(url, ((800, 538), "blue"))
+        Image.new("RGB", size, color).save(dest)
+        return True
+
+    async def get_filesize(self, url: str, **kwargs):
+        return None
+
+    async def resolve_final_url(self, url: str, **kwargs) -> str:
+        return url
+
+
+def _pixel_close(path: Path, expected: tuple[int, int, int], *, tol: int = 3) -> bool:
+    """JPEG 压缩有 ±1~2 的颜色漂移, 像素断言按容差比较."""
+    pixel = _pixel(path)
+    return all(abs(a - b) <= tol for a, b in zip(pixel, expected, strict=True))
+
+
+def _write_video(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"movie")
+
+
+async def _store_derived(
+    resource_store: ResourceStore, src_url: str, args: str, *, size: tuple[int, int], color: str
+) -> str:
+    """落一个裁剪派生资源, 返回其内部 URL (供 metadata.poster_urls 引用)."""
+
+    async def producer(dest: Path) -> bool:
+        Image.new("RGB", size, color).save(dest)
+        return True
+
+    derived = await resource_store.acquire_derived(src_url, "crop", args, producer)
+    assert derived is not None
+    return f"/api/resources/{ResourceStore.url_hash(derived.url)}"
+
+
+async def _seed_library(
+    repo: Repository,
+    tmp_path: Path,
+    *,
+    name: str,
+    metadata_id: int,
+    number: str,
+    metadata_override: dict[str, Any] | None = None,
+) -> tuple[Library, Path]:
+    """建库 (固定视频模板, 产物与视频同目录) + 库内源文件 + 挂 metadata 的 MediaFile."""
+    root = tmp_path / f"lib_{name}"
+    src = root / "incoming" / f"{number}.mp4"
+    _write_video(src)
+    lib = await repo.create_library(name=name, path=str(root))
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "naming", {"video_template": "{number}/{number}.{ext}"})
+    if metadata_override is not None:
+        await repo.upsert_config_override(lib.id, "metadata", metadata_override)
+    await repo.create_media_file(
+        lib.id, path=str(src), number=number, status=MediaFileStatus.SCRAPED, metadata_id=metadata_id
+    )
+    return lib, root
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_reselect_none_uses_uncropped_candidate(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """none 与 right/face 同样进入重选 (决策 12): 库 A none 产物 = 未裁剪原始候选; 库 B face+emby 产物 = 按各自配置派生."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/orig.jpg": ((600, 300), "green"),
+            }
+        ),
+    )
+    old_crop = await _store_derived(
+        resource_store, "https://s/t.jpg", "right:legacy:0.7000", size=(376, 538), color="red"
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        poster_urls=[old_crop],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    lib_a, root_a = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "none"}},
+    )
+    lib_b, root_b = await _seed_library(
+        repo,
+        tmp_path,
+        name="b",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "face"}, "crop_aspect": "emby"},
+    )
+    assert lib_a.id is not None and lib_b.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result_a = await handler.handle(OrganizePayload(library_id=lib_a.id, path=str(root_a)))
+    result_b = await handler.handle(OrganizePayload(library_id=lib_b.id, path=str(root_b)))
+    assert result_a.success and result_b.success
+    assert result_a.result is not None and result_a.result.failed == 0
+    assert result_b.result is not None and result_b.result.failed == 0
+
+    poster_a = root_a / "MIDV-123" / "poster.jpg"
+    poster_b = root_b / "MIDV-123" / "poster.jpg"
+    # A: none 也是重选结果, 产物 = 未裁剪原始候选 (600x300 绿), 不是旧自动裁剪产物 (376x538 红).
+    with Image.open(poster_a) as img:
+        assert img.size == (600, 300)
+    assert _pixel_close(poster_a, (0, 128, 0))
+    # B: face 在纯色 thumb 上无人脸 → 降级 right, 按 emby 比例从 thumb 裁剪 → 358x538 蓝.
+    with Image.open(poster_b) as img:
+        assert img.size == (358, 538)
+    assert _pixel_close(poster_b, (0, 0, 255))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_user_manual_product_survives_reorganize(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """手动裁剪 (box:) 产物优先 (决策 18 路径 a): 两库不同策略重新整理, 手动产物字节原样保留."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/orig.jpg": ((600, 300), "green"),
+            }
+        ),
+    )
+    manual = await _store_derived(resource_store, "https://s/t.jpg", "box:100,0,476,538", size=(376, 538), color="red")
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        poster_urls=[manual],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    manual_hash = internal_url_hash(manual)
+    found = await resource_store.get_by_url_hash(manual_hash) if manual_hash is not None else None
+    assert found is not None
+    manual_bytes = found[1].read_bytes()
+
+    lib_a, root_a = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "none"}},
+    )
+    lib_b, root_b = await _seed_library(
+        repo,
+        tmp_path,
+        name="b",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "right"}, "crop_aspect": "emby"},
+    )
+    assert lib_a.id is not None and lib_b.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result_a = await handler.handle(OrganizePayload(library_id=lib_a.id, path=str(root_a)))
+    result_b = await handler.handle(OrganizePayload(library_id=lib_b.id, path=str(root_b)))
+    assert result_a.success and result_b.success
+    assert result_a.result is not None and result_a.result.failed == 0
+    assert result_b.result is not None and result_b.result.failed == 0
+
+    # 两库产物都是手动裁剪字节: 不是候选原图 (绿), 也不是按库策略的裁剪 (蓝).
+    assert (root_a / "MIDV-123" / "poster.jpg").read_bytes() == manual_bytes
+    assert (root_b / "MIDV-123" / "poster.jpg").read_bytes() == manual_bytes
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize(
+    "library_override",
+    [None, {"crop_type": {"censored": "right"}, "crop_aspect": "emby"}],
+    ids=["default", "library_strategy"],
+)
+async def test_patched_external_poster_survives(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path, library_override: dict[str, Any] | None
+) -> None:
+    """PATCH 外部海报 (MANUAL 写入自动锁定, 决策 18 路径 b) 优先于 raw 来源重选: 整理产物 = 外部图 B."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/a.jpg": ((600, 300), "green"),
+                "https://b.com/b.jpg": ((300, 400), "purple"),
+            }
+        ),
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        raw={"dmm": {"poster_urls": ["https://s/a.jpg"]}},
+    )
+    assert meta.id is not None
+    patched = await repo.update_metadata(meta.id, mode=WriteMode.MANUAL, poster_urls=["https://b.com/b.jpg"])
+    assert patched is not None
+    assert "poster_urls" in patched.locked_fields
+
+    lib, root = await _seed_library(
+        repo, tmp_path, name="a", metadata_id=meta.id, number="MIDV-123", metadata_override=library_override
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 产物 = PATCH 的外部图 B (300x400 紫), 不是 raw 来源 A (绿), 也不是按库策略的裁剪.
+    poster = root / "MIDV-123" / "poster.jpg"
+    with Image.open(poster) as img:
+        assert img.size == (300, 400)
+    assert _pixel_close(poster, (128, 0, 128))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("crop_enabled", [True, False], ids=["reselect_path", "copy_path"])
+async def test_overwrite_image_false_still_skips(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path, crop_enabled: bool
+) -> None:
+    """overwrite_image=False 的既有跳过语义在重选与复制两条路径都适用: 目标已有 poster 跳过并计 skipped."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/orig.jpg": ((600, 300), "green"),
+            }
+        ),
+    )
+    old_crop = await _store_derived(
+        resource_store, "https://s/t.jpg", "right:legacy:0.7000", size=(376, 538), color="red"
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        poster_urls=[old_crop],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(repo, tmp_path, name="a", metadata_id=meta.id, number="MIDV-123")
+    assert lib.id is not None
+    await repo.upsert_config_override(lib.id, "common", {"overwrite_image": False})
+    poster = root / "MIDV-123" / "poster.jpg"
+    poster.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 400), (1, 2, 3)).save(poster)
+
+    config = HotSettings(scraping=ScrapingConfig(crop_poster=crop_enabled))
+    handler = OrganizeHandler(repo, config, resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+    # 重选路径 (开关 True) 与复制路径 (开关 False) 下 poster 各计一次跳过.
+    assert result.result.skipped == 1
+    # 旧 poster 内容原样保留, 本轮产物不落盘.
+    assert _pixel_close(poster, (1, 2, 3))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_switch_off_falls_back_to_materialized_copy(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """总开关 False 不重选 (决策 12): 沿用物化图复制路径 (旧自动裁剪产物原样), 记回退日志."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/orig.jpg": ((600, 300), "green"),
+            }
+        ),
+    )
+    old_crop = await _store_derived(
+        resource_store, "https://s/t.jpg", "right:legacy:0.7000", size=(376, 538), color="red"
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        poster_urls=[old_crop],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    # 库级策略配 none: 若重选未被开关拦下, 产物会变成候选原图 (绿).
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"crop_type": {"censored": "none"}},
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(
+        repo, HotSettings(scraping=ScrapingConfig(crop_poster=False)), resource_store, web_client=client
+    )
+    with capture_logs() as logs:
+        result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 现状物化图复制: 旧自动裁剪产物 (376x538 红) 原样复制, 候选原图 (绿) 不参与.
+    poster = root / "MIDV-123" / "poster.jpg"
+    with Image.open(poster) as img:
+        assert img.size == (376, 538)
+    assert _pixel_close(poster, (255, 0, 0))
+    assert any(e["event"] == "poster reselect skipped" and e.get("reason") == "crop_disabled" for e in logs)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_empty_rebuild_falls_back(repo: Repository, resource_store: ResourceStore, tmp_path: Path) -> None:
+    """候选重建为空 (raw 无候选) 回退物化图复制路径 (规格 §3.6): 旧产物原样复制并记回退日志."""
+    client = cast("WebClient", MappedClient({"https://s/t.jpg": ((800, 538), "blue")}))
+    old_crop = await _store_derived(
+        resource_store, "https://s/t.jpg", "right:legacy:0.7000", size=(376, 538), color="red"
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        poster_urls=[old_crop],
+        raw={"dmm": {"title": "raw snapshot without poster_urls"}},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(repo, tmp_path, name="a", metadata_id=meta.id, number="MIDV-123")
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    with capture_logs() as logs:
+        result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 回退现状: 旧自动裁剪产物 (376x538 红) 原样复制.
+    poster = root / "MIDV-123" / "poster.jpg"
+    with Image.open(poster) as img:
+        assert img.size == (376, 538)
+    assert _pixel_close(poster, (255, 0, 0))
+    assert any(e["event"] == "poster reselect fallback" and e.get("reason") == "no_candidates" for e in logs)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_locked_empty_poster_urls_falls_back(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """锁定空列表是病态数据 (R-empty-locked): 视为无可用用户产物, 落入回退分支并记回退日志."""
+    client = cast("WebClient", MappedClient({"https://s/t.jpg": ((800, 538), "blue")}))
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    patched = await repo.update_metadata(meta.id, mode=WriteMode.MANUAL, poster_urls=[])
+    assert patched is not None
+    assert "poster_urls" in patched.locked_fields
+    lib, root = await _seed_library(repo, tmp_path, name="a", metadata_id=meta.id, number="MIDV-123")
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    with capture_logs() as logs:
+        result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 无可用用户产物 → 回退现状: poster 从已落盘 thumb 裁剪兜底 (有码 → right, 376x538 蓝).
+    poster = root / "MIDV-123" / "poster.jpg"
+    with Image.open(poster) as img:
+        assert img.size == (376, 538)
+    assert _pixel_close(poster, (0, 0, 255))
+    assert any(e["event"] == "poster reselect fallback" and e.get("reason") == "no_candidates" for e in logs)
