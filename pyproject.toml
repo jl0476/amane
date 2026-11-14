@@ -44,6 +44,9 @@ browser = [
     "camoufox>=0.5.6",
     "patchright>=1.59.1",
 ]
+opencv = [
+    "opencv-python>=5",
+]
 
 [dependency-groups]
 dev = [
