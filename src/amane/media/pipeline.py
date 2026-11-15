@@ -122,8 +122,8 @@ async def materialize_images(
     海报裁切按 ``metadata_cfg`` 的策略矩阵解析 (`media/crop.py::resolve_crop_plan`);
     ``executed=NONE`` 表示候选原样入选, 不执行像素裁剪.
     thumb / poster 候选获取按 ``metadata_cfg.thumb_download_strategy`` 分派 (R2 PLAN-09):
-    quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入; 落库的 poster 列表
-    首项为胜者, 其余成功候选保持原相对顺序, 否则展示与后续读取仍取到低清候选.
+    quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入; 落库的 poster / thumb
+    列表首项为胜者, 其余成功候选保持原相对顺序, 否则展示与后续读取仍取到低清候选.
     """
     kinds = set(config.scraping.download_resources)
     crop_enabled = config.scraping.crop_poster
@@ -133,12 +133,14 @@ async def materialize_images(
     thumb_ok: set[str] = set()
     thumb_local: Path | None = None
     thumb_src: str | None = None
+    thumb_winner: str | None = None
     if DownloadableResource.thumb in kinds:
         if quality:
             best = await store.acquire_best(thumb_urls, client, task_token="materialize")
             if best.success and best.path is not None and best.used_url is not None:
                 thumb_ok = set(thumb_urls) - set(best.failed or ())
                 thumb_local, thumb_src = best.path, best.used_url
+                thumb_winner = best.used_url
                 res = await store.get_by_url(best.used_url)
                 if res:
                     await _maybe_upscale(store, res, config, data_dir)
@@ -261,7 +263,7 @@ async def materialize_images(
 
     out = MaterializedImages(
         poster_urls=result_poster_urls,
-        thumb_urls=_success_first(thumb_urls, thumb_ok),
+        thumb_urls=_winner_first(thumb_urls, thumb_ok, thumb_winner),
         trailer_urls=_success_first(trailer_urls, trailer_ok),
     )
     logger.debug(

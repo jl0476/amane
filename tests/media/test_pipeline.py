@@ -907,7 +907,7 @@ async def test_quality_strategy_picks_best_both_entries(
         metadata_cfg=cfg.metadata,
     )
     assert out.poster_urls == ["https://s/p-high.jpg", "https://s/p-low.jpg"]  # 胜者置首, 其余保序
-    assert out.thumb_urls == _THUMB_URLS  # 全部成功 → 原序 (失败者置尾语义保持)
+    assert out.thumb_urls == ["https://s/t-high.jpg", "https://s/t-low.jpg"]  # 胜者置首, 其余保序
     thumb_winner = await resource_store.get_by_url("https://s/t-high.jpg")
     assert thumb_winner is not None
     assert Image.open(resource_store.full_path(thumb_winner)).size == (800, 538)  # 磁盘字节 = 高清胜者
@@ -1003,3 +1003,40 @@ async def test_quality_poster_urls_lead_with_winner(resource_store: ResourceStor
         metadata_cfg=prio.metadata,
     )
     assert out_prio.poster_urls[0] == "https://s/p-low.jpg"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_thumb_urls_lead_with_winner(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """quality 胜者置于落库 thumb URL 首位: 低清在前高清在后时首项 = 胜者; priority 路径首项不变."""
+    client = MappedClient(_ORGANIZE_IMAGES)
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+    out = await materialize_images(
+        [],
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    # 胜者 t-high (800x538, 面积更大) 置于首位, 落选者 t-low 在后.
+    assert out.thumb_urls[0] == "https://s/t-high.jpg"
+    assert out.thumb_urls == ["https://s/t-high.jpg", "https://s/t-low.jpg"]
+
+    # priority 路径不变: 首个成功项仍居首.
+    prio = HotSettings(metadata=MetadataConfig(thumb_download_strategy="priority"))
+    out_prio = await materialize_images(
+        [],
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        prio,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=prio.metadata,
+    )
+    assert out_prio.thumb_urls[0] == "https://s/t-low.jpg"
+    assert out_prio.thumb_urls == _THUMB_URLS
