@@ -146,6 +146,8 @@ PATCH 三态: **省略键** = 不更新 (`exclude_unset`); **显式值** = 写�
 
 覆盖既有缓存时文件换新与记录落库之间有窗口: 记录先挂 `{'pending':待写入hash}`, 落库时撤除; 中途取消或进程退出留下的中间态由读路径按盘上字节自愈 (`resource_store.py::ResourceStore._heal_record`) — 盘上已是待提交那份则记录补齐, 否则只撤标记.
 
+自愈与覆盖落库共用一把自愈锁 (`ResourceStore._heal_lock`), 整段互斥: 覆盖"挂标记 → 换文件 → 落记录"期间读路径的自愈排队, 等到时标记已被撤除 (或在覆盖夭折后由自愈接手) —— 在飞提交的标记不会被读路径撤掉, 否则提交再夭折就留下永久失配. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁. 自愈的判定与落库按锁内重读到的库态做, 撤标记只清 `pending` 一个键 (列级更新), 不用陈旧快照整列写回.
+
 ## 图片向量 (`media_embeddings`, sidecar)
 
 语义检索的派生数据, 可随时重建: 存 `{data_dir}/embeddings.db` (独立 SQLite, 不经 Alembic, 删除文件即关闭功能). `semantic_models` 按 `(name, version, dim)` 注册模型, 其 id 是向量的命名空间; `media_embeddings` 每 `(条目, 模型, 图片 locator)` 一行, 存 `kind` (`cover` / `still`)、`content_hash` 与 L2 归一化的 float32 字节串. 封面取 `poster_url` 优先、`thumb_url` 兜底; 剧照取 `Metadata.extrafanart` 中第一个有已落盘 Resource 的站点 (与 `ResourceStore.acquire_extrafanart` 的取舍一致), 按 `content_hash` 去重; 没有封面的条目不建向量. 跨库无外键: 删除条目在主库提交后再清 sidecar (清理失败留下的孤儿行由下一次完整索引删掉), 图片字段变化由 `Repository.set_media_hook` 通知, 只删 url 或 `content_hash` 变了的行; 就地超分只改 `content_hash` 与媒体类型, 建索引时据此重算. 检索时整表装载, 缓存键为 `(条数, 最后写入时间)`; 筛选条件先由主库解析成条目 id 集合, 再据此屏蔽向量索引的行.

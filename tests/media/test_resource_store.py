@@ -1,6 +1,7 @@
 """测试 ResourceStore 的派生资源 (裁剪), 就地超分, 独占临时择优与获取失败的收尾."""
 
 import asyncio
+import hashlib
 import io
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,8 +10,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
+from sqlmodel import select
 from structlog.testing import capture_logs
 
+from amane.db.models import Resource
 from amane.media import ResourceStore, UpscaleOutcome, derived_locator
 from amane.media.resource_store import (
     RESOURCE_URL_PREFIX,
@@ -1285,3 +1288,142 @@ async def test_derived_without_source_record_still_hits(resource_store: Resource
     second = await resource_store.acquire_derived("https://s/no-src-row.jpg", "crop", "0.7", producer)
     assert second is not None
     assert calls["n"] == 1
+
+
+# --- 自愈路径的并发安全: 在飞提交的待提交标记不得被读路径撤掉 ---
+
+
+async def _row_meta(store: ResourceStore, url: str) -> dict:
+    """读库里的 meta 列: 断言用库态而非调用方手里的副本."""
+    async with store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        return dict(row.meta) if row is not None and row.meta else {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_keeps_inflight_pending_marker(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """提交已挂待提交标记、尚未换文件时的并发读: 读不得撤掉在飞提交的标记.
+
+    撤掉后提交再夭折, 记录 hash 与盘上字节就永久失配, 且此后再无自愈触发条件.
+    """
+    url = "https://s/inflight-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    new_bytes = _png(200, 150)
+    temp.write_bytes(new_bytes)
+    new_hash = hashlib.sha256(new_bytes).hexdigest()
+
+    marked = asyncio.Event()
+    proceed = asyncio.Event()
+
+    original_mark = ResourceStore._mark_pending
+
+    async def mark_then_pause(self: ResourceStore, record: Resource, content_hash: str) -> None:
+        await original_mark(self, record, content_hash)
+        marked.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(ResourceStore, "_mark_pending", mark_then_pause)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await marked.wait()  # 标记已在库, 文件尚未换
+        assert (await _row_meta(resource_store, url)).get("pending") == new_hash
+
+        # 并发读: 盘上仍是旧字节, 库里有待提交标记.
+        read = asyncio.create_task(resource_store.get_by_url(url))
+        await asyncio.wait({read}, timeout=1.0)
+
+        # 读不得撤掉在飞提交的标记.
+        assert (await _row_meta(resource_store, url)).get("pending") == new_hash
+    finally:
+        proceed.set()
+        await commit
+        monkeypatch.undo()
+
+    # 提交走完: 记录与盘上一致, 标记撤除.
+    assert cached_path.read_bytes() == new_bytes
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "pending" not in final.meta
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_then_cancel_keeps_record_consistent(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """并发读发生在"标记已挂、文件未换"窗口, 随后提交在换文件后被取消: 记录须与盘上一致.
+
+    审查发现 1 的可观察后果: 读撤掉在飞标记后提交夭折, 记录 hash 与盘上字节永久失配.
+    """
+    url = "https://s/inflight-cancel.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    marked = asyncio.Event()
+    proceed = asyncio.Event()
+
+    original_mark = ResourceStore._mark_pending
+
+    async def mark_then_pause(self: ResourceStore, record: Resource, content_hash: str) -> None:
+        await original_mark(self, record, content_hash)
+        marked.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(ResourceStore, "_mark_pending", mark_then_pause)
+
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await marked.wait()
+        read = asyncio.create_task(resource_store.get_by_url(url))
+        await asyncio.wait({read}, timeout=1.0)
+    finally:
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await commit
+        monkeypatch.undo()
+
+    assert cached_path.read_bytes() != old_bytes  # 文件已换新
+
+    # 记录须按盘上字节自愈, 不得留下失配.
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)
+    assert healed.meta is not None and "pending" not in healed.meta
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_marker_still_stripped(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """崩溃遗留的待提交标记 (无在飞提交) 仍能被正确撤除: 与在飞标记的处置须可区分."""
+    url = "https://s/stale-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+
+    # 造一条崩溃遗留的标记: 库里有 pending, 盘上仍是旧字节, 且无在飞提交.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": "f" * 64}
+        session.add(row)
+        await session.commit()
+
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.meta is not None and "pending" not in record.meta  # 陈旧标记已撤
+    assert record.content_hash == ResourceStore._hash_file(cached_path)  # 记录仍指盘上那份

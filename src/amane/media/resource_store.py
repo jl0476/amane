@@ -67,6 +67,14 @@ def _without_pending(meta: dict | None) -> dict:
     return {k: v for k, v in meta.items() if k != PENDING_KEY}
 
 
+def _pending_hash(meta: dict | None) -> str | None:
+    """待提交标记所指的内容 hash; 标记不是字符串形态时返回 None (不可轻信)."""
+    if not meta:
+        return None
+    pending = meta.get(PENDING_KEY)
+    return pending if isinstance(pending, str) else None
+
+
 def _without_content_bound(meta: dict | None) -> dict:
     """去掉与字节绑定的标记 (超分标记等): 字节已换新, 旧标记不再成立."""
     if not meta:
@@ -152,6 +160,13 @@ class ResourceStore:
         self._base_dir = base_dir
         self._guards: dict[str, _LockEntry] = {}
         self._guards_lock = asyncio.Lock()
+        self._heal_lock = asyncio.Lock()
+        """自愈与覆盖落库互斥: 覆盖的"挂标记 → 换文件 → 落记录"整段持锁, 自愈整段持锁.
+
+        读路径的自愈因此撞不上在飞提交: 标记在库而盘上仍是旧字节这一窗口, 提交正持锁,
+        自愈等提交走完再看盘上字节 —— 标记要么已被提交撤掉, 要么提交确实夭折, 两种都不是
+        "在飞的标记". 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+        """
         base_dir.mkdir(parents=True, exist_ok=True)
 
     def _session(self) -> AsyncSession:
@@ -219,33 +234,68 @@ class ResourceStore:
         盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型, 与旧字节绑定的标记
         (超分标记) 一并失效 —— 旧字节的超分结果不适用于新字节.
         盘上仍是旧字节 (文件尚未换新): 只撤待提交标记, 记录原样仍指盘上那份.
+
+        自愈与落库 (覆盖提交) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 → 落记录"期间
+        读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) —— 在飞提交的
+        标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
         """
         if not record.meta or PENDING_KEY not in record.meta:
             return
-        pending_hash = record.meta.get(PENDING_KEY)
-        if not isinstance(pending_hash, str):
+        async with self._heal_lock:
+            healed = await self._heal_locked(record.id)
+        if healed is None:
             return
-        try:
-            disk_hash = self._hash_file(full_path)
-        except OSError:
-            return
+        # 调用方拿着的是自愈前的副本: 同步过来, 否则读到的还是旧标记与旧 hash.
+        record.content_hash = healed.content_hash
+        record.size = healed.size
+        record.mime_type = healed.mime_type
+        record.meta = healed.meta
 
-        if disk_hash == pending_hash:
-            size = full_path.stat().st_size
-            mime = detect_media_type(full_path)
-            # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效.
-            meta = _without_content_bound(record.meta)
-            record.content_hash = disk_hash
-            record.size = size
-            record.mime_type = mime
-            record.meta = meta
-            await self._write_record(record)
-            logger.warning("resource record healed after interrupted overwrite", url=record.url, content_hash=disk_hash)
-            return
+    async def _heal_locked(self, row_id: int | None) -> Resource | None:
+        """自愈临界区: 持自愈锁.
 
-        # 文件尚未换新: 撤标记, 记录仍指盘上那份字节.
-        record.meta = _without_pending(record.meta)
-        await self._write_record(record)
+        判定依据是锁内重读到的当前库态, 不是读路径先前取到的快照: 取快照到进锁之间, 可能有
+        新的提交挂上标记 —— 按快照判定会拿旧标记去撤新提交的标记.
+
+        返回自愈后的行 (未自愈则 None), 供调用方同步自己手里的副本.
+        """
+        if row_id is None:
+            return None
+        async with self._session() as session:
+            row = await session.get(Resource, row_id)
+            if row is None:
+                return None
+            meta = dict(row.meta) if row.meta else {}
+            pending_hash = _pending_hash(meta)
+            if pending_hash is None:
+                return None
+            full_path = self._base_dir / row.file_path
+            try:
+                disk_hash = self._hash_file(full_path)
+            except OSError:
+                return None
+
+            if disk_hash == pending_hash:
+                size = full_path.stat().st_size
+                mime = detect_media_type(full_path)
+                # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效.
+                row.content_hash = disk_hash
+                row.size = size
+                row.mime_type = mime
+                row.meta = _without_content_bound(meta)
+                session.add(row)
+                await session.commit()
+                logger.warning(
+                    "resource record healed after interrupted overwrite", url=row.url, content_hash=disk_hash
+                )
+                return row
+
+            # 文件尚未换新: 撤标记, 记录仍指盘上那份字节. 只清 pending 一个键, 不动其余列 ——
+            # 整列写回会用陈旧快照覆盖别的列.
+            row.meta = _without_pending(meta)
+            session.add(row)
+            await session.commit()
+            return row
 
     async def _write_record(self, record: Resource) -> None:
         """按记录的主键回写一行."""
@@ -667,45 +717,50 @@ class ResourceStore:
         # 覆盖既有缓存时先挂待提交标记: 文件换新与记录落库之间若被取消或进程退出,
         # 读路径据此按盘上字节自愈, 不会留下"记录 hash ≠ 盘上字节"的持久失配.
         # 首次入库无既有记录可标记, 记录缺失即无失配可言.
-        if existing is not None:
-            await self._mark_pending(existing, temp_hash)
-
-        try:
-            temp.replace(dest)
-        except OSError:
-            await self._clear_pending(url)
-            temp.unlink(missing_ok=True)
-            logger.warning("commit temp failed", url=url)
-            return AcquireResult(success=False, failed=[url])
-
-        # 文件已就位, 记录写盘上那份.
-        size = dest.stat().st_size
-        mime = detect_media_type(dest)
-        async with self._session() as session:
+        #
+        # 挂标记 → 换文件 → 落记录整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除.
+        # 少了这段互斥, 读路径会在"标记在库、盘上仍是旧字节"的窗口撤掉在飞提交的标记, 提交随后
+        # 夭折就留下永久失配.
+        async with self._heal_lock:
             if existing is not None:
-                # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记
-                # 一并覆盖回去 (meta 整列写), 留下"标记还在"的假中间态.
-                row = await session.get(Resource, existing.id)
-                if row is None:
-                    row = existing
-                    session.add(row)
-                row.content_hash = temp_hash
-                row.size = size
-                row.mime_type = mime
-                # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效 —— 旧字节的
-                # 超分结果不适用于新字节, 留着会让超分被误判为"已超分"而跳过.
-                row.meta = _without_content_bound(row.meta)
-            else:
-                session.add(
-                    Resource(
-                        url=url,
-                        file_path=self._relative_path(dest),
-                        content_hash=temp_hash,
-                        size=size,
-                        mime_type=mime,
+                await self._mark_pending(existing, temp_hash)
+
+            try:
+                temp.replace(dest)
+            except OSError:
+                await self._clear_pending(url)
+                temp.unlink(missing_ok=True)
+                logger.warning("commit temp failed", url=url)
+                return AcquireResult(success=False, failed=[url])
+
+            # 文件已就位, 记录写盘上那份.
+            size = dest.stat().st_size
+            mime = detect_media_type(dest)
+            async with self._session() as session:
+                if existing is not None:
+                    # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记
+                    # 一并覆盖回去 (meta 整列写), 留下"标记还在"的假中间态.
+                    row = await session.get(Resource, existing.id)
+                    if row is None:
+                        row = existing
+                        session.add(row)
+                    row.content_hash = temp_hash
+                    row.size = size
+                    row.mime_type = mime
+                    # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效 —— 旧字节的
+                    # 超分结果不适用于新字节, 留着会让超分被误判为"已超分"而跳过.
+                    row.meta = _without_content_bound(row.meta)
+                else:
+                    session.add(
+                        Resource(
+                            url=url,
+                            file_path=self._relative_path(dest),
+                            content_hash=temp_hash,
+                            size=size,
+                            mime_type=mime,
+                        )
                     )
-                )
-            await session.commit()
+                await session.commit()
 
         if overwrite:
             logger.warning("resource cache overwritten", url=url, content_hash=temp_hash)
