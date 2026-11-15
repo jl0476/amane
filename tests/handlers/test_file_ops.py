@@ -1878,7 +1878,7 @@ async def test_quality_dispatch_respects_library_scope(
         content_type=ContentType.CENSORED,
         metadata_cfg=global_cfg.metadata,
     )
-    assert out.poster_urls == poster_urls
+    assert out.poster_urls == ["https://s/p-high.jpg", "https://s/p-low.jpg"]  # 胜者置首
     assert await resource_store.get_by_url("https://s/p-low.jpg") is None
     assert await resource_store.get_by_url("https://s/p-high.jpg") is not None
 

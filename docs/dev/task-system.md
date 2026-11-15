@@ -124,7 +124,7 @@ handler 之间复用的阶段逻辑, 不是一条可跳步的总管线:
 `ScrapeHandler` 在聚合后、`upsert_metadata` 前调用 `materialize_images` (`src/amane/media/pipeline.py`) — 二进制写入 Resource 目录的主路径, 与是否整理无关:
 
 - **`scraping.download_resources`** 控制本步下载哪些类型 (thumb / poster / extrafanart / trailer).
-- **URL 重排契约**: 被下载类型的 URL 列表按本次下载成功 (含缓存命中) 稳定分区 — 成功者保序前置, 失败者保序沉底. 死 URL 不再占据首位, 但保留在尾部, 来源恢复后下次物化可重新尝试. 未选中下载的类型无成败信息, 保持聚合优先级原序; extrafanart 为站点分组 dict, 不重排. `raw` 快照保持站点原始数据.
+- **URL 重排契约**: 被下载类型的 URL 列表按本次下载成功 (含缓存命中) 稳定分区 — 成功者保序前置, 失败者保序沉底. 死 URL 不再占据首位, 但保留在尾部, 来源恢复后下次物化可重新尝试. 未选中下载的类型无成败信息, 保持聚合优先级原序; extrafanart 为站点分组 dict, 不重排. `raw` 快照保持站点原始数据. `quality` 策略的 poster 首项为择优胜者 (其余成功候选保序在其后) —— 落库与展示均以首项取图, 否则仍取到低清候选.
 - 裁剪海报 → 判定经 `media/crop.py::resolve_crop_plan` (全局 `metadata` 节的策略矩阵, `scraping.poster_crop_skip_ratio` 显式传入), Right 比例由 `crop_aspect` 解析, 派生键 `args = {executed}:{aspect}:{ratio:.4f}`; 超分就地覆盖. 失败不阻断刮削.
 
 手动裁切复用同一派生通道 (`op=crop`, `args=box:…`), 见 [data-model.md](data-model.md).

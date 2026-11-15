@@ -54,6 +54,20 @@ def _success_first(urls: list[str], succeeded: set[str]) -> list[str]:
     return [u for u in urls if u in succeeded] + [u for u in urls if u not in succeeded]
 
 
+def _winner_first(urls: list[str], succeeded: set[str], winner: str | None) -> list[str]:
+    """成功者保序, 择优胜者置于首位.
+
+    quality 路径的胜者是本轮实际落盘的产物, 落库列表的首项必须与之一致, 否则展示与后续读取
+    仍取到低清候选; 其余成功候选保持原相对顺序, 失败者沉底. winner 为 None (非 quality 路径
+    或择优失败) 时退化为 :func:`_success_first`.
+    """
+    if winner is None or winner not in succeeded:
+        return _success_first(urls, succeeded)
+    rest = [u for u in urls if u in succeeded and u != winner]
+    failed = [u for u in urls if u not in succeeded]
+    return [winner, *rest, *failed]
+
+
 def sr_args_dict(cfg: SrConfig) -> dict:
     pm = get_preset_meta(cfg.preset)
     return {"preset": cfg.preset, "tool": pm.tool, "model": pm.model, "scale": pm.scale}
@@ -108,7 +122,8 @@ async def materialize_images(
     海报裁切按 ``metadata_cfg`` 的策略矩阵解析 (`media/crop.py::resolve_crop_plan`);
     ``executed=NONE`` 表示候选原样入选, 不执行像素裁剪.
     thumb / poster 候选获取按 ``metadata_cfg.thumb_download_strategy`` 分派 (R2 PLAN-09):
-    quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入.
+    quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入; 落库的 poster 列表
+    首项为胜者, 其余成功候选保持原相对顺序, 否则展示与后续读取仍取到低清候选.
     """
     kinds = set(config.scraping.download_resources)
     crop_enabled = config.scraping.crop_poster
@@ -141,6 +156,7 @@ async def materialize_images(
     # 下载 poster; 候选偏矮则从 thumb 裁剪.
     poster_ok: set[str] = set()
     poster_candidate_local: Path | None = None
+    poster_winner: str | None = None
     result_poster_urls = list(poster_urls)
     if DownloadableResource.poster in kinds:
         if quality:
@@ -148,6 +164,7 @@ async def materialize_images(
             if best.success and best.path is not None:
                 poster_ok = set(poster_urls) - set(best.failed or ())
                 poster_candidate_local = best.path
+                poster_winner = best.used_url
         else:
             for url in poster_urls:
                 local = await store.acquire(url, client)
@@ -212,12 +229,14 @@ async def materialize_images(
                 await _maybe_upscale(store, crop_res, config, data_dir)
                 result_poster_urls = [_internal_url(store, crop_res.url)]
             else:
-                result_poster_urls = _success_first(poster_urls, poster_ok)
+                result_poster_urls = _winner_first(poster_urls, poster_ok, poster_winner)
         else:
             # executed=NONE: 候选原样入选, 不执行像素裁剪; 对候选就地超分.
-            result_poster_urls = _success_first(poster_urls, poster_ok)
+            result_poster_urls = _winner_first(poster_urls, poster_ok, poster_winner)
             if poster_candidate_local:
-                for url in poster_urls:
+                # quality 的落盘产物是胜者, 超分针对胜者; 落选者即便有旧缓存记录也不参与.
+                targets = [poster_winner] if poster_winner is not None else poster_urls
+                for url in targets:
                     res = await store.get_by_url(url)
                     if res:
                         await _maybe_upscale(store, res, config, data_dir)
