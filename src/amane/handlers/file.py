@@ -548,35 +548,11 @@ async def _acquire_candidates_local(
     """整理期图片候选获取按生效 ``thumb_download_strategy`` 分派 (库级配置): priority 取顺序首个
     可获取者, quality 取全候选择优胜者.
 
-    thumb / trailer / 剧照与 poster 的复制回退路径共用; poster 的重选路径见
+    thumb / trailer 与 poster 的复制回退路径共用; poster 的重选路径见
     :func:`_prepare_poster_product`.
     """
     path, _ = await _acquire_candidates_local_url(urls, store, client, quality=quality)
     return path
-
-
-async def _acquire_extrafanart_local(
-    urls_by_site: dict[str, list[str]],
-    priority: Sequence[str],
-    store: ResourceStore,
-    client: WebClient,
-    *,
-    quality: bool,
-) -> list[Path]:
-    """剧照候选获取: 站点优先级不变 (首个有产物的站点胜出), 站内候选按策略分派.
-
-    priority 取该站全部候选 (沿用 store 的既有获取); quality 全候选独占临时择优, 只取胜者.
-    """
-    if not quality:
-        return await store.acquire_extrafanart(urls_by_site, list(priority), client)
-    for site in priority:
-        urls = urls_by_site.get(site)
-        if not urls:
-            continue
-        winner = await _acquire_candidates_local(urls, store, client, quality=True)
-        if winner is not None:
-            return [winner]
-    return []
 
 
 async def _resolve_locator_args(poster_urls: Sequence[str], store: ResourceStore) -> dict[str, str]:
@@ -938,8 +914,9 @@ async def _download_images_via_store(
 
     poster 来源: ``prepared_poster`` 非 None 时直接使用整理期重选 / 用户产物 (规格 §3.6),
     不再按 poster_urls 现场获取.
-    thumb / trailer / 剧照的候选获取按库级生效 ``thumb_download_strategy`` 分派: priority 取顺序
+    thumb / trailer 的候选获取按库级生效 ``thumb_download_strategy`` 分派: priority 取顺序
     首个可获取者, quality 取全候选择优胜者 (独占临时择优); 未注入 ``metadata_cfg`` 时按 priority.
+    剧照是多个不同图片的集合, 择优语义不适用: 站点优先级不变, 每站取该站全部候选.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     幕后图候选按库开关追加到剧照集合 (规格 §3.5), 经同一命名模板接续编号.
     """
@@ -974,14 +951,10 @@ async def _download_images_via_store(
         extrafanart_by_site = metadata.extrafanart_urls
         if extrafanart_by_site:
             priority = list(extrafanart_by_site.keys())
-            extrafanart = await _acquire_extrafanart_local(
-                extrafanart_by_site, priority, store, client, quality=quality
-            )
+            extrafanart = await store.acquire_extrafanart(extrafanart_by_site, priority, client)
         behind_urls = _behind_scenes_candidates(metadata, extrafanart_by_site, config, metadata_cfg)
         if behind_urls:
-            extrafanart += await _acquire_extrafanart_local(
-                {"behind_scenes": behind_urls}, ["behind_scenes"], store, client, quality=quality
-            )
+            extrafanart += await store.acquire_extrafanart({"behind_scenes": behind_urls}, ["behind_scenes"], client)
 
     # 名字与源文件成对落地: 文件名模板只能在这里渲染, 宽度取决于本轮张数.
     extrafanart_targets: list[tuple[str, Path]] = []

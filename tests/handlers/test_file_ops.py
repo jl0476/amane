@@ -2134,7 +2134,10 @@ _TRAILER_CANDIDATE_IMAGES = {
 async def test_organize_thumb_dispatch_by_library_strategy(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
-    """整理期 thumb / fanart / 剧照 / 预告片按库级生效策略分派: quality 取高分辨率者, priority 取首个候选."""
+    """整理期 thumb / fanart / 预告片按库级生效策略分派: quality 取高分辨率者, priority 取首个候选.
+
+    剧照是多个不同图片的集合, 择优语义不适用: 两个库都产出该站全部候选剧照.
+    """
     client = cast(
         "WebClient",
         MappedClient({**_THUMB_CANDIDATE_IMAGES, **_FANART_CANDIDATE_IMAGES, **_TRAILER_CANDIDATE_IMAGES}),
@@ -2179,17 +2182,19 @@ async def test_organize_thumb_dispatch_by_library_strategy(
     fanart_q = root_q / "MIDV-123" / "fanart.jpg"
     assert Image.open(fanart_q).size == (800, 538)
     assert _pixel_close(fanart_q, (0, 128, 0))
-    # 剧照同按 quality 择优: 高分辨率者胜出.
+    # 剧照是集合: quality 不改变张数, 该站全部候选都落盘.
     extrafanart_q = sorted((root_q / "MIDV-123" / "extrafanart").iterdir())
-    assert len(extrafanart_q) == 1
-    assert Image.open(extrafanart_q[0]).size == (500, 440)
-    assert _pixel_close(extrafanart_q[0], (255, 165, 0))
+    assert len(extrafanart_q) == 2
+    assert Image.open(extrafanart_q[0]).size == (460, 460)
+    assert _pixel_close(extrafanart_q[0], (128, 0, 128))
+    assert Image.open(extrafanart_q[1]).size == (500, 440)
+    assert _pixel_close(extrafanart_q[1], (255, 165, 0))
     # 预告片同按 quality 择优.
     trailer_q = root_q / "MIDV-123" / "trailer.mp4"
     assert Image.open(trailer_q).size == (640, 480)
     assert _pixel_close(trailer_q, (255, 165, 0))
 
-    # priority 库: thumb / fanart / 剧照 / 预告片均取首个候选.
+    # priority 库: thumb / fanart / 预告片均取首个候选.
     thumb_p = root_p / "MIDV-123" / "thumb.jpg"
     assert Image.open(thumb_p).size == (600, 600)
     assert _pixel_close(thumb_p, (0, 0, 255))
@@ -2200,9 +2205,100 @@ async def test_organize_thumb_dispatch_by_library_strategy(
     assert len(extrafanart_p) == 2
     assert Image.open(extrafanart_p[0]).size == (460, 460)
     assert _pixel_close(extrafanart_p[0], (128, 0, 128))
+    assert Image.open(extrafanart_p[1]).size == (500, 440)
+    assert _pixel_close(extrafanart_p[1], (255, 165, 0))
     trailer_p = root_p / "MIDV-123" / "trailer.mp4"
     assert Image.open(trailer_p).size == (320, 240)
     assert _pixel_close(trailer_p, (128, 0, 128))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_extrafanart_keeps_site_priority_under_quality(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """库级 quality 下剧照的站点优先级不变: 首个有产物的站点胜出, 取该站全部候选."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/dmm1.jpg": ((460, 460), "purple"),
+                "https://s/dmm2.jpg": ((500, 440), "orange"),
+                "https://s/javdb1.jpg": ((640, 480), "green"),
+            }
+        ),
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        extrafanart_urls={"dmm": ["https://s/dmm1.jpg", "https://s/dmm2.jpg"], "javdb": ["https://s/javdb1.jpg"]},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="q",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "quality"},
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+
+    # dmm 站点在先且有产物: 只取 dmm 的两张, javdb 的剧照不落盘.
+    extrafanart = sorted((root / "MIDV-123" / "extrafanart").iterdir())
+    assert len(extrafanart) == 2
+    assert _pixel_close(extrafanart[0], (128, 0, 128))
+    assert _pixel_close(extrafanart[1], (255, 165, 0))
+    assert await resource_store.get_by_url("https://s/javdb1.jpg") is None
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_behind_scenes_kept_under_quality(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """库级 quality 下幕后图同样按集合取全: 普通剧照与幕后图各按站点取全部候选."""
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/e1.jpg": ((460, 460), "purple"),
+                "https://s/e2.jpg": ((500, 440), "orange"),
+                "https://s/b1.jpg": ((640, 480), "green"),
+                "https://s/b2.jpg": ((640, 480), "blue"),
+            }
+        ),
+    )
+    meta = await repo.upsert_metadata(
+        number=_BEHIND_NUMBER,
+        content_type=ContentType.CENSORED,
+        extrafanart_urls={"dmm": ["https://s/e1.jpg", "https://s/e2.jpg"]},
+        behind_scenes={"javdb": ["https://s/b1.jpg", "https://s/b2.jpg"]},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="q",
+        metadata_id=meta.id,
+        number=_BEHIND_NUMBER,
+        metadata_override={"thumb_download_strategy": "quality", "extra_fanarts_behind_scenes": True},
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+
+    # 普通剧照两张在前, 幕后图两张接续编号: quality 不减张.
+    extrafanart = sorted((root / _BEHIND_NUMBER / "extrafanart").iterdir())
+    assert len(extrafanart) == 4
+    assert _pixel_close(extrafanart[0], (128, 0, 128))
+    assert _pixel_close(extrafanart[1], (255, 165, 0))
+    assert _pixel_close(extrafanart[2], (0, 128, 0))
+    assert _pixel_close(extrafanart[3], (0, 0, 255))
 
 
 @pytest.mark.asyncio(loop_scope="function")
