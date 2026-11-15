@@ -120,6 +120,8 @@ payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段�
 
 图片策略节: 策略矩阵、比例三值、候选下载策略与低清阈值的判定语义见 `src/amane/media/crop.py::resolve_crop_plan` (缺键回退与 config 默认须一致, 见上文覆盖层). `face` 策略依赖可选 extra `[opencv]`, 未装或后端失败时按 Right 执行并告警 (契约见 `src/amane/media/crop.py::resolve_face_execution`), 桌面与容器装配必须带该 extra 与模型数据 (见 [desktop.md](desktop.md)). `crop_low_res_height` 启用时取代 `scraping.poster_crop_skip_ratio` 的短路判定. `image_strict_mode` 未实现 — 行为语义未调研, 不臆造 (设计规格 §7), 下载策略只有 priority / quality.
 
+Face 检测器是进程内共享的单实例 (`src/amane/media/crop.py::_load_detector`), 实例持有可变状态: 输入尺寸与 `dnn::Net` 的推理缓冲. 因此 "设置尺寸 + 检测" 与实例创建都必须在 `src/amane/media/crop.py::_detector_lock` 的互斥区内完成 — 不允许绕开互斥区直接使用该实例. 多个任务并发时检测串行执行, 单次检测耗时因此叠加, 但每个检出框严格对应其输入图.
+
 ## `watermark` (Hot)
 
 只在 ORGANIZE 落盘封面时绘制, 不修改 Resource; 片库 CSS overlay 不读 `enabled`. 角标高度 = 图高 × `scale` (不按宽、不按 PNG 原图像素); `corners` 是 `x-frozen-keys` 五类到四角的映射, 同角按中字 / 无码 / 破解 / 流出 / 分辨率向内叠. PNG 覆盖仍是 `{data_dir}/watermarks/{stem}.png`.

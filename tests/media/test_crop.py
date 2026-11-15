@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import types
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
@@ -576,3 +577,88 @@ async def test_runtime_detection_exception_degrades_right_key(
         assert len(producer_calls) == 1
         assert len(_degrade_warnings(logs)) == 1
     assert await resource_store.get_by_url(derived_locator(url, "crop", "face:legacy:0.7000")) is None
+
+
+# ---------------------------------------------------------------- 并发检测隔离 (IMPL-08)
+
+# 并发用例的图尺寸: 互不相同, 共享实例的 setInputSize 会互相覆盖输入尺寸.
+_CONCURRENT_SIZES = [(800, 538), (512, 512), (600, 900), (1280, 720)]
+
+
+def _concurrent_thumbs(tmp_path: Path) -> list[tuple[tuple[int, int], Path]]:
+    """按 :data:`_CONCURRENT_SIZES` 构造同源不同尺寸的样例图 (含人脸, 各尺寸均能检出)."""
+    source = Image.open(_FACE_FIXTURE).convert("RGB")
+    thumbs: list[tuple[tuple[int, int], Path]] = []
+    for size in _CONCURRENT_SIZES:
+        path = tmp_path / f"concurrent_{size[0]}x{size[1]}.jpg"
+        source.resize(size).save(path, format="JPEG", quality=95)
+        thumbs.append((size, path))
+    return thumbs
+
+
+def _detect_outcome(
+    item: tuple[tuple[int, int], Path],
+) -> tuple[tuple[int, int], list[tuple[int, int, int, int]], str | None]:
+    """并发用例的单个检测结果: 异常收敛为消息, 便于逐项断言报告错配而非整体中断."""
+    try:
+        size, boxes = crop_mod._detect_faces(item[1])
+    except Exception as exc:
+        return item[0], [], f"{type(exc).__name__}: {exc}"
+    return size, boxes, None
+
+
+def test_concurrent_detection_results_match_own_input(tmp_path: Path) -> None:
+    """并发检测: 每个结果必须对应自身输入图 (IMPL-08).
+
+    共享检测器实例在并发下互相覆盖输入尺寸与推理状态, 表现为检出框错配或检测异常.
+    预热检测器复现生产路径 (实例创建一次后全程复用), 再并发提交不同尺寸的图.
+    """
+    thumbs = _concurrent_thumbs(tmp_path)
+    baseline = {size: _oracle_faces(path) for size, path in thumbs}
+    assert all(baseline.values()), "每个尺寸的样例图必须各自检出人脸"
+
+    crop_mod._load_detector.cache_clear()
+    crop_mod._detect_faces(thumbs[0][1])  # 预热: 生产路径中实例创建一次后全程复用
+
+    with ThreadPoolExecutor(max_workers=len(thumbs)) as pool:
+        outcomes = list(pool.map(_detect_outcome, thumbs))
+
+    for (size, _), (returned_size, boxes, error) in zip(thumbs, outcomes, strict=True):
+        assert error is None, f"{size} 检测异常: {error}"
+        assert returned_size == size, "返回尺寸必须对应自身输入"
+        assert boxes == baseline[size], f"检出框错配: {size} 得到 {boxes}, 期望 {baseline[size]}"
+
+
+def test_concurrent_cold_start_creates_single_detector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """并发冷启动只创建一个检测器实例 (IMPL-08).
+
+    ``functools.cache`` 不合并并发首次调用: 多个线程同时未命中缓存会各建一个实例,
+    造成重复的模型加载与额外的内存占用. 创建须在互斥区内完成.
+    """
+    thumbs = _concurrent_thumbs(tmp_path)
+    real_cv2 = optional_cv2.module()
+    assert real_cv2 is not None
+
+    created: list[object] = []
+    real_create = real_cv2.FaceDetectorYN.create
+
+    def counting_create(*args: Any, **kwargs: Any) -> Any:
+        detector = real_create(*args, **kwargs)
+        created.append(detector)
+        return detector
+
+    # 只替换 FaceDetectorYN.create, 其余 cv2 成员 (utils.logging 等) 仍走真实模块.
+    proxy_cv2 = types.SimpleNamespace(
+        FaceDetectorYN=types.SimpleNamespace(create=counting_create),
+        utils=real_cv2.utils,
+    )
+    monkeypatch.setattr(optional_cv2, "cv2", proxy_cv2)
+    crop_mod._load_detector.cache_clear()
+    try:
+        with ThreadPoolExecutor(max_workers=len(thumbs)) as pool:
+            outcomes = list(pool.map(_detect_outcome, thumbs))
+    finally:
+        crop_mod._load_detector.cache_clear()
+
+    assert all(error is None for _, _, error in outcomes), "并发冷启动不得出现检测异常"
+    assert len(created) == 1, f"并发冷启动应只创建一个实例, 实际 {len(created)} 个"

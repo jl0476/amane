@@ -1,6 +1,7 @@
 """海报裁剪策略中立面: 策略解析与产物选择判定的唯一定义, 刮削物化与整理期重选双入口共用 (设计规格 §3.2/§3.3)."""
 
 import functools
+import threading
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -140,13 +141,23 @@ class _FaceDetector(Protocol):
     def detect(self, image: np.ndarray) -> tuple[int, np.ndarray | None]: ...
 
 
+# YuNet 实例持有可变状态 (输入尺寸与 dnn::Net 的推理缓冲), setInputSize 与 detect 之间存在状态依赖:
+# 后调用的 setInputSize 会让先调用的 detect 用错尺寸, 并发的 net.setInput/forward 还会互相覆盖推理结果.
+# 因此共享实例上的 "设尺寸 + 检测" 必须互斥, 保证每个结果严格对应其输入图.
+# 创建纳入同一互斥区: functools.cache 不合并并发首次调用 (多线程会各建一个实例), 放进互斥区后进程内只建一个.
+_detector_lock = threading.Lock()
+
+
 def _model_path() -> Path:
     return Path(__file__).parent / _FACE_MODEL_RELPATH
 
 
 @functools.cache
 def _load_detector() -> _FaceDetector | None:
-    """惰性创建 YuNet 检测器: 首次使用时执行 create, 结果进程内复用; 失败态同样缓存, 不再重试."""
+    """惰性创建 YuNet 检测器: 首次使用时执行 create, 结果进程内复用; 失败态同样缓存, 不再重试.
+
+    并发调用方须持 :data:`_detector_lock` 调用, 不得直接调用.
+    """
     cv2 = optional_cv2.module()
     if cv2 is None:
         return None
@@ -163,8 +174,9 @@ def _backend_failure() -> str | None:
     """Face 后端探针 (须在派生键构造之前执行): 可用返回 None, 否则返回不可用原因."""
     if not optional_cv2.available():
         return "cv2 not installed"
-    if _load_detector() is None:
-        return "yunet model load failed"
+    with _detector_lock:
+        if _load_detector() is None:
+            return "yunet model load failed"
     return None
 
 
@@ -177,16 +189,20 @@ def _warn_face_degrade_once(reason: str) -> None:
 
 
 def _detect_faces(thumb_path: Path) -> tuple[tuple[int, int], list[tuple[int, int, int, int]]]:
-    """YuNet 检测图内全部人脸框. 坐标为原始像素 (不做 EXIF 转正), 与裁剪窗同一坐标系; 异常向上传播."""
+    """YuNet 检测图内全部人脸框. 坐标为原始像素 (不做 EXIF 转正), 与裁剪窗同一坐标系; 异常向上传播.
+
+    取实例与 "设尺寸 + 检测" 在同一互斥区内完成: 实例状态可变, 并发会互相覆盖尺寸与推理结果.
+    """
     with Image.open(thumb_path) as img:
         rgb = img.convert("RGB")
         size = rgb.size
         bgr = np.asarray(rgb)[:, :, ::-1]
-    detector = _load_detector()
-    if detector is None:
-        raise RuntimeError("face backend unavailable")
-    detector.setInputSize(size)
-    _, faces = detector.detect(bgr)
+    with _detector_lock:
+        detector = _load_detector()
+        if detector is None:
+            raise RuntimeError("face backend unavailable")
+        detector.setInputSize(size)
+        _, faces = detector.detect(bgr)
     if faces is None:
         return size, []
     return size, [(int(face[0]), int(face[1]), int(face[2]), int(face[3])) for face in faces]
