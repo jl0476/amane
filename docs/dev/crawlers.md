@@ -65,7 +65,7 @@ CrawlerFactory (缓存实例)
 
 - HTML 页用 `get_html`: `get_text` + `classify_block`, 命中拦截 / 空页抛出 `SourceError`.
 - JSON API 用 `get_json` / `post_json`, 不执行 HTML 启发式; `post_json` 载荷可以是 object 或 array (Yii 式 RPC).
-- `download` / `ResourceStore.acquire` 失败即跳过, 不阻断调用方: 调用方 `except RequestError: return None` / 返回 `bool`, 不经由第二套错误通道. `ResourceStore.acquire` 另按重定向终址拒收上游改派的占位图 (DMM 的 `now_printing`), 由多 URL 试探回退.
+- `download` / `ResourceStore.acquire` 失败即跳过, 不阻断调用方: 调用方 `except RequestError: return None` / 返回 `bool`, 不经由第二套错误通道. `ResourceStore` 另按重定向终址拒收上游改派的占位图 (DMM 的 `now_printing`), 由多 URL 试探回退; quality 择优的独占临时下载共用此判定 (`resource_store.py::ResourceStore._placeholder_final_url`), 占位候选按该候选失败处理, 不落缓存.
 - 多 URL 试探可在子类 `except RequestError: continue`; 全部失败时抛出最后一次异常, 不允许静默忽略为裸 `None`.
 - 防盗链: 声明 `CrawlerProfile.same_origin_referer` 的站点, 其 host 由 `build_network_stack` 交给 `WebClient`, 调用方未给 `Referer` 时补 `https://{host}/`; 站点按前缀匹配, 结尾斜杠不可省略.
 

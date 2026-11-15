@@ -1,15 +1,19 @@
 """测试 ResourceStore 的派生资源 (裁剪), 就地超分, 独占临时择优与获取失败的收尾."""
 
 import asyncio
+import hashlib
 import io
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
+from sqlmodel import select
 from structlog.testing import capture_logs
 
+from amane.db.models import Resource
 from amane.media import ResourceStore, UpscaleOutcome, derived_locator
 from amane.media.resource_store import (
     RESOURCE_URL_PREFIX,
@@ -19,9 +23,6 @@ from amane.media.resource_store import (
 )
 from amane.net.egress import EgressPolicy
 from amane.net.http import RateLimiters, WebClient
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_derived_locator_deterministic():
@@ -656,11 +657,20 @@ def _png(width: int, height: int, *, variant: int = 0) -> bytes:
 
 
 def _download_client(
-    monkeypatch: pytest.MonkeyPatch, contents: Mapping[str, bytes | None]
+    monkeypatch: pytest.MonkeyPatch,
+    contents: Mapping[str, bytes | None],
+    *,
+    final_urls: Mapping[str, str] | None = None,
 ) -> tuple[WebClient, list[str]]:
-    """download 按 url 写入预设字节 (None 表示下载失败); 记录每次远端下载请求."""
+    """download 按 url 写入预设字节 (None 表示下载失败); 记录每次远端下载请求.
+
+    ``final_urls`` 给定重定向终址 (缺省即 url 本身), 用于上游改派占位图的场景.
+    """
     client = WebClient(limiters=RateLimiters(default_rate=100))
     requested: list[str] = []
+
+    async def resolve_final_url(url: str, **_kwargs: Any) -> str:
+        return (final_urls or {}).get(url, url)
 
     async def download(url: str, dest: Path, **kwargs: Any) -> bool:
         requested.append(url)
@@ -670,6 +680,7 @@ def _download_client(
         dest.write_bytes(content)
         return True
 
+    monkeypatch.setattr(client, "resolve_final_url", resolve_final_url)
     monkeypatch.setattr(client, "download", download)
     return client, requested
 
@@ -907,6 +918,7 @@ async def test_cancel_cleans_temp(resource_store: ResourceStore, monkeypatch: py
     assert record_before is not None
     slow_url = "https://s/cancelled.jpg"
     client = AsyncMock()
+    client.resolve_final_url = AsyncMock(return_value=slow_url)
 
     async def download(url: str, dest: Path, **kwargs: object) -> bool:
         raise asyncio.CancelledError
@@ -922,3 +934,727 @@ async def test_cancel_cleans_temp(resource_store: ResourceStore, monkeypatch: py
     assert record_after is not None
     assert record_after.content_hash == record_before.content_hash
     assert await resource_store.get_by_url(slow_url) is None
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_rejects_placeholder_redirect(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """上游改派占位图的候选按失败处理: 不下载, 不落缓存, 择优在成功者中进行."""
+    placeholder_url = "https://s/placeholder.jpg"
+    good_url = "https://s/good.jpg"
+    good_bytes = _png(200, 150)
+    client, requested = _download_client(
+        monkeypatch,
+        {placeholder_url: _png(300, 300), good_url: good_bytes},
+        final_urls={placeholder_url: _PLACEHOLDER},
+    )
+
+    result = await resource_store.acquire_best([placeholder_url, good_url], client, task_token="t9")
+
+    assert result.success is True
+    assert result.used_url == good_url
+    assert result.failed == [placeholder_url]
+    assert result.path is not None and result.path.read_bytes() == good_bytes
+    assert requested == [good_url]  # 占位图候选不下载
+    assert await resource_store.get_by_url(placeholder_url) is None  # 占位图不落缓存
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_all_placeholder_fails(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """全部候选都被改派到占位图: 整轮失败, 不落任何缓存记录."""
+    placeholder_url = "https://s/only-placeholder.jpg"
+    client, requested = _download_client(
+        monkeypatch,
+        {placeholder_url: _png(300, 300)},
+        final_urls={placeholder_url: _PLACEHOLDER},
+    )
+
+    result = await resource_store.acquire_best([placeholder_url], client, task_token="t9")
+
+    assert result.success is False
+    assert result.path is None and result.used_url is None
+    assert result.failed == [placeholder_url]
+    assert requested == []
+    assert await resource_store.get_by_url(placeholder_url) is None
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_overwrite_cancel_heals_record(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖流程在文件换新后被取消: 再次读取时记录与盘上字节一致, 缓存仍可用.
+
+    文件已换新而记录未落库时, 记录按盘上字节自愈; 不得留下"记录 hash ≠ 盘上字节"的失配.
+    """
+    url = "https://s/heal.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    new_bytes = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(new_bytes)
+
+    # 在文件换新之后、记录落库之前取消.
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    # 盘上是新字节, 记录尚未更新 —— 失配此刻存在.
+    assert cached_path.read_bytes() == new_bytes
+
+    # 再次读取: 记录按盘上字节自愈, 失配消失.
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)
+    assert healed.size == len(new_bytes)
+    assert healed.meta is not None and "pending" not in healed.meta
+
+    # 缓存可用: resolve 直出, 且与记录一致.
+    resolved = await resource_store.resolve(url)
+    assert resolved == cached_path
+    assert resolved is not None and resolved.read_bytes() == new_bytes
+
+
+@pytest.mark.asyncio
+async def test_overwrite_cancel_before_replace_keeps_old_bytes(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """覆盖流程在文件换新之前被取消: 盘上仍是旧字节, 记录仍指旧字节, 标记撤除."""
+    url = "https://s/heal2.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    def cancel_before_replace(self: Path, target: Path) -> Path:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", cancel_before_replace)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    assert cached_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.meta is not None and "pending" not in record.meta
+
+
+@pytest.mark.asyncio
+async def test_commit_replace_failure_leaves_no_pending(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖时文件替换失败: 待提交标记撤除, 记录仍指旧字节, 缓存仍可用."""
+    url = "https://s/replace-fail.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    assert result.success is False
+    assert result.failed == [url]
+    assert cached_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.meta is not None and "pending" not in record.meta
+
+
+@pytest.mark.asyncio
+async def test_overwrite_clears_stale_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖为新字节后, 旧字节的超分标记不再成立: upscale_in_place 须实际执行.
+
+    旧标记留着时, 记录已指新字节且与盘上相符, 超分被误判为"已超分"而跳过 ——
+    新原图实际未超分却被当作已超分.
+    """
+    url = "https://s/sr-overwrite.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+
+    # quality 覆盖为更高分辨率的新字节 (本轮胜 → 覆盖缓存).
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    overwritten = await resource_store.get_by_url(url)
+    assert overwritten is not None
+    assert overwritten.meta is not None and "sr" not in overwritten.meta  # 旧字节的标记失效
+    assert "pending" not in overwritten.meta  # 待提交标记不得留在库里的正常路径
+
+    # 新字节实际未超分: 不得跳过.
+    outcome = await resource_store.upscale_in_place(overwritten, {"scale": 4}, sr_producer)
+    assert outcome is UpscaleOutcome.UPSCALED
+
+
+@pytest.mark.asyncio
+async def test_same_hash_overwrite_keeps_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """同 hash 幂等覆盖: 字节未变, 超分结果仍有效, 标记保留."""
+    url = "https://s/sr-idem.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None
+    sr_bytes = resource_store.full_path(marked).read_bytes()
+
+    # 同 hash 幂等提交: 字节与盘上那份相同.
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(sr_bytes)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    after = await resource_store.get_by_url(url)
+    assert after is not None
+    assert after.meta is not None and "sr" in after.meta  # 字节未变, 标记保留
+    assert await resource_store.upscale_in_place(after, {"scale": 4}, sr_producer) is UpscaleOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_existing_wins_keeps_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """既有胜 (本轮落选): 缓存字节未变, 超分标记保留."""
+    url = "https://s/sr-existing-wins.jpg"
+    await _seed_cache(resource_store, url, _png(200, 150), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(_png(200, 150))  # 字节不变, 只挂标记
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+
+    # 本轮分辨率更低: 既有胜, 缓存字节不变.
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(50, 50))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    after = await resource_store.get_by_url(url)
+    assert after is not None
+    assert after.meta is not None and "sr" in after.meta  # 字节未变, 标记保留
+
+
+@pytest.mark.asyncio
+async def test_derived_hit_requires_same_source_version(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """源内容未变 → 命中直出, producer 不重跑."""
+    src_url = "https://s/src-stable.jpg"
+    await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+
+    second = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 1  # 源未变 → 命中, producer 不重跑
+
+
+@pytest.mark.asyncio
+async def test_derived_reruns_when_source_changed(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """源内容变化 (同 src_url, 缓存源字节被替换) → 派生重跑, 产物反映新源."""
+    src_url = "https://s/src-changed.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        # 产物取源文件的字节: 源换了则产物随之换.
+        dest.write_bytes(src_path.read_bytes())
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    first_bytes = resource_store.full_path(first).read_bytes()
+
+    # 源缓存字节被替换 (同 src_url).
+    new_src = _png(200, 150)
+    src_path.write_bytes(new_src)
+
+    second = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 2  # 源已变 → producer 重跑
+    assert resource_store.full_path(second).read_bytes() == new_src
+    assert resource_store.full_path(second).read_bytes() != first_bytes
+
+
+@pytest.mark.asyncio
+async def test_derived_legacy_record_picks_up_source_version(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """存量派生记录没有版本标记而源有版本: 重跑一次补上标记, 此后源不变即直出."""
+    src_url = "https://s/src-legacy.jpg"
+    await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    # 造一条没有版本标记的存量派生记录.
+    locator = derived_locator(src_url, "crop", "0.7")
+    legacy_path = resource_store._compute_path(locator, ext=".jpg")
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_bytes(b"legacy-cropped")
+
+    async with resource_store._session() as session:
+        session.add(
+            Resource(
+                url=locator,
+                file_path=resource_store._relative_path(legacy_path),
+                content_hash=ResourceStore._hash_file(legacy_path),
+                size=legacy_path.stat().st_size,
+                mime_type="image/jpeg",
+                meta={"op": "crop", "src": src_url, "args": "0.7"},
+            )
+        )
+        await session.commit()
+
+    result = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+
+    assert result is not None
+    assert calls["n"] == 1  # 存量记录补标记, 重跑一次
+    assert result.meta is not None and "srcv" in result.meta
+
+    # 版本已记下: 源不变即直出.
+    again = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert again is not None
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_derived_without_source_record_still_hits(resource_store: ResourceStore):
+    """源无 Resource 记录 (无从核对版本): 同配置幂等直出, producer 不重跑."""
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    first = await resource_store.acquire_derived("https://s/no-src-row.jpg", "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    assert first.meta is not None and "srcv" not in first.meta  # 无源记录, 不记版本
+
+    second = await resource_store.acquire_derived("https://s/no-src-row.jpg", "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 1
+
+
+# --- 自愈路径的并发安全: 在飞提交的待提交标记不得被读路径撤掉 ---
+
+
+async def _row_meta(store: ResourceStore, url: str) -> dict:
+    """读库里的 meta 列: 断言用库态而非调用方手里的副本."""
+    async with store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        return dict(row.meta) if row is not None and row.meta else {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_keeps_inflight_pending_marker(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """提交已挂待提交标记、尚未换文件时的并发读: 读不得撤掉在飞提交的标记.
+
+    撤掉后提交再夭折, 记录 hash 与盘上字节就永久失配, 且此后再无自愈触发条件.
+    """
+    url = "https://s/inflight-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    new_bytes = _png(200, 150)
+    temp.write_bytes(new_bytes)
+    new_hash = hashlib.sha256(new_bytes).hexdigest()
+
+    marked = asyncio.Event()
+    proceed = asyncio.Event()
+
+    original_mark = ResourceStore._mark_pending
+
+    async def mark_then_pause(self: ResourceStore, record: Resource, content_hash: str) -> None:
+        await original_mark(self, record, content_hash)
+        marked.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(ResourceStore, "_mark_pending", mark_then_pause)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await marked.wait()  # 标记已在库, 文件尚未换
+        assert (await _row_meta(resource_store, url)).get("pending") == new_hash
+
+        # 并发读: 盘上仍是旧字节, 库里有待提交标记.
+        read = asyncio.create_task(resource_store.get_by_url(url))
+        await asyncio.wait({read}, timeout=1.0)
+
+        # 读不得撤掉在飞提交的标记.
+        assert (await _row_meta(resource_store, url)).get("pending") == new_hash
+    finally:
+        proceed.set()
+        await commit
+        monkeypatch.undo()
+
+    # 提交走完: 记录与盘上一致, 标记撤除.
+    assert cached_path.read_bytes() == new_bytes
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "pending" not in final.meta
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_then_cancel_keeps_record_consistent(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """并发读发生在"标记已挂、文件未换"窗口, 随后提交在换文件后被取消: 记录须与盘上一致.
+
+    审查发现 1 的可观察后果: 读撤掉在飞标记后提交夭折, 记录 hash 与盘上字节永久失配.
+    """
+    url = "https://s/inflight-cancel.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    marked = asyncio.Event()
+    proceed = asyncio.Event()
+
+    original_mark = ResourceStore._mark_pending
+
+    async def mark_then_pause(self: ResourceStore, record: Resource, content_hash: str) -> None:
+        await original_mark(self, record, content_hash)
+        marked.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(ResourceStore, "_mark_pending", mark_then_pause)
+
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await marked.wait()
+        read = asyncio.create_task(resource_store.get_by_url(url))
+        await asyncio.wait({read}, timeout=1.0)
+    finally:
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await commit
+        monkeypatch.undo()
+
+    assert cached_path.read_bytes() != old_bytes  # 文件已换新
+
+    # 记录须按盘上字节自愈, 不得留下失配.
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)
+    assert healed.meta is not None and "pending" not in healed.meta
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_marker_still_stripped(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """崩溃遗留的待提交标记 (无在飞提交) 仍能被正确撤除: 与在飞标记的处置须可区分."""
+    url = "https://s/stale-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+
+    # 造一条崩溃遗留的标记: 库里有 pending, 盘上仍是旧字节, 且无在飞提交.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": "f" * 64}
+        session.add(row)
+        await session.commit()
+
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.meta is not None and "pending" not in record.meta  # 陈旧标记已撤
+    assert record.content_hash == ResourceStore._hash_file(cached_path)  # 记录仍指盘上那份
+
+
+@pytest.mark.asyncio
+async def test_heal_write_does_not_clobber_concurrent_commit(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """自愈落库不得覆盖提交刚写入的新 hash: 最终记录 hash 须等于盘上字节.
+
+    审查发现 2 的确定性复现: 读路径拿着陈旧快照 (旧 hash + pending) → 提交换文件并落库
+    (新 hash) → 自愈落库; 自愈不得用陈旧快照把新 hash 盖回去.
+    """
+    url = "https://s/heal-clobber.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+
+    # 第一次提交在换文件后被取消: 盘上是 A, 记录仍指旧字节且带待提交标记.
+    bytes_a = _png(200, 150)
+    temp_a = resource_store._base_dir / "cand.amane-tmp-t1.jpg"
+    temp_a.write_bytes(bytes_a)
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp_a)
+    monkeypatch.undo()
+
+    assert cached_path.read_bytes() == bytes_a
+
+    # 读路径: 快照在此刻取到 (旧 hash + pending), 自愈被拦在快照之后.
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    armed = False
+    original_heal = ResourceStore._heal_record
+
+    async def heal_pause_first(self: ResourceStore, record: Resource, full_path: Path) -> None:
+        # 只拦这次读的自愈: 自愈锁还没取, 提交得以在快照之后落库.
+        if armed and not paused.is_set():
+            paused.set()
+            await proceed.wait()
+        await original_heal(self, record, full_path)
+
+    monkeypatch.setattr(ResourceStore, "_heal_record", heal_pause_first)
+
+    armed = True
+    read = asyncio.create_task(resource_store.get_by_url(url))
+    await paused.wait()
+
+    # 第二次提交: 更大的字节胜出, 换文件并落库 (新 hash).
+    bytes_b = _png(300, 200)
+    temp_b = resource_store._base_dir / "cand.amane-tmp-t2.jpg"
+    temp_b.write_bytes(bytes_b)
+    result = await resource_store.commit_temp(url, temp_b)
+    assert result.success is True
+    assert cached_path.read_bytes() == bytes_b
+
+    proceed.set()
+    await read
+    monkeypatch.undo()
+
+    # 最终记录 hash 必须等于盘上字节, 不得被自愈的陈旧快照盖回旧 hash.
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "pending" not in final.meta
+
+
+@pytest.mark.asyncio
+async def test_upscale_write_excluded_from_heal(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """就地超分的落库须与自愈互斥: 自愈持锁期间超分不得落库.
+
+    两处都改记录 (hash/size/类型/sr 标记), 不互斥时自愈可用陈旧快照把超分的结果盖回去 ——
+    记录指回超分前的字节, 超分被当成没做过.
+    """
+    url = "https://s/heal-upscale.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+
+    # 崩溃遗留的标记: pending 指向盘上那份字节 —— 自愈走"认下盘上字节"分支, 正是改写
+    # content_hash/size/类型的那几列.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": ResourceStore._hash_file(cached_path)}
+        session.add(row)
+        await session.commit()
+
+    # 自愈持锁期间把落库卡住.
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    original_locked = ResourceStore._heal_locked
+    seen = {"n": 0}
+
+    async def heal_hold(self: ResourceStore, row_id: int | None) -> Resource | None:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            paused.set()
+            await proceed.wait()
+        return await original_locked(self, row_id)
+
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_hold)
+
+    read = asyncio.create_task(resource_store.get_by_url(url))
+    await paused.wait()  # 自愈正持锁
+
+    sr_bytes = b"upscaled-bytes"
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(sr_bytes)
+        return True
+
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        record = result.first()
+    assert record is not None
+    upscale = asyncio.create_task(resource_store.upscale_in_place(record, {"scale": 2}, sr_producer))
+    await asyncio.sleep(0.2)
+    # 自愈持锁时超分不得落库.
+    assert not upscale.done()
+
+    proceed.set()
+    await read
+    outcome = await upscale
+    monkeypatch.undo()
+
+    assert outcome is UpscaleOutcome.UPSCALED
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "sr" in final.meta
+
+
+@pytest.mark.asyncio
+async def test_heal_keeps_valid_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """待提交的那份字节自带有效超分标记时, 自愈不得撤掉它 (否则二次超分).
+
+    崩溃的提交提交的正是已超分那份字节: 盘上已是超分后的字节, 记录上的 sr 标记仍有效.
+    """
+    url = "https://s/heal-sr.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+    sr_hash = marked.content_hash
+    assert sr_hash is not None
+
+    # 崩溃的提交提交的正是这份已超分的字节: 记录挂上指向它的待提交标记, 盘上已是那份字节.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": sr_hash}
+        session.add(row)
+        await session.commit()
+
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(resource_store.full_path(healed))
+    assert healed.meta is not None and "sr" in healed.meta  # 有效超分标记保留
+    # 不得二次超分.
+    assert await resource_store.upscale_in_place(healed, {"scale": 4}, sr_producer) is UpscaleOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_heal_drops_sr_marker_of_replaced_bytes(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """待提交的是新字节 (旧字节的超分标记不适用): 自愈须撤掉旧超分标记."""
+    url = "https://s/heal-sr-stale.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+
+    new_bytes = _png(200, 150)
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        # 待提交的是新字节 (与盘上那份不同): 旧字节的超分标记随之失效.
+        row.meta = {**(row.meta or {}), "pending": hashlib.sha256(new_bytes).hexdigest()}
+        session.add(row)
+        await session.commit()
+
+    cached_path.write_bytes(new_bytes)
+
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.meta is not None and "sr" not in healed.meta
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)
+
+
+@pytest.mark.asyncio
+async def test_derived_internal_url_source_reruns_when_source_changed(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """源以内部 URL 形式给出时, 源字节被换后派生须重跑 (版本核对不得静默失效)."""
+    src_url = "https://s/src-internal.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    internal = f"{RESOURCE_URL_PREFIX}/{resource_store.url_hash(src_url)}"
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(src_path.read_bytes())
+        return True
+
+    first = await resource_store.acquire_derived(internal, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    assert first.meta is not None and "srcv" in first.meta  # 内部 URL 也记源版本
+
+    new_src = _png(200, 150)
+    src_path.write_bytes(new_src)
+
+    second = await resource_store.acquire_derived(internal, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 2  # 源已变 → 派生重跑
+    assert resource_store.full_path(second).read_bytes() == new_src

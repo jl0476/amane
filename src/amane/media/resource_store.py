@@ -43,10 +43,43 @@ TMP_MARK = ".amane-tmp-"
 # 否则该 URL 会被判为可用并前置, 前端最终显示占位图本身.
 _PLACEHOLDER_PATH_MARKERS: tuple[str, ...] = ("/now_printing/", "/noimage.")
 
+# 覆盖缓存时先在记录上挂待提交标记, 文件换新后再落记录; 中途取消或进程退出会留下"标记在、字节新"
+# 的中间态, 读路径据此按盘上字节自愈 (见 ``_heal_record``).
+PENDING_KEY = "pending"
+"""``meta`` 内的待提交标记: 值为待写入记录的 content_hash."""
+
+SRC_VERSION_KEY = "srcv"
+"""``meta`` 内的源内容版本: 派生记录记源内容 hash, 命中时核对源是否已变."""
+
+_CONTENT_BOUND_META_KEYS: tuple[str, ...] = (PENDING_KEY, "sr")
+"""与记录自身字节绑定的标记: 字节被替换后一律失效 (超分标记等)."""
+
 
 def _is_placeholder_url(url: str) -> bool:
     path = urlsplit(url).path.lower()
     return any(marker in path for marker in _PLACEHOLDER_PATH_MARKERS)
+
+
+def _without_pending(meta: dict | None) -> dict:
+    """去掉待提交标记, 其余 meta 原样保留."""
+    if not meta:
+        return {}
+    return {k: v for k, v in meta.items() if k != PENDING_KEY}
+
+
+def _pending_hash(meta: dict | None) -> str | None:
+    """待提交标记所指的内容 hash; 标记不是字符串形态时返回 None (不可轻信)."""
+    if not meta:
+        return None
+    pending = meta.get(PENDING_KEY)
+    return pending if isinstance(pending, str) else None
+
+
+def _without_content_bound(meta: dict | None) -> dict:
+    """去掉与字节绑定的标记 (超分标记等): 字节已换新, 旧标记不再成立."""
+    if not meta:
+        return {}
+    return {k: v for k, v in meta.items() if k not in _CONTENT_BOUND_META_KEYS}
 
 
 def internal_url_hash(url: str) -> str | None:
@@ -127,6 +160,14 @@ class ResourceStore:
         self._base_dir = base_dir
         self._guards: dict[str, _LockEntry] = {}
         self._guards_lock = asyncio.Lock()
+        self._heal_lock = asyncio.Lock()
+        """自愈与落库 (覆盖提交 / 就地超分) 互斥: 覆盖的"挂标记 → 换文件 → 落记录"整段持锁,
+        自愈整段持锁.
+
+        读路径的自愈因此撞不上在飞提交: 标记在库而盘上仍是旧字节这一窗口, 提交正持锁,
+        自愈等提交走完再看盘上字节 —— 标记要么已被提交撤掉, 要么提交确实夭折, 两种都不是
+        "在飞的标记". 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+        """
         base_dir.mkdir(parents=True, exist_ok=True)
 
     def _session(self) -> AsyncSession:
@@ -184,7 +225,81 @@ class ResourceStore:
                 await session.commit()
                 return None
 
-            return full_path
+        # 自愈须在会话外做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
+        await self._heal_record(record, full_path)
+        return full_path
+
+    async def _heal_record(self, record: Resource, full_path: Path) -> None:
+        """覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
+
+        盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型. 与旧字节绑定的标记
+        (超分标记) 是否失效, 取决于这份字节自身是否带有效超分: 记录记的 hash 就是它则保留,
+        否则失效 —— 旧字节的超分结果不适用于新字节.
+        盘上仍是旧字节 (文件尚未换新): 只撤待提交标记, 记录原样仍指盘上那份.
+
+        自愈与落库 (覆盖提交 / 就地超分) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 →
+        落记录"期间读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) ——
+        在飞提交的标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+        """
+        if not record.meta or PENDING_KEY not in record.meta:
+            return
+        async with self._heal_lock:
+            healed = await self._heal_locked(record.id)
+        if healed is None:
+            return
+        # 调用方拿着的是自愈前的副本: 同步过来, 否则读到的还是旧标记与旧 hash.
+        record.content_hash = healed.content_hash
+        record.size = healed.size
+        record.mime_type = healed.mime_type
+        record.meta = healed.meta
+
+    async def _heal_locked(self, row_id: int | None) -> Resource | None:
+        """自愈临界区: 持自愈锁.
+
+        判定依据是锁内重读到的当前库态, 不是读路径先前取到的快照: 取快照到进锁之间, 可能有
+        新的提交挂上标记 —— 按快照判定会拿旧标记去撤新提交的标记.
+
+        返回自愈后的行 (未自愈则 None), 供调用方同步自己手里的副本.
+        """
+        if row_id is None:
+            return None
+        async with self._session() as session:
+            row = await session.get(Resource, row_id)
+            if row is None:
+                return None
+            meta = dict(row.meta) if row.meta else {}
+            pending_hash = _pending_hash(meta)
+            if pending_hash is None:
+                return None
+            full_path = self._base_dir / row.file_path
+            try:
+                disk_hash = self._hash_file(full_path)
+            except OSError:
+                return None
+
+            if disk_hash == pending_hash:
+                size = full_path.stat().st_size
+                mime = detect_media_type(full_path)
+                # 超分标记属不属于这份字节: 记录自己记的 hash 就是它时才保留, 否则失效 ——
+                # 旧字节的超分结果不适用于新字节, 而这份字节自带的超分结果仍然有效.
+                keep_sr = row.content_hash == disk_hash
+                row.content_hash = disk_hash
+                row.size = size
+                row.mime_type = mime
+                row.meta = {k: v for k, v in meta.items() if k != PENDING_KEY and not (k == "sr" and not keep_sr)}
+                session.add(row)
+                await session.commit()
+                logger.warning(
+                    "resource record healed after interrupted overwrite", url=row.url, content_hash=disk_hash
+                )
+                return row
+
+            # 文件尚未换新: 撤标记, 记录仍指盘上那份字节. 只清 pending 一个键, 不动其余列 ——
+            # 整列写回会用陈旧快照覆盖别的列.
+            row.meta = _without_pending(meta)
+            session.add(row)
+            await session.commit()
+            return row
 
     async def acquire(
         self,
@@ -220,8 +335,8 @@ class ResourceStore:
             return cached
 
         # 上游改派占位图时跳过, 不占用 dest 也不写记录.
-        final_url = await client.resolve_final_url(url, egress=egress)
-        if _is_placeholder_url(final_url):
+        final_url = await self._placeholder_final_url(url, client, egress=egress)
+        if final_url is not None:
             logger.warning("resource is upstream placeholder", url=url, final_url=final_url)
             return None
 
@@ -261,6 +376,16 @@ class ResourceStore:
 
         return dest
 
+    async def _placeholder_final_url(
+        self, url: str, client: WebClient, *, egress: EgressPolicy | None = None
+    ) -> str | None:
+        """上游改派占位图时返回重定向终址; 否则返回 None.
+
+        两条下载路径 (``acquire`` 与 quality 的独占临时) 共用此判定, 口径一致.
+        """
+        final_url = await client.resolve_final_url(url, egress=egress)
+        return final_url if _is_placeholder_url(final_url) else None
+
     async def resolve_source(self, url: str, client: WebClient) -> ResolvedSource | None:
         """处理入口的源解析: 内部 URL 定位既有 Resource, 外部仅接受 http(s), 其余返回 None."""
         internal = internal_url_hash(url)
@@ -280,7 +405,11 @@ class ResourceStore:
     async def get_by_url(self, url: str) -> Resource | None:
         async with self._session() as session:
             result = await session.exec(select(Resource).where(Resource.url == url))
-            return result.first()
+            record = result.first()
+        if record is None:
+            return None
+        await self._heal_record(record, self._base_dir / record.file_path)
+        return record
 
     async def list_all(self) -> list[Resource]:
         async with self._session() as session:
@@ -293,12 +422,13 @@ class ResourceStore:
             pattern = f"{url_hash[:2]}/{url_hash}.%"
             result = await session.exec(select(Resource).where(col(Resource.file_path).like(pattern)))
             record = result.first()
-            if record is None:
-                return None
-            full_path = self._base_dir / record.file_path
-            if not full_path.exists():
-                return None
-            return record, full_path
+        if record is None:
+            return None
+        full_path = self._base_dir / record.file_path
+        if not full_path.exists():
+            return None
+        await self._heal_record(record, full_path)
+        return record, full_path
 
     @staticmethod
     def url_hash(url: str) -> str:
@@ -313,12 +443,20 @@ class ResourceStore:
         *,
         ext: str = ".jpg",
     ) -> Resource | None:
-        # 同 (src_url, op, args) 命中已有记录且磁盘仍是记录的那份字节则直出. producer 失败返回 None.
+        """同 (src_url, op, args) 命中已有记录且磁盘仍是记录的那份字节则直出. producer 失败返回 None.
+
+        命中还须核对源内容版本: 源图内容更新后派生产物须重跑, 否则派生缓存复用的是旧源的裁剪结果.
+        """
         locator = derived_locator(src_url, op, args)
         dest = self._compute_path(locator, ext=ext)
         async with self._serialized(locator):
             existing = await self.get_by_url(locator)
-            if existing is not None and self._matches_record(self.full_path(existing), existing):
+            src_version = await self._source_version(src_url)
+            if (
+                existing is not None
+                and self._matches_record(self.full_path(existing), existing)
+                and self._source_version_matches(existing, src_version)
+            ):
                 return existing
 
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -331,6 +469,8 @@ class ResourceStore:
             mime = detect_media_type(dest)
             content_hash = self._hash_file(dest)
             meta = {"op": op, "src": src_url, "args": args}
+            if src_version is not None:
+                meta[SRC_VERSION_KEY] = src_version
 
             async with self._session() as session:
                 if existing is not None:
@@ -353,6 +493,49 @@ class ResourceStore:
                 session.add(record)
                 await session.commit()
                 return record
+
+    async def _source_version(self, src_url: str) -> str | None:
+        """源内容版本: 源文件盘上字节的 hash; 源无记录或文件缺失时返回 None (无从核对).
+
+        按盘上字节算, 不信记录列: 源字节被换掉而记录未更新时 (覆盖中途夭折等),
+        盘上那份才是派生实际面对的输入.
+
+        源以内部 URL (``/api/resources/{hash}``) 形式给出时先解析回底层 locator ——
+        Resource 行的 ``url`` 存的是底层 locator, 按内部 URL 直查查不到行, 源版本就无从核对.
+        """
+        if not src_url:
+            return None
+        source = await self._source_record(src_url)
+        if source is None:
+            return None
+        path = self.full_path(source)
+        if not path.exists():
+            return None
+        try:
+            return self._hash_file(path)
+        except OSError:
+            return None
+
+    async def _source_record(self, src_url: str) -> Resource | None:
+        """源的 Resource 行: 内部 URL 解析为底层 locator 再查, 外部 URL 按 locator 直查."""
+        internal = internal_url_hash(src_url)
+        if internal is not None:
+            found = await self.get_by_url_hash(internal)
+            return found[0] if found is not None else None
+        return await self.get_by_url(src_url)
+
+    @staticmethod
+    def _source_version_matches(record: Resource, src_version: str | None) -> bool:
+        """源版本核对: 记了版本就必须与当前源版本相同.
+
+        源无版本 (无源记录, 无从核对) 时不阻命中 —— 不据猜测判定源已变.
+        存量派生记录没有版本标记而源有版本时按不符处理: 重跑一次即补上标记,
+        此后源不变即直出.
+        """
+        if src_version is None:
+            return True
+        recorded = record.meta.get(SRC_VERSION_KEY) if record.meta else None
+        return recorded == src_version
 
     async def upscale_in_place(
         self,
@@ -398,7 +581,8 @@ class ResourceStore:
             new_meta = dict(record.meta) if record.meta else {}
             new_meta["sr"] = sr_args
 
-            async with self._session() as session:
+            # 落库持自愈锁: 与读路径的自愈互斥, 免得自愈用陈旧快照覆盖这次落库.
+            async with self._heal_lock, self._session() as session:
                 result = await session.exec(select(Resource).where(Resource.url == record.url))
                 row = result.first()
                 if row is None:
@@ -473,6 +657,11 @@ class ResourceStore:
             if cached is not None:
                 shutil.copyfile(cached, temp)
                 return temp
+            # 上游改派占位图时按该候选失败处理: 不下载, 临时不落字节.
+            final_url = await self._placeholder_final_url(url, client)
+            if final_url is not None:
+                logger.warning("candidate is upstream placeholder", url=url, final_url=final_url)
+                return None
             temp.parent.mkdir(parents=True, exist_ok=True)
             if not await client.download(url, temp):
                 logger.warning("candidate download failed", url=url, host=urlsplit(url).hostname)
@@ -523,36 +712,85 @@ class ResourceStore:
                 overwrite = True
 
             dest.parent.mkdir(parents=True, exist_ok=True)
-            temp.replace(dest)
         except OSError:
             temp.unlink(missing_ok=True)
             logger.warning("commit temp failed", url=url)
             return AcquireResult(success=False, failed=[url])
 
-        # 文件已就位, 记录写盘上那份.
-        size = dest.stat().st_size
-        mime = detect_media_type(dest)
-        async with self._session() as session:
+        # 覆盖既有缓存时先挂待提交标记: 文件换新与记录落库之间若被取消或进程退出,
+        # 读路径据此按盘上字节自愈, 不会留下"记录 hash ≠ 盘上字节"的持久失配.
+        # 首次入库无既有记录可标记, 记录缺失即无失配可言.
+        #
+        # 挂标记 → 换文件 → 落记录整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除.
+        # 少了这段互斥, 读路径会在"标记在库、盘上仍是旧字节"的窗口撤掉在飞提交的标记, 提交随后
+        # 夭折就留下永久失配.
+        async with self._heal_lock:
             if existing is not None:
-                existing.content_hash = temp_hash
-                existing.size = size
-                existing.mime_type = mime
-                session.add(existing)
-            else:
-                session.add(
-                    Resource(
-                        url=url,
-                        file_path=self._relative_path(dest),
-                        content_hash=temp_hash,
-                        size=size,
-                        mime_type=mime,
+                await self._mark_pending(existing, temp_hash)
+
+            try:
+                temp.replace(dest)
+            except OSError:
+                await self._clear_pending(url)
+                temp.unlink(missing_ok=True)
+                logger.warning("commit temp failed", url=url)
+                return AcquireResult(success=False, failed=[url])
+
+            # 文件已就位, 记录写盘上那份.
+            size = dest.stat().st_size
+            mime = detect_media_type(dest)
+            async with self._session() as session:
+                if existing is not None:
+                    # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记
+                    # 一并覆盖回去 (meta 整列写), 留下"标记还在"的假中间态.
+                    row = await session.get(Resource, existing.id)
+                    if row is None:
+                        row = existing
+                        session.add(row)
+                    row.content_hash = temp_hash
+                    row.size = size
+                    row.mime_type = mime
+                    # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效 —— 旧字节的
+                    # 超分结果不适用于新字节, 留着会让超分被误判为"已超分"而跳过.
+                    row.meta = _without_content_bound(row.meta)
+                else:
+                    session.add(
+                        Resource(
+                            url=url,
+                            file_path=self._relative_path(dest),
+                            content_hash=temp_hash,
+                            size=size,
+                            mime_type=mime,
+                        )
                     )
-                )
-            await session.commit()
+                await session.commit()
 
         if overwrite:
             logger.warning("resource cache overwritten", url=url, content_hash=temp_hash)
         return AcquireResult(success=True, path=dest, used_url=url)
+
+    async def _mark_pending(self, record: Resource, content_hash: str) -> None:
+        """在记录上挂待提交标记 (待写入的 content_hash), 供读路径识别中间态."""
+        meta = dict(record.meta) if record.meta else {}
+        meta[PENDING_KEY] = content_hash
+        record.meta = meta
+        async with self._session() as session:
+            row = await session.get(Resource, record.id)
+            if row is not None:
+                row.meta = meta
+                session.add(row)
+                await session.commit()
+
+    async def _clear_pending(self, url: str) -> None:
+        """撤掉待提交标记: 文件未换新时记录仍指旧字节, 不必自愈."""
+        async with self._session() as session:
+            result = await session.exec(select(Resource).where(Resource.url == url))
+            row = result.first()
+            if row is None:
+                return
+            row.meta = _without_pending(row.meta)
+            session.add(row)
+            await session.commit()
 
     async def acquire_extrafanart(
         self,
