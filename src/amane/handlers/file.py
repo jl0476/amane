@@ -490,20 +490,12 @@ async def _resolve_local(url: str, store: ResourceStore, client: WebClient) -> P
     return await store.acquire(url, client)
 
 
-async def _acquire_first_local(urls: list[str], store: ResourceStore, client: WebClient) -> Path | None:
-    for url in urls:
-        path = await _resolve_local(url, store, client)
-        if path:
-            return path
-    return None
-
-
 async def _acquire_first_local_url(
     urls: Sequence[str], store: ResourceStore, client: WebClient
 ) -> tuple[Path | None, str | None]:
     """首个可获取的 URL 及其本地文件; 全部失败返回 (None, None).
 
-    与 :func:`_acquire_first_local` 的差别是同时回传 URL: 重选的派生键需要源 URL.
+    与 :func:`_acquire_candidates_local_url` 的 priority 分支同源: 重选的派生键需要源 URL.
     """
     for url in urls:
         path = await _resolve_local(url, store, client)
@@ -513,7 +505,7 @@ async def _acquire_first_local_url(
 
 
 async def _acquire_candidates_local_url(
-    urls: Sequence[str], store: ResourceStore, client: WebClient, *, quality: bool
+    urls: Sequence[str], store: ResourceStore, client: WebClient, *, quality: bool, task_token: str = "organize"
 ) -> tuple[Path | None, str | None]:
     """候选获取按生效 ``thumb_download_strategy`` 分派 (R2 PLAN-09): priority 沿用顺序首个
     (:func:`_acquire_first_local_url`, 零改动), quality 全候选独占临时择优
@@ -541,13 +533,50 @@ async def _acquire_candidates_local_url(
 
     best: tuple[str, Path] | None = None
     if external:
-        result = await store.acquire_best(external, client, task_token="reselect")
+        result = await store.acquire_best(external, client, task_token=task_token)
         if result.success and result.path is not None and result.used_url is not None:
             best = (result.used_url, result.path)
     for url, local in internal:
         if best is None or rank(local) > rank(best[1]):
             best = (url, local)
     return (best[1], best[0]) if best is not None else (None, None)
+
+
+async def _acquire_candidates_local(
+    urls: Sequence[str], store: ResourceStore, client: WebClient, *, quality: bool
+) -> Path | None:
+    """整理期图片候选获取按生效 ``thumb_download_strategy`` 分派 (库级配置): priority 取顺序首个
+    可获取者, quality 取全候选择优胜者.
+
+    thumb / trailer / 剧照与 poster 的复制回退路径共用; poster 的重选路径见
+    :func:`_prepare_poster_product`.
+    """
+    path, _ = await _acquire_candidates_local_url(urls, store, client, quality=quality)
+    return path
+
+
+async def _acquire_extrafanart_local(
+    urls_by_site: dict[str, list[str]],
+    priority: Sequence[str],
+    store: ResourceStore,
+    client: WebClient,
+    *,
+    quality: bool,
+) -> list[Path]:
+    """剧照候选获取: 站点优先级不变 (首个有产物的站点胜出), 站内候选按策略分派.
+
+    priority 取该站全部候选 (沿用 store 的既有获取); quality 全候选独占临时择优, 只取胜者.
+    """
+    if not quality:
+        return await store.acquire_extrafanart(urls_by_site, list(priority), client)
+    for site in priority:
+        urls = urls_by_site.get(site)
+        if not urls:
+            continue
+        winner = await _acquire_candidates_local(urls, store, client, quality=True)
+        if winner is not None:
+            return [winner]
+    return []
 
 
 async def _resolve_locator_args(poster_urls: Sequence[str], store: ResourceStore) -> dict[str, str]:
@@ -781,7 +810,7 @@ async def _prepare_poster_product(
 
     quality = metadata_cfg.thumb_download_strategy == "quality"
     candidate_local, candidate_src = await _acquire_candidates_local_url(
-        rebuilt.candidates, store, client, quality=quality
+        rebuilt.candidates, store, client, quality=quality, task_token="reselect"
     )
     if candidate_local is None or candidate_src is None:
         logger.info("poster reselect fallback", number=metadata.number, reason="no_candidate_acquired")
@@ -809,7 +838,9 @@ async def _prepare_poster_product(
         )
         return PreparedPoster(local_path=candidate_local, origin="reselect")
 
-    thumb_local, thumb_src = await _acquire_candidates_local_url(metadata.thumb_urls, store, client, quality=quality)
+    thumb_local, thumb_src = await _acquire_candidates_local_url(
+        metadata.thumb_urls, store, client, quality=quality, task_token="reselect"
+    )
     thumb_size = probe_size(thumb_local) if thumb_local is not None else None
     plan = crop_plan(thumb_size, probe_size(candidate_local))
     if plan.executed is CropStrategy.NONE or thumb_local is None or thumb_src is None:
@@ -907,13 +938,19 @@ async def _download_images_via_store(
 
     poster 来源: ``prepared_poster`` 非 None 时直接使用整理期重选 / 用户产物 (规格 §3.6),
     不再按 poster_urls 现场获取.
+    thumb / trailer / 剧照的候选获取按库级生效 ``thumb_download_strategy`` 分派: priority 取顺序
+    首个可获取者, quality 取全候选择优胜者 (独占临时择优); 未注入 ``metadata_cfg`` 时按 priority.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     幕后图候选按库开关追加到剧照集合 (规格 §3.5), 经同一命名模板接续编号.
     """
+    quality = metadata_cfg is not None and metadata_cfg.thumb_download_strategy == "quality"
+
     thumb_local = None
     if DownloadableResource.thumb in kinds:
         thumb_urls = metadata.thumb_urls
-        thumb_local = await _acquire_first_local(thumb_urls, store, client) if thumb_urls else None
+        thumb_local = (
+            await _acquire_candidates_local(thumb_urls, store, client, quality=quality) if thumb_urls else None
+        )
 
     poster_local = None
     if DownloadableResource.poster in kinds:
@@ -921,22 +958,30 @@ async def _download_images_via_store(
             poster_local = prepared_poster.local_path
         else:
             poster_urls = metadata.poster_urls
-            poster_local = await _acquire_first_local(poster_urls, store, client) if poster_urls else None
+            poster_local = (
+                await _acquire_candidates_local(poster_urls, store, client, quality=quality) if poster_urls else None
+            )
 
     trailer_local = None
     if DownloadableResource.trailer in kinds:
         trailer_urls = metadata.trailer_urls
-        trailer_local = await _acquire_first_local(trailer_urls, store, client) if trailer_urls else None
+        trailer_local = (
+            await _acquire_candidates_local(trailer_urls, store, client, quality=quality) if trailer_urls else None
+        )
 
     extrafanart: list[Path] = []
     if DownloadableResource.extrafanart in kinds:
         extrafanart_by_site = metadata.extrafanart_urls
         if extrafanart_by_site:
             priority = list(extrafanart_by_site.keys())
-            extrafanart = await store.acquire_extrafanart(extrafanart_by_site, priority, client)
+            extrafanart = await _acquire_extrafanart_local(
+                extrafanart_by_site, priority, store, client, quality=quality
+            )
         behind_urls = _behind_scenes_candidates(metadata, extrafanart_by_site, config, metadata_cfg)
         if behind_urls:
-            extrafanart += await store.acquire_extrafanart({"behind_scenes": behind_urls}, ["behind_scenes"], client)
+            extrafanart += await _acquire_extrafanart_local(
+                {"behind_scenes": behind_urls}, ["behind_scenes"], store, client, quality=quality
+            )
 
     # 名字与源文件成对落地: 文件名模板只能在这里渲染, 宽度取决于本轮张数.
     extrafanart_targets: list[tuple[str, Path]] = []

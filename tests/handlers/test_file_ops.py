@@ -20,7 +20,12 @@ from amane.db.models import Library, MediaFile, MediaFileStatus, Metadata
 from amane.db.repo_types import WriteMode
 from amane.enums import CropStrategy, DownloadableResource
 from amane.handlers import OrganizeHandler, OrganizePayload, ScrapeHandler, ScrapePayload
-from amane.handlers.file import _copy_into_library, execute_file_operations, resolve_effective_config
+from amane.handlers.file import (
+    _acquire_candidates_local,
+    _copy_into_library,
+    execute_file_operations,
+    resolve_effective_config,
+)
 from amane.media import ResourceStore, crop_poster, materialize_images, optional_cv2
 from amane.media import crop as crop_mod
 from amane.media.resource_store import TMP_MARK, internal_url_hash
@@ -2103,3 +2108,135 @@ async def test_scrape_off_organize_on_no_rescrape(
     assert names == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]  # 普通 1..2 在前, 幕后 3..4 在后
     assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / "3.jpg", (0, 128, 0))
     assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / "4.jpg", (255, 165, 0))
+
+
+# --- R1 IMPL-02: 整理期候选获取按库级生效 thumb_download_strategy 分派 ---
+
+# thumb 低清在前高清在后; 剧照同理. 库级 quality → 高分辨率者胜出; priority → 首个候选.
+_THUMB_CANDIDATES = ["https://s/t-low.jpg", "https://s/t-high.jpg"]
+_THUMB_CANDIDATE_IMAGES = {
+    "https://s/t-low.jpg": ((600, 600), "blue"),
+    "https://s/t-high.jpg": ((800, 538), "green"),
+}
+_FANART_CANDIDATES = ["https://s/e-low.jpg", "https://s/e-high.jpg"]
+_FANART_CANDIDATE_IMAGES = {
+    "https://s/e-low.jpg": ((460, 460), "purple"),
+    "https://s/e-high.jpg": ((500, 440), "orange"),
+}
+_TRAILER_CANDIDATES = ["https://s/v-low.jpg", "https://s/v-high.jpg"]
+_TRAILER_CANDIDATE_IMAGES = {
+    "https://s/v-low.jpg": ((320, 240), "purple"),
+    "https://s/v-high.jpg": ((640, 480), "orange"),
+}
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_thumb_dispatch_by_library_strategy(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """整理期 thumb / fanart / 剧照 / 预告片按库级生效策略分派: quality 取高分辨率者, priority 取首个候选."""
+    client = cast(
+        "WebClient",
+        MappedClient({**_THUMB_CANDIDATE_IMAGES, **_FANART_CANDIDATE_IMAGES, **_TRAILER_CANDIDATE_IMAGES}),
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=_THUMB_CANDIDATES,
+        trailer_urls=_TRAILER_CANDIDATES,
+        extrafanart_urls={"dmm": _FANART_CANDIDATES},
+    )
+    assert meta.id is not None
+    lib_q, root_q = await _seed_library(
+        repo,
+        tmp_path,
+        name="q",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "quality"},
+    )
+    lib_p, root_p = await _seed_library(
+        repo,
+        tmp_path,
+        name="p",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "priority"},
+    )
+    assert lib_q.id is not None and lib_p.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result_q = await handler.handle(OrganizePayload(library_id=lib_q.id, path=str(root_q)))
+    result_p = await handler.handle(OrganizePayload(library_id=lib_p.id, path=str(root_p)))
+    assert result_q.success and result_p.success
+    assert result_q.result is not None and result_q.result.failed == 0
+    assert result_p.result is not None and result_p.result.failed == 0
+
+    # quality 库: thumb 与 fanart 取高分辨率候选.
+    thumb_q = root_q / "MIDV-123" / "thumb.jpg"
+    assert Image.open(thumb_q).size == (800, 538)
+    assert _pixel_close(thumb_q, (0, 128, 0))
+    fanart_q = root_q / "MIDV-123" / "fanart.jpg"
+    assert Image.open(fanart_q).size == (800, 538)
+    assert _pixel_close(fanart_q, (0, 128, 0))
+    # 剧照同按 quality 择优: 高分辨率者胜出.
+    extrafanart_q = sorted((root_q / "MIDV-123" / "extrafanart").iterdir())
+    assert len(extrafanart_q) == 1
+    assert Image.open(extrafanart_q[0]).size == (500, 440)
+    assert _pixel_close(extrafanart_q[0], (255, 165, 0))
+    # 预告片同按 quality 择优.
+    trailer_q = root_q / "MIDV-123" / "trailer.mp4"
+    assert Image.open(trailer_q).size == (640, 480)
+    assert _pixel_close(trailer_q, (255, 165, 0))
+
+    # priority 库: thumb / fanart / 剧照 / 预告片均取首个候选.
+    thumb_p = root_p / "MIDV-123" / "thumb.jpg"
+    assert Image.open(thumb_p).size == (600, 600)
+    assert _pixel_close(thumb_p, (0, 0, 255))
+    fanart_p = root_p / "MIDV-123" / "fanart.jpg"
+    assert Image.open(fanart_p).size == (600, 600)
+    assert _pixel_close(fanart_p, (0, 0, 255))
+    extrafanart_p = sorted((root_p / "MIDV-123" / "extrafanart").iterdir())
+    assert len(extrafanart_p) == 2
+    assert Image.open(extrafanart_p[0]).size == (460, 460)
+    assert _pixel_close(extrafanart_p[0], (128, 0, 128))
+    trailer_p = root_p / "MIDV-123" / "trailer.mp4"
+    assert Image.open(trailer_p).size == (320, 240)
+    assert _pixel_close(trailer_p, (128, 0, 128))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_acquire_candidates_local_edge_cases(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """候选获取分派的边界: 单候选、全部失败、内部 URL —— quality 与 priority 结果一致."""
+    client = cast("WebClient", MappedClient({"https://s/one.jpg": ((640, 480), "green")}))
+    urls = ["https://s/one.jpg"]
+
+    for quality in (False, True):
+        got = await _acquire_candidates_local(urls, resource_store, client, quality=quality)
+        assert got is not None
+        assert Image.open(got).size == (640, 480)
+
+    # 全部候选获取失败: 返回 None (不抛错).
+    class DeadClient:
+        async def download(self, url: str, dest: Path, **kwargs) -> bool:
+            return False
+
+        async def get_filesize(self, url: str, **kwargs):
+            return None
+
+        async def resolve_final_url(self, url: str, **kwargs) -> str:
+            return url
+
+    dead = await _acquire_candidates_local(
+        ["https://s/dead.jpg"], resource_store, cast("WebClient", DeadClient()), quality=True
+    )
+    assert dead is None
+
+    # 内部 URL (已落盘派生资源) 在 quality 下按本地文件参与择优, 不发外部请求.
+    internal = await _store_derived(
+        resource_store, "https://s/one.jpg", "right:legacy:0.7000", size=(376, 538), color="red"
+    )
+    got_internal = await _acquire_candidates_local([internal], resource_store, client, quality=True)
+    assert got_internal is not None
+    with Image.open(got_internal) as img:
+        assert img.size == (376, 538)
