@@ -48,6 +48,12 @@ _PLACEHOLDER_PATH_MARKERS: tuple[str, ...] = ("/now_printing/", "/noimage.")
 PENDING_KEY = "pending"
 """``meta`` 内的待提交标记: 值为待写入记录的 content_hash."""
 
+SRC_VERSION_KEY = "srcv"
+"""``meta`` 内的源内容版本: 派生记录记源内容 hash, 命中时核对源是否已变."""
+
+_CONTENT_BOUND_META_KEYS: tuple[str, ...] = (PENDING_KEY, "sr", SRC_VERSION_KEY)
+"""与当前字节绑定的标记: 字节被替换后一律失效 (超分标记, 源版本标记)."""
+
 
 def _is_placeholder_url(url: str) -> bool:
     path = urlsplit(url).path.lower()
@@ -59,6 +65,13 @@ def _without_pending(meta: dict | None) -> dict:
     if not meta:
         return {}
     return {k: v for k, v in meta.items() if k != PENDING_KEY}
+
+
+def _without_content_bound(meta: dict | None) -> dict:
+    """去掉与字节绑定的标记 (超分标记等): 字节已换新, 旧标记不再成立."""
+    if not meta:
+        return {}
+    return {k: v for k, v in meta.items() if k not in _CONTENT_BOUND_META_KEYS}
 
 
 def internal_url_hash(url: str) -> str | None:
@@ -220,7 +233,8 @@ class ResourceStore:
         if disk_hash == pending_hash:
             size = full_path.stat().st_size
             mime = detect_media_type(full_path)
-            meta = _without_pending(record.meta)
+            # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效.
+            meta = _without_content_bound(record.meta)
             record.content_hash = disk_hash
             record.size = size
             record.mime_type = mime
@@ -627,11 +641,18 @@ class ResourceStore:
         mime = detect_media_type(dest)
         async with self._session() as session:
             if existing is not None:
-                existing.content_hash = temp_hash
-                existing.size = size
-                existing.mime_type = mime
-                existing.meta = _without_pending(existing.meta)
-                session.add(existing)
+                # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记
+                # 一并覆盖回去 (meta 整列写), 留下"标记还在"的假中间态.
+                row = await session.get(Resource, existing.id)
+                if row is None:
+                    row = existing
+                    session.add(row)
+                row.content_hash = temp_hash
+                row.size = size
+                row.mime_type = mime
+                # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效 —— 旧字节的
+                # 超分结果不适用于新字节, 留着会让超分被误判为"已超分"而跳过.
+                row.meta = _without_content_bound(row.meta)
             else:
                 session.add(
                     Resource(

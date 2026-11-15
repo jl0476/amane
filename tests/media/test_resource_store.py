@@ -1074,3 +1074,98 @@ async def test_commit_replace_failure_leaves_no_pending(resource_store: Resource
     assert record is not None
     assert record.content_hash == ResourceStore._hash_file(cached_path)
     assert record.meta is not None and "pending" not in record.meta
+
+
+@pytest.mark.asyncio
+async def test_overwrite_clears_stale_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖为新字节后, 旧字节的超分标记不再成立: upscale_in_place 须实际执行.
+
+    旧标记留着时, 记录已指新字节且与盘上相符, 超分被误判为"已超分"而跳过 ——
+    新原图实际未超分却被当作已超分.
+    """
+    url = "https://s/sr-overwrite.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+
+    # quality 覆盖为更高分辨率的新字节 (本轮胜 → 覆盖缓存).
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    overwritten = await resource_store.get_by_url(url)
+    assert overwritten is not None
+    assert overwritten.meta is not None and "sr" not in overwritten.meta  # 旧字节的标记失效
+    assert "pending" not in overwritten.meta  # 待提交标记不得留在库里的正常路径
+
+    # 新字节实际未超分: 不得跳过.
+    outcome = await resource_store.upscale_in_place(overwritten, {"scale": 4}, sr_producer)
+    assert outcome is UpscaleOutcome.UPSCALED
+
+
+@pytest.mark.asyncio
+async def test_same_hash_overwrite_keeps_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """同 hash 幂等覆盖: 字节未变, 超分结果仍有效, 标记保留."""
+    url = "https://s/sr-idem.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None
+    sr_bytes = resource_store.full_path(marked).read_bytes()
+
+    # 同 hash 幂等提交: 字节与盘上那份相同.
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(sr_bytes)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    after = await resource_store.get_by_url(url)
+    assert after is not None
+    assert after.meta is not None and "sr" in after.meta  # 字节未变, 标记保留
+    assert await resource_store.upscale_in_place(after, {"scale": 4}, sr_producer) is UpscaleOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_existing_wins_keeps_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """既有胜 (本轮落选): 缓存字节未变, 超分标记保留."""
+    url = "https://s/sr-existing-wins.jpg"
+    await _seed_cache(resource_store, url, _png(200, 150), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(_png(200, 150))  # 字节不变, 只挂标记
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+
+    # 本轮分辨率更低: 既有胜, 缓存字节不变.
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(50, 50))
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    after = await resource_store.get_by_url(url)
+    assert after is not None
+    assert after.meta is not None and "sr" in after.meta  # 字节未变, 标记保留
