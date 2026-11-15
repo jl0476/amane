@@ -3,7 +3,8 @@
 import asyncio
 import io
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,9 +20,6 @@ from amane.media.resource_store import (
 )
 from amane.net.egress import EgressPolicy
 from amane.net.http import RateLimiters, WebClient
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_derived_locator_deterministic():
@@ -978,3 +976,101 @@ async def test_acquire_best_all_placeholder_fails(resource_store: ResourceStore,
     assert requested == []
     assert await resource_store.get_by_url(placeholder_url) is None
     assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_overwrite_cancel_heals_record(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖流程在文件换新后被取消: 再次读取时记录与盘上字节一致, 缓存仍可用.
+
+    文件已换新而记录未落库时, 记录按盘上字节自愈; 不得留下"记录 hash ≠ 盘上字节"的失配.
+    """
+    url = "https://s/heal.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    new_bytes = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(new_bytes)
+
+    # 在文件换新之后、记录落库之前取消.
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    # 盘上是新字节, 记录尚未更新 —— 失配此刻存在.
+    assert cached_path.read_bytes() == new_bytes
+
+    # 再次读取: 记录按盘上字节自愈, 失配消失.
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)
+    assert healed.size == len(new_bytes)
+    assert healed.meta is not None and "pending" not in healed.meta
+
+    # 缓存可用: resolve 直出, 且与记录一致.
+    resolved = await resource_store.resolve(url)
+    assert resolved == cached_path
+    assert resolved is not None and resolved.read_bytes() == new_bytes
+
+
+@pytest.mark.asyncio
+async def test_overwrite_cancel_before_replace_keeps_old_bytes(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """覆盖流程在文件换新之前被取消: 盘上仍是旧字节, 记录仍指旧字节, 标记撤除."""
+    url = "https://s/heal2.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    def cancel_before_replace(self: Path, target: Path) -> Path:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", cancel_before_replace)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    assert cached_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.meta is not None and "pending" not in record.meta
+
+
+@pytest.mark.asyncio
+async def test_commit_replace_failure_leaves_no_pending(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """覆盖时文件替换失败: 待提交标记撤除, 记录仍指旧字节, 缓存仍可用."""
+    url = "https://s/replace-fail.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    temp = resource_store._base_dir / "cand.amane-tmp-t9.jpg"
+    temp.write_bytes(_png(200, 150))
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    monkeypatch.undo()
+
+    assert result.success is False
+    assert result.failed == [url]
+    assert cached_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.meta is not None and "pending" not in record.meta

@@ -43,10 +43,22 @@ TMP_MARK = ".amane-tmp-"
 # 否则该 URL 会被判为可用并前置, 前端最终显示占位图本身.
 _PLACEHOLDER_PATH_MARKERS: tuple[str, ...] = ("/now_printing/", "/noimage.")
 
+# 覆盖缓存时先在记录上挂待提交标记, 文件换新后再落记录; 中途取消或进程退出会留下"标记在、字节新"
+# 的中间态, 读路径据此按盘上字节自愈 (见 ``_heal_record``).
+PENDING_KEY = "pending"
+"""``meta`` 内的待提交标记: 值为待写入记录的 content_hash."""
+
 
 def _is_placeholder_url(url: str) -> bool:
     path = urlsplit(url).path.lower()
     return any(marker in path for marker in _PLACEHOLDER_PATH_MARKERS)
+
+
+def _without_pending(meta: dict | None) -> dict:
+    """去掉待提交标记, 其余 meta 原样保留."""
+    if not meta:
+        return {}
+    return {k: v for k, v in meta.items() if k != PENDING_KEY}
 
 
 def internal_url_hash(url: str) -> str | None:
@@ -184,7 +196,55 @@ class ResourceStore:
                 await session.commit()
                 return None
 
-            return full_path
+        # 自愈须在会话外做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
+        await self._heal_record(record, full_path)
+        return full_path
+
+    async def _heal_record(self, record: Resource, full_path: Path) -> None:
+        """覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
+
+        盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型, 与旧字节绑定的标记
+        (超分标记) 一并失效 —— 旧字节的超分结果不适用于新字节.
+        盘上仍是旧字节 (文件尚未换新): 只撤待提交标记, 记录原样仍指盘上那份.
+        """
+        if not record.meta or PENDING_KEY not in record.meta:
+            return
+        pending_hash = record.meta.get(PENDING_KEY)
+        if not isinstance(pending_hash, str):
+            return
+        try:
+            disk_hash = self._hash_file(full_path)
+        except OSError:
+            return
+
+        if disk_hash == pending_hash:
+            size = full_path.stat().st_size
+            mime = detect_media_type(full_path)
+            meta = _without_pending(record.meta)
+            record.content_hash = disk_hash
+            record.size = size
+            record.mime_type = mime
+            record.meta = meta
+            await self._write_record(record)
+            logger.warning("resource record healed after interrupted overwrite", url=record.url, content_hash=disk_hash)
+            return
+
+        # 文件尚未换新: 撤标记, 记录仍指盘上那份字节.
+        record.meta = _without_pending(record.meta)
+        await self._write_record(record)
+
+    async def _write_record(self, record: Resource) -> None:
+        """按记录的主键回写一行."""
+        async with self._session() as session:
+            row = await session.get(Resource, record.id)
+            if row is None:
+                return
+            row.content_hash = record.content_hash
+            row.size = record.size
+            row.mime_type = record.mime_type
+            row.meta = record.meta
+            session.add(row)
+            await session.commit()
 
     async def acquire(
         self,
@@ -290,7 +350,11 @@ class ResourceStore:
     async def get_by_url(self, url: str) -> Resource | None:
         async with self._session() as session:
             result = await session.exec(select(Resource).where(Resource.url == url))
-            return result.first()
+            record = result.first()
+        if record is None:
+            return None
+        await self._heal_record(record, self._base_dir / record.file_path)
+        return record
 
     async def list_all(self) -> list[Resource]:
         async with self._session() as session:
@@ -303,12 +367,13 @@ class ResourceStore:
             pattern = f"{url_hash[:2]}/{url_hash}.%"
             result = await session.exec(select(Resource).where(col(Resource.file_path).like(pattern)))
             record = result.first()
-            if record is None:
-                return None
-            full_path = self._base_dir / record.file_path
-            if not full_path.exists():
-                return None
-            return record, full_path
+        if record is None:
+            return None
+        full_path = self._base_dir / record.file_path
+        if not full_path.exists():
+            return None
+        await self._heal_record(record, full_path)
+        return record, full_path
 
     @staticmethod
     def url_hash(url: str) -> str:
@@ -538,8 +603,21 @@ class ResourceStore:
                 overwrite = True
 
             dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            temp.unlink(missing_ok=True)
+            logger.warning("commit temp failed", url=url)
+            return AcquireResult(success=False, failed=[url])
+
+        # 覆盖既有缓存时先挂待提交标记: 文件换新与记录落库之间若被取消或进程退出,
+        # 读路径据此按盘上字节自愈, 不会留下"记录 hash ≠ 盘上字节"的持久失配.
+        # 首次入库无既有记录可标记, 记录缺失即无失配可言.
+        if existing is not None:
+            await self._mark_pending(existing, temp_hash)
+
+        try:
             temp.replace(dest)
         except OSError:
+            await self._clear_pending(url)
             temp.unlink(missing_ok=True)
             logger.warning("commit temp failed", url=url)
             return AcquireResult(success=False, failed=[url])
@@ -552,6 +630,7 @@ class ResourceStore:
                 existing.content_hash = temp_hash
                 existing.size = size
                 existing.mime_type = mime
+                existing.meta = _without_pending(existing.meta)
                 session.add(existing)
             else:
                 session.add(
@@ -568,6 +647,29 @@ class ResourceStore:
         if overwrite:
             logger.warning("resource cache overwritten", url=url, content_hash=temp_hash)
         return AcquireResult(success=True, path=dest, used_url=url)
+
+    async def _mark_pending(self, record: Resource, content_hash: str) -> None:
+        """在记录上挂待提交标记 (待写入的 content_hash), 供读路径识别中间态."""
+        meta = dict(record.meta) if record.meta else {}
+        meta[PENDING_KEY] = content_hash
+        record.meta = meta
+        async with self._session() as session:
+            row = await session.get(Resource, record.id)
+            if row is not None:
+                row.meta = meta
+                session.add(row)
+                await session.commit()
+
+    async def _clear_pending(self, url: str) -> None:
+        """撤掉待提交标记: 文件未换新时记录仍指旧字节, 不必自愈."""
+        async with self._session() as session:
+            result = await session.exec(select(Resource).where(Resource.url == url))
+            row = result.first()
+            if row is None:
+                return
+            row.meta = _without_pending(row.meta)
+            session.add(row)
+            await session.commit()
 
     async def acquire_extrafanart(
         self,
