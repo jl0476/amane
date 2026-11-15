@@ -1560,3 +1560,73 @@ async def test_upscale_write_excluded_from_heal(resource_store: ResourceStore, m
     assert final is not None
     assert final.content_hash == ResourceStore._hash_file(cached_path)
     assert final.meta is not None and "sr" in final.meta
+
+
+@pytest.mark.asyncio
+async def test_heal_keeps_valid_sr_marker(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """待提交的那份字节自带有效超分标记时, 自愈不得撤掉它 (否则二次超分).
+
+    崩溃的提交提交的正是已超分那份字节: 盘上已是超分后的字节, 记录上的 sr 标记仍有效.
+    """
+    url = "https://s/heal-sr.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+    marked = await resource_store.get_by_url(url)
+    assert marked is not None and marked.meta is not None and "sr" in marked.meta
+    sr_hash = marked.content_hash
+    assert sr_hash is not None
+
+    # 崩溃的提交提交的正是这份已超分的字节: 记录挂上指向它的待提交标记, 盘上已是那份字节.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": sr_hash}
+        session.add(row)
+        await session.commit()
+
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(resource_store.full_path(healed))
+    assert healed.meta is not None and "sr" in healed.meta  # 有效超分标记保留
+    # 不得二次超分.
+    assert await resource_store.upscale_in_place(healed, {"scale": 4}, sr_producer) is UpscaleOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_heal_drops_sr_marker_of_replaced_bytes(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """待提交的是新字节 (旧字节的超分标记不适用): 自愈须撤掉旧超分标记."""
+    url = "https://s/heal-sr-stale.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(b"sr-bytes")
+        return True
+
+    assert await resource_store.upscale_in_place(record, {"scale": 2}, sr_producer) is UpscaleOutcome.UPSCALED
+
+    new_bytes = _png(200, 150)
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        # 待提交的是新字节 (与盘上那份不同): 旧字节的超分标记随之失效.
+        row.meta = {**(row.meta or {}), "pending": hashlib.sha256(new_bytes).hexdigest()}
+        session.add(row)
+        await session.commit()
+
+    cached_path.write_bytes(new_bytes)
+
+    healed = await resource_store.get_by_url(url)
+    assert healed is not None
+    assert healed.meta is not None and "sr" not in healed.meta
+    assert healed.content_hash == ResourceStore._hash_file(cached_path)

@@ -231,8 +231,9 @@ class ResourceStore:
     async def _heal_record(self, record: Resource, full_path: Path) -> None:
         """覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
 
-        盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型, 与旧字节绑定的标记
-        (超分标记) 一并失效 —— 旧字节的超分结果不适用于新字节.
+        盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型. 与旧字节绑定的标记
+        (超分标记) 是否失效, 取决于这份字节自身是否带有效超分: 记录记的 hash 就是它则保留,
+        否则失效 —— 旧字节的超分结果不适用于新字节.
         盘上仍是旧字节 (文件尚未换新): 只撤待提交标记, 记录原样仍指盘上那份.
 
         自愈与落库 (覆盖提交) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 → 落记录"期间
@@ -278,11 +279,13 @@ class ResourceStore:
             if disk_hash == pending_hash:
                 size = full_path.stat().st_size
                 mime = detect_media_type(full_path)
-                # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效.
+                # 超分标记属不属于这份字节: 记录自己记的 hash 就是它时才保留, 否则失效 ——
+                # 旧字节的超分结果不适用于新字节, 而这份字节自带的超分结果仍然有效.
+                keep_sr = row.content_hash == disk_hash
                 row.content_hash = disk_hash
                 row.size = size
                 row.mime_type = mime
-                row.meta = _without_content_bound(meta)
+                row.meta = {k: v for k, v in meta.items() if k != PENDING_KEY and not (k == "sr" and not keep_sr)}
                 session.add(row)
                 await session.commit()
                 logger.warning(
