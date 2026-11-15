@@ -1427,3 +1427,136 @@ async def test_stale_pending_marker_still_stripped(resource_store: ResourceStore
     assert record is not None
     assert record.meta is not None and "pending" not in record.meta  # 陈旧标记已撤
     assert record.content_hash == ResourceStore._hash_file(cached_path)  # 记录仍指盘上那份
+
+
+@pytest.mark.asyncio
+async def test_heal_write_does_not_clobber_concurrent_commit(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """自愈落库不得覆盖提交刚写入的新 hash: 最终记录 hash 须等于盘上字节.
+
+    审查发现 2 的确定性复现: 读路径拿着陈旧快照 (旧 hash + pending) → 提交换文件并落库
+    (新 hash) → 自愈落库; 自愈不得用陈旧快照把新 hash 盖回去.
+    """
+    url = "https://s/heal-clobber.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+
+    # 第一次提交在换文件后被取消: 盘上是 A, 记录仍指旧字节且带待提交标记.
+    bytes_a = _png(200, 150)
+    temp_a = resource_store._base_dir / "cand.amane-tmp-t1.jpg"
+    temp_a.write_bytes(bytes_a)
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.commit_temp(url, temp_a)
+    monkeypatch.undo()
+
+    assert cached_path.read_bytes() == bytes_a
+
+    # 读路径: 快照在此刻取到 (旧 hash + pending), 自愈被拦在快照之后.
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    armed = False
+    original_heal = ResourceStore._heal_record
+
+    async def heal_pause_first(self: ResourceStore, record: Resource, full_path: Path) -> None:
+        # 只拦这次读的自愈: 自愈锁还没取, 提交得以在快照之后落库.
+        if armed and not paused.is_set():
+            paused.set()
+            await proceed.wait()
+        await original_heal(self, record, full_path)
+
+    monkeypatch.setattr(ResourceStore, "_heal_record", heal_pause_first)
+
+    armed = True
+    read = asyncio.create_task(resource_store.get_by_url(url))
+    await paused.wait()
+
+    # 第二次提交: 更大的字节胜出, 换文件并落库 (新 hash).
+    bytes_b = _png(300, 200)
+    temp_b = resource_store._base_dir / "cand.amane-tmp-t2.jpg"
+    temp_b.write_bytes(bytes_b)
+    result = await resource_store.commit_temp(url, temp_b)
+    assert result.success is True
+    assert cached_path.read_bytes() == bytes_b
+
+    proceed.set()
+    await read
+    monkeypatch.undo()
+
+    # 最终记录 hash 必须等于盘上字节, 不得被自愈的陈旧快照盖回旧 hash.
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "pending" not in final.meta
+
+
+@pytest.mark.asyncio
+async def test_upscale_write_excluded_from_heal(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """就地超分的落库须与自愈互斥: 自愈持锁期间超分不得落库.
+
+    两处都改记录 (hash/size/类型/sr 标记), 不互斥时自愈可用陈旧快照把超分的结果盖回去 ——
+    记录指回超分前的字节, 超分被当成没做过.
+    """
+    url = "https://s/heal-upscale.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+
+    # 崩溃遗留的标记: pending 指向盘上那份字节 —— 自愈走"认下盘上字节"分支, 正是改写
+    # content_hash/size/类型的那几列.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": ResourceStore._hash_file(cached_path)}
+        session.add(row)
+        await session.commit()
+
+    # 自愈持锁期间把落库卡住.
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    original_locked = ResourceStore._heal_locked
+    seen = {"n": 0}
+
+    async def heal_hold(self: ResourceStore, row_id: int | None) -> Resource | None:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            paused.set()
+            await proceed.wait()
+        return await original_locked(self, row_id)
+
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_hold)
+
+    read = asyncio.create_task(resource_store.get_by_url(url))
+    await paused.wait()  # 自愈正持锁
+
+    sr_bytes = b"upscaled-bytes"
+
+    async def sr_producer(src: Path, out: Path) -> bool:
+        out.write_bytes(sr_bytes)
+        return True
+
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        record = result.first()
+    assert record is not None
+    upscale = asyncio.create_task(resource_store.upscale_in_place(record, {"scale": 2}, sr_producer))
+    await asyncio.sleep(0.2)
+    # 自愈持锁时超分不得落库.
+    assert not upscale.done()
+
+    proceed.set()
+    await read
+    outcome = await upscale
+    monkeypatch.undo()
+
+    assert outcome is UpscaleOutcome.UPSCALED
+    final = await resource_store.get_by_url(url)
+    assert final is not None
+    assert final.content_hash == ResourceStore._hash_file(cached_path)
+    assert final.meta is not None and "sr" in final.meta

@@ -579,7 +579,8 @@ class ResourceStore:
             new_meta = dict(record.meta) if record.meta else {}
             new_meta["sr"] = sr_args
 
-            async with self._session() as session:
+            # 落库持自愈锁: 与读路径的自愈互斥, 免得自愈用陈旧快照覆盖这次落库.
+            async with self._heal_lock, self._session() as session:
                 result = await session.exec(select(Resource).where(Resource.url == record.url))
                 row = result.first()
                 if row is None:
