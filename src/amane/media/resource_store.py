@@ -220,8 +220,8 @@ class ResourceStore:
             return cached
 
         # 上游改派占位图时跳过, 不占用 dest 也不写记录.
-        final_url = await client.resolve_final_url(url, egress=egress)
-        if _is_placeholder_url(final_url):
+        final_url = await self._placeholder_final_url(url, client, egress=egress)
+        if final_url is not None:
             logger.warning("resource is upstream placeholder", url=url, final_url=final_url)
             return None
 
@@ -260,6 +260,16 @@ class ResourceStore:
             await session.commit()
 
         return dest
+
+    async def _placeholder_final_url(
+        self, url: str, client: WebClient, *, egress: EgressPolicy | None = None
+    ) -> str | None:
+        """上游改派占位图时返回重定向终址; 否则返回 None.
+
+        两条下载路径 (``acquire`` 与 quality 的独占临时) 共用此判定, 口径一致.
+        """
+        final_url = await client.resolve_final_url(url, egress=egress)
+        return final_url if _is_placeholder_url(final_url) else None
 
     async def resolve_source(self, url: str, client: WebClient) -> ResolvedSource | None:
         """处理入口的源解析: 内部 URL 定位既有 Resource, 外部仅接受 http(s), 其余返回 None."""
@@ -473,6 +483,11 @@ class ResourceStore:
             if cached is not None:
                 shutil.copyfile(cached, temp)
                 return temp
+            # 上游改派占位图时按该候选失败处理: 不下载, 临时不落字节.
+            final_url = await self._placeholder_final_url(url, client)
+            if final_url is not None:
+                logger.warning("candidate is upstream placeholder", url=url, final_url=final_url)
+                return None
             temp.parent.mkdir(parents=True, exist_ok=True)
             if not await client.download(url, temp):
                 logger.warning("candidate download failed", url=url, host=urlsplit(url).hostname)

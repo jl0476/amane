@@ -656,11 +656,20 @@ def _png(width: int, height: int, *, variant: int = 0) -> bytes:
 
 
 def _download_client(
-    monkeypatch: pytest.MonkeyPatch, contents: Mapping[str, bytes | None]
+    monkeypatch: pytest.MonkeyPatch,
+    contents: Mapping[str, bytes | None],
+    *,
+    final_urls: Mapping[str, str] | None = None,
 ) -> tuple[WebClient, list[str]]:
-    """download 按 url 写入预设字节 (None 表示下载失败); 记录每次远端下载请求."""
+    """download 按 url 写入预设字节 (None 表示下载失败); 记录每次远端下载请求.
+
+    ``final_urls`` 给定重定向终址 (缺省即 url 本身), 用于上游改派占位图的场景.
+    """
     client = WebClient(limiters=RateLimiters(default_rate=100))
     requested: list[str] = []
+
+    async def resolve_final_url(url: str, **_kwargs: Any) -> str:
+        return (final_urls or {}).get(url, url)
 
     async def download(url: str, dest: Path, **kwargs: Any) -> bool:
         requested.append(url)
@@ -670,6 +679,7 @@ def _download_client(
         dest.write_bytes(content)
         return True
 
+    monkeypatch.setattr(client, "resolve_final_url", resolve_final_url)
     monkeypatch.setattr(client, "download", download)
     return client, requested
 
@@ -907,6 +917,7 @@ async def test_cancel_cleans_temp(resource_store: ResourceStore, monkeypatch: py
     assert record_before is not None
     slow_url = "https://s/cancelled.jpg"
     client = AsyncMock()
+    client.resolve_final_url = AsyncMock(return_value=slow_url)
 
     async def download(url: str, dest: Path, **kwargs: object) -> bool:
         raise asyncio.CancelledError
@@ -922,3 +933,48 @@ async def test_cancel_cleans_temp(resource_store: ResourceStore, monkeypatch: py
     assert record_after is not None
     assert record_after.content_hash == record_before.content_hash
     assert await resource_store.get_by_url(slow_url) is None
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_rejects_placeholder_redirect(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """上游改派占位图的候选按失败处理: 不下载, 不落缓存, 择优在成功者中进行."""
+    placeholder_url = "https://s/placeholder.jpg"
+    good_url = "https://s/good.jpg"
+    good_bytes = _png(200, 150)
+    client, requested = _download_client(
+        monkeypatch,
+        {placeholder_url: _png(300, 300), good_url: good_bytes},
+        final_urls={placeholder_url: _PLACEHOLDER},
+    )
+
+    result = await resource_store.acquire_best([placeholder_url, good_url], client, task_token="t9")
+
+    assert result.success is True
+    assert result.used_url == good_url
+    assert result.failed == [placeholder_url]
+    assert result.path is not None and result.path.read_bytes() == good_bytes
+    assert requested == [good_url]  # 占位图候选不下载
+    assert await resource_store.get_by_url(placeholder_url) is None  # 占位图不落缓存
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_acquire_best_all_placeholder_fails(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """全部候选都被改派到占位图: 整轮失败, 不落任何缓存记录."""
+    placeholder_url = "https://s/only-placeholder.jpg"
+    client, requested = _download_client(
+        monkeypatch,
+        {placeholder_url: _png(300, 300)},
+        final_urls={placeholder_url: _PLACEHOLDER},
+    )
+
+    result = await resource_store.acquire_best([placeholder_url], client, task_token="t9")
+
+    assert result.success is False
+    assert result.path is None and result.used_url is None
+    assert result.failed == [placeholder_url]
+    assert requested == []
+    assert await resource_store.get_by_url(placeholder_url) is None
+    assert _tmp_leftovers(resource_store) == []
