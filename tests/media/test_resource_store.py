@@ -1243,11 +1243,10 @@ async def test_derived_legacy_record_picks_up_source_version(
     legacy_path = resource_store._compute_path(locator, ext=".jpg")
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_bytes(b"legacy-cropped")
-    from amane.db.models import Resource as _Resource
 
     async with resource_store._session() as session:
         session.add(
-            _Resource(
+            Resource(
                 url=locator,
                 file_path=resource_store._relative_path(legacy_path),
                 content_hash=ResourceStore._hash_file(legacy_path),
@@ -1630,3 +1629,32 @@ async def test_heal_drops_sr_marker_of_replaced_bytes(resource_store: ResourceSt
     assert healed is not None
     assert healed.meta is not None and "sr" not in healed.meta
     assert healed.content_hash == ResourceStore._hash_file(cached_path)
+
+
+@pytest.mark.asyncio
+async def test_derived_internal_url_source_reruns_when_source_changed(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """源以内部 URL 形式给出时, 源字节被换后派生须重跑 (版本核对不得静默失效)."""
+    src_url = "https://s/src-internal.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    internal = f"{RESOURCE_URL_PREFIX}/{resource_store.url_hash(src_url)}"
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(src_path.read_bytes())
+        return True
+
+    first = await resource_store.acquire_derived(internal, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    assert first.meta is not None and "srcv" in first.meta  # 内部 URL 也记源版本
+
+    new_src = _png(200, 150)
+    src_path.write_bytes(new_src)
+
+    second = await resource_store.acquire_derived(internal, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 2  # 源已变 → 派生重跑
+    assert resource_store.full_path(second).read_bytes() == new_src

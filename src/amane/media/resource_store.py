@@ -511,10 +511,13 @@ class ResourceStore:
 
         按盘上字节算, 不信记录列: 源字节被换掉而记录未更新时 (覆盖中途夭折等),
         盘上那份才是派生实际面对的输入.
+
+        源以内部 URL (``/api/resources/{hash}``) 形式给出时先解析回底层 locator ——
+        Resource 行的 ``url`` 存的是底层 locator, 按内部 URL 直查查不到行, 源版本就无从核对.
         """
         if not src_url:
             return None
-        source = await self.get_by_url(src_url)
+        source = await self._source_record(src_url)
         if source is None:
             return None
         path = self.full_path(source)
@@ -524,6 +527,14 @@ class ResourceStore:
             return self._hash_file(path)
         except OSError:
             return None
+
+    async def _source_record(self, src_url: str) -> Resource | None:
+        """源的 Resource 行: 内部 URL 解析为底层 locator 再查, 外部 URL 按 locator 直查."""
+        internal = internal_url_hash(src_url)
+        if internal is not None:
+            found = await self.get_by_url_hash(internal)
+            return found[0] if found is not None else None
+        return await self.get_by_url(src_url)
 
     @staticmethod
     def _source_version_matches(record: Resource, src_version: str | None) -> bool:
