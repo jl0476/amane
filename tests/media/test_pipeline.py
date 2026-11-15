@@ -461,7 +461,13 @@ async def test_manual_crop_image_external_source(resource_store: ResourceStore, 
     got = await resource_store.get_by_url_hash(url.rsplit("/", 1)[-1])
     assert got is not None
     record, path = got
-    assert record.meta == {"op": "crop", "src": "https://s/a.jpg", "args": "box:0,0,400,538"}
+    # meta 记派生来源; 另有源内容版本 (srcv), 供命中时核对源是否已变.
+    assert {k: v for k, v in record.meta.items() if k != "srcv"} == {
+        "op": "crop",
+        "src": "https://s/a.jpg",
+        "args": "box:0,0,400,538",
+    }
+    assert "srcv" in record.meta
     assert Image.open(path).size == (400, 538)
 
 
@@ -475,7 +481,12 @@ async def test_manual_crop_image_rotation_records_args_and_dims(resource_store: 
     got = await resource_store.get_by_url_hash(rotated.rsplit("/", 1)[-1])
     assert got is not None
     record, path = got
-    assert record.meta == {"op": "crop", "src": "https://s/a.jpg", "args": "box:0,0,538,538:r90"}
+    assert {k: v for k, v in record.meta.items() if k != "srcv"} == {
+        "op": "crop",
+        "src": "https://s/a.jpg",
+        "args": "box:0,0,538,538:r90",
+    }
+    assert "srcv" in record.meta
     assert Image.open(path).size == (538, 538)
 
     plain = await manual_crop_image("https://s/a.jpg", (0, 0, 538, 538), *common, subject="封面图")
@@ -494,7 +505,12 @@ async def test_manual_crop_image_exif_source_uses_oriented_size(resource_store: 
     got = await resource_store.get_by_url_hash(url.rsplit("/", 1)[-1])
     assert got is not None
     record, path = got
-    assert record.meta == {"op": "crop", "src": "https://s/o6.jpg", "args": "box:0,0,300,400"}
+    assert {k: v for k, v in record.meta.items() if k != "srcv"} == {
+        "op": "crop",
+        "src": "https://s/o6.jpg",
+        "args": "box:0,0,300,400",
+    }
+    assert "srcv" in record.meta
     assert Image.open(path).size == (300, 400)
 
     with pytest.raises(ValueError, match="裁切区域无效"):

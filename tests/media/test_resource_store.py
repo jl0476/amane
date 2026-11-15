@@ -1169,3 +1169,119 @@ async def test_existing_wins_keeps_sr_marker(resource_store: ResourceStore, monk
     after = await resource_store.get_by_url(url)
     assert after is not None
     assert after.meta is not None and "sr" in after.meta  # 字节未变, 标记保留
+
+
+@pytest.mark.asyncio
+async def test_derived_hit_requires_same_source_version(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """源内容未变 → 命中直出, producer 不重跑."""
+    src_url = "https://s/src-stable.jpg"
+    await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+
+    second = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 1  # 源未变 → 命中, producer 不重跑
+
+
+@pytest.mark.asyncio
+async def test_derived_reruns_when_source_changed(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """源内容变化 (同 src_url, 缓存源字节被替换) → 派生重跑, 产物反映新源."""
+    src_url = "https://s/src-changed.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        # 产物取源文件的字节: 源换了则产物随之换.
+        dest.write_bytes(src_path.read_bytes())
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    first_bytes = resource_store.full_path(first).read_bytes()
+
+    # 源缓存字节被替换 (同 src_url).
+    new_src = _png(200, 150)
+    src_path.write_bytes(new_src)
+
+    second = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 2  # 源已变 → producer 重跑
+    assert resource_store.full_path(second).read_bytes() == new_src
+    assert resource_store.full_path(second).read_bytes() != first_bytes
+
+
+@pytest.mark.asyncio
+async def test_derived_legacy_record_picks_up_source_version(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """存量派生记录没有版本标记而源有版本: 重跑一次补上标记, 此后源不变即直出."""
+    src_url = "https://s/src-legacy.jpg"
+    await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    # 造一条没有版本标记的存量派生记录.
+    locator = derived_locator(src_url, "crop", "0.7")
+    legacy_path = resource_store._compute_path(locator, ext=".jpg")
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_bytes(b"legacy-cropped")
+    from amane.db.models import Resource as _Resource
+
+    async with resource_store._session() as session:
+        session.add(
+            _Resource(
+                url=locator,
+                file_path=resource_store._relative_path(legacy_path),
+                content_hash=ResourceStore._hash_file(legacy_path),
+                size=legacy_path.stat().st_size,
+                mime_type="image/jpeg",
+                meta={"op": "crop", "src": src_url, "args": "0.7"},
+            )
+        )
+        await session.commit()
+
+    result = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+
+    assert result is not None
+    assert calls["n"] == 1  # 存量记录补标记, 重跑一次
+    assert result.meta is not None and "srcv" in result.meta
+
+    # 版本已记下: 源不变即直出.
+    again = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert again is not None
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_derived_without_source_record_still_hits(resource_store: ResourceStore):
+    """源无 Resource 记录 (无从核对版本): 同配置幂等直出, producer 不重跑."""
+    calls = {"n": 0}
+
+    async def producer(dest: Path) -> bool:
+        calls["n"] += 1
+        dest.write_bytes(b"cropped")
+        return True
+
+    first = await resource_store.acquire_derived("https://s/no-src-row.jpg", "crop", "0.7", producer)
+    assert first is not None
+    assert calls["n"] == 1
+    assert first.meta is not None and "srcv" not in first.meta  # 无源记录, 不记版本
+
+    second = await resource_store.acquire_derived("https://s/no-src-row.jpg", "crop", "0.7", producer)
+    assert second is not None
+    assert calls["n"] == 1

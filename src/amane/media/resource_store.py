@@ -51,8 +51,8 @@ PENDING_KEY = "pending"
 SRC_VERSION_KEY = "srcv"
 """``meta`` 内的源内容版本: 派生记录记源内容 hash, 命中时核对源是否已变."""
 
-_CONTENT_BOUND_META_KEYS: tuple[str, ...] = (PENDING_KEY, "sr", SRC_VERSION_KEY)
-"""与当前字节绑定的标记: 字节被替换后一律失效 (超分标记, 源版本标记)."""
+_CONTENT_BOUND_META_KEYS: tuple[str, ...] = (PENDING_KEY, "sr")
+"""与记录自身字节绑定的标记: 字节被替换后一律失效 (超分标记等)."""
 
 
 def _is_placeholder_url(url: str) -> bool:
@@ -402,12 +402,20 @@ class ResourceStore:
         *,
         ext: str = ".jpg",
     ) -> Resource | None:
-        # 同 (src_url, op, args) 命中已有记录且磁盘仍是记录的那份字节则直出. producer 失败返回 None.
+        """同 (src_url, op, args) 命中已有记录且磁盘仍是记录的那份字节则直出. producer 失败返回 None.
+
+        命中还须核对源内容版本: 源图内容更新后派生产物须重跑, 否则派生缓存复用的是旧源的裁剪结果.
+        """
         locator = derived_locator(src_url, op, args)
         dest = self._compute_path(locator, ext=ext)
         async with self._serialized(locator):
             existing = await self.get_by_url(locator)
-            if existing is not None and self._matches_record(self.full_path(existing), existing):
+            src_version = await self._source_version(src_url)
+            if (
+                existing is not None
+                and self._matches_record(self.full_path(existing), existing)
+                and self._source_version_matches(existing, src_version)
+            ):
                 return existing
 
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -420,6 +428,8 @@ class ResourceStore:
             mime = detect_media_type(dest)
             content_hash = self._hash_file(dest)
             meta = {"op": op, "src": src_url, "args": args}
+            if src_version is not None:
+                meta[SRC_VERSION_KEY] = src_version
 
             async with self._session() as session:
                 if existing is not None:
@@ -442,6 +452,38 @@ class ResourceStore:
                 session.add(record)
                 await session.commit()
                 return record
+
+    async def _source_version(self, src_url: str) -> str | None:
+        """源内容版本: 源文件盘上字节的 hash; 源无记录或文件缺失时返回 None (无从核对).
+
+        按盘上字节算, 不信记录列: 源字节被换掉而记录未更新时 (覆盖中途夭折等),
+        盘上那份才是派生实际面对的输入.
+        """
+        if not src_url:
+            return None
+        source = await self.get_by_url(src_url)
+        if source is None:
+            return None
+        path = self.full_path(source)
+        if not path.exists():
+            return None
+        try:
+            return self._hash_file(path)
+        except OSError:
+            return None
+
+    @staticmethod
+    def _source_version_matches(record: Resource, src_version: str | None) -> bool:
+        """源版本核对: 记了版本就必须与当前源版本相同.
+
+        源无版本 (无源记录, 无从核对) 时不阻命中 —— 不据猜测判定源已变.
+        存量派生记录没有版本标记而源有版本时按不符处理: 重跑一次即补上标记,
+        此后源不变即直出.
+        """
+        if src_version is None:
+            return True
+        recorded = record.meta.get(SRC_VERSION_KEY) if record.meta else None
+        return recorded == src_version
 
     async def upscale_in_place(
         self,
