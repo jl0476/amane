@@ -2,13 +2,13 @@
 
 纯函数, 不执行任何 IO: raw 快照、锁定集合与 Resource 反解结果 (内部 URL → locator args, 经
 ``ResourceStore.get_by_url_hash``) 由调用方异步读取后注入. 判定次序 (规格 §3.6, 决策 13/18):
-user_product 短路 → 排除自动裁剪旧产物 → 字段链路由.
+user_product 短路 → 字段链路由.
 
 user_product 双路径: poster_urls 内部 URL 的 locator args 以 ``box:`` 开头 (手动裁剪), 或
 ``poster_urls`` ∈ locked_fields (PATCH 外部 URL 经 _merge_auto_locks 自动锁定); ``box:`` 判定
-优先于锁定. 候选主体 = raw 各站点原始 poster_urls 沿当前配置的 POSTER 字段链拼接, 快照键的
-``site:lang`` 语言限定形式按站点名归组; 既有 poster_urls 中未派生的条目置于链尾. 候选为空即
-回退信号.
+优先于锁定. 候选 = raw 各站点原始 poster_urls 沿当前配置的 POSTER 字段链拼接, 快照键的
+``site:lang`` 语言限定形式按站点名归组. 候选只由 raw 快照经字段链路由得出: 既有 poster_urls
+不贡献候选 —— 字段链已排除的来源不得因此重新参与重选. 候选为空即回退信号.
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -64,9 +64,9 @@ def rebuild_poster_candidates(
     """重建海报候选并给出用户产物 / 回退信号.
 
     参数均为调用方异步读取后的注入值: ``raw`` 为 ``Metadata.raw`` 快照; ``poster_urls`` 为
-    ``Metadata.poster_urls`` 当前产物; ``locator_args`` 只收录派生资源的内部 URL (args 取自
-    Resource 记录); ``locked_fields`` 为 ``Metadata.locked_fields``; ``route`` /
-    ``field_priority`` / ``field_blacklist`` 为当前配置的 content_routes 与字段链配置,
+    ``Metadata.poster_urls`` 当前产物 (只用于用户产物判定, 不贡献候选); ``locator_args`` 只收录
+    派生资源的内部 URL (args 取自 Resource 记录); ``locked_fields`` 为 ``Metadata.locked_fields``;
+    ``route`` / ``field_priority`` / ``field_blacklist`` 为当前配置的 content_routes 与字段链配置,
     POSTER 字段链经 :func:`compile_priority` 得到, 字段链外站点不参与.
 
     候选拼接与聚合同口径: 相同地址只保留首次出现.
@@ -85,7 +85,7 @@ def rebuild_poster_candidates(
 
     chain = compile_priority(route, field_priority, field_blacklist)[_POSTER_FIELD]
     candidates = [url for site in chain for url in by_site.get(site, ())]
-    # locator_args 只收录派生资源, box: 产物已短路, 命中项即自动裁剪旧产物, 不得参与重选.
-    candidates.extend(url for url in poster_urls if url not in locator_args)
+    # 候选只由 raw 快照经字段链路由得出: 既有 poster_urls 不贡献候选, 字段链已排除的来源
+    # 不得因此重新参与重选 (规格 §3.6 第 3 条). 候选为空即回退现状路径 (第 4 条).
     candidates = list(dict.fromkeys(candidates))
     return CandidateResult(candidates=candidates, user_product=False, fallback=not candidates)

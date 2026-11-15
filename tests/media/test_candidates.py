@@ -48,14 +48,14 @@ def test_rebuild_routes_through_current_field_chain() -> None:
     [
         pytest.param(
             {"alpha": {"poster_urls": ["https://alpha.example/a1"]}},
-            ["https://alpha.example/a1", "/api/resources/original0"],
-            id="body_first_tail_after",
+            ["https://alpha.example/a1"],
+            id="body_only",
         ),
-        pytest.param({}, ["/api/resources/original0"], id="raw_empty_local_original_only"),
+        pytest.param({}, [], id="raw_empty"),
     ],
 )
 def test_auto_derived_urls_excluded(raw: Mapping[str, Mapping[str, object]], expected_candidates: list[str]) -> None:
-    """数值 args 的自动裁剪旧产物从候选排除; 未派生的既有条目保留在链尾, 不构成用户产物."""
+    """自动裁剪旧产物与既有条目均不进入候选: 候选只由 raw 快照经字段链路由得出."""
     result = rebuild_poster_candidates(
         raw=raw,
         poster_urls=["/api/resources/auto0", "/api/resources/original0"],
@@ -66,7 +66,78 @@ def test_auto_derived_urls_excluded(raw: Mapping[str, Mapping[str, object]], exp
     )
     assert result.candidates == expected_candidates
     assert result.user_product is False
-    assert result.fallback is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "poster_urls", "route", "field_blacklist", "expected_candidates"),
+    [
+        pytest.param(
+            {
+                "alpha": {"poster_urls": ["https://alpha.example/a1"]},
+                "retired": {"poster_urls": ["https://retired.example/r1"]},
+            },
+            ["https://retired.example/r1"],
+            ["alpha"],
+            None,
+            ["https://alpha.example/a1"],
+            id="route_excluded_source",
+        ),
+        pytest.param(
+            {
+                "alpha": {"poster_urls": ["https://alpha.example/a1"]},
+                "gamma": {"poster_urls": ["https://gamma.example/g1"]},
+            },
+            ["https://gamma.example/g1"],
+            ["alpha", "gamma"],
+            {MetadataField.POSTER_URLS: ["gamma"]},
+            ["https://alpha.example/a1"],
+            id="blacklist_excluded_source",
+        ),
+        pytest.param(
+            {"retired": {"poster_urls": ["https://retired.example/r1"]}},
+            ["https://retired.example/r1"],
+            ["alpha"],
+            None,
+            [],
+            id="all_sources_excluded",
+        ),
+    ],
+)
+def test_poster_urls_never_contribute_candidates(
+    raw: Mapping[str, Mapping[str, object]],
+    poster_urls: list[str],
+    route: list[str],
+    field_blacklist: dict[MetadataField, list[str]] | None,
+    expected_candidates: list[str],
+) -> None:
+    """字段链排除的来源, 其既有 poster_urls 条目不进入候选 (规格 §3.6 第 3 条)."""
+    result = rebuild_poster_candidates(
+        raw=raw,
+        poster_urls=poster_urls,
+        locator_args={},
+        locked_fields=[],
+        route=route,
+        field_priority={},
+        field_blacklist=field_blacklist,
+    )
+    assert result.candidates == expected_candidates
+    assert result.user_product is False
+    assert result.fallback is (not expected_candidates)
+
+
+def test_raw_without_candidates_falls_back() -> None:
+    """raw 无候选时结果为空并给出回退信号: 不由既有 poster_urls 兜底 (规格 §3.6 第 4 条)."""
+    result = rebuild_poster_candidates(
+        raw={},
+        poster_urls=["https://retired.example/r1"],
+        locator_args={},
+        locked_fields=[],
+        route=["alpha"],
+        field_priority={},
+    )
+    assert result.candidates == []
+    assert result.user_product is False
+    assert result.fallback is True
 
 
 @pytest.mark.parametrize(

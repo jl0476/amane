@@ -892,7 +892,7 @@ async def test_quality_strategy_picks_best_both_entries(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
     """quality 全候选独占临时下载后择优: 两入口低清在前高清在后 → 高分辨率者胜出; 只提交胜者, 裁剪源取胜者 (先择优后裁剪)."""
-    # 刮削入口: 胜者 p-high 够高 → 免裁, poster 沿外部 URL 原序; 磁盘与缓存只有胜者.
+    # 刮削入口: 胜者 p-high 够高 → 免裁, poster 首项为胜者, 磁盘与缓存只有胜者.
     client = MappedClient(_ORGANIZE_IMAGES)
     cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
     out = await materialize_images(
@@ -906,8 +906,8 @@ async def test_quality_strategy_picks_best_both_entries(
         content_type=ContentType.CENSORED,
         metadata_cfg=cfg.metadata,
     )
-    assert out.poster_urls == _POSTER_URLS
-    assert out.thumb_urls == _THUMB_URLS  # 全部成功 → 原序 (失败者置尾语义保持)
+    assert out.poster_urls == ["https://s/p-high.jpg", "https://s/p-low.jpg"]  # 胜者置首, 其余保序
+    assert out.thumb_urls == ["https://s/t-high.jpg", "https://s/t-low.jpg"]  # 胜者置首, 其余保序
     thumb_winner = await resource_store.get_by_url("https://s/t-high.jpg")
     assert thumb_winner is not None
     assert Image.open(resource_store.full_path(thumb_winner)).size == (800, 538)  # 磁盘字节 = 高清胜者
@@ -967,3 +967,76 @@ async def test_quality_strategy_picks_best_both_entries(
     assert _pixel_close(poster, (255, 165, 0))
     assert await resource_store.get_by_url("https://s/p-low.jpg") is None  # 重选落选者不落缓存
     assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_poster_urls_lead_with_winner(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """quality 胜者置于落库 URL 首位: 低清在前高清在后时首项 = 胜者; 其余成功候选保持原相对顺序."""
+    client = MappedClient(_ORGANIZE_IMAGES)
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+    out = await materialize_images(
+        _POSTER_URLS,
+        [],
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    # 胜者 p-high (500x500, 面积更大) 置于首位, 落选者 p-low 在后.
+    assert out.poster_urls[0] == "https://s/p-high.jpg"
+    assert out.poster_urls == ["https://s/p-high.jpg", "https://s/p-low.jpg"]
+
+    # priority 路径不变: 首个成功项仍居首.
+    prio = HotSettings(metadata=MetadataConfig(thumb_download_strategy="priority"))
+    out_prio = await materialize_images(
+        _POSTER_URLS,
+        [],
+        [],
+        resource_store,
+        cast("WebClient", client),
+        prio,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=prio.metadata,
+    )
+    assert out_prio.poster_urls[0] == "https://s/p-low.jpg"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_thumb_urls_lead_with_winner(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """quality 胜者置于落库 thumb URL 首位: 低清在前高清在后时首项 = 胜者; priority 路径首项不变."""
+    client = MappedClient(_ORGANIZE_IMAGES)
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+    out = await materialize_images(
+        [],
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    # 胜者 t-high (800x538, 面积更大) 置于首位, 落选者 t-low 在后.
+    assert out.thumb_urls[0] == "https://s/t-high.jpg"
+    assert out.thumb_urls == ["https://s/t-high.jpg", "https://s/t-low.jpg"]
+
+    # priority 路径不变: 首个成功项仍居首.
+    prio = HotSettings(metadata=MetadataConfig(thumb_download_strategy="priority"))
+    out_prio = await materialize_images(
+        [],
+        _THUMB_URLS,
+        [],
+        resource_store,
+        cast("WebClient", client),
+        prio,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=prio.metadata,
+    )
+    assert out_prio.thumb_urls[0] == "https://s/t-low.jpg"
+    assert out_prio.thumb_urls == _THUMB_URLS

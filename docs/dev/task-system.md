@@ -97,6 +97,7 @@ handler 之间复用的阶段逻辑, 不是一条可跳步的总管线:
 `execute_file_operations` 是落盘执行单元, 仅 ORGANIZE 经 `apply_file_operations` 调用. 不变量:
 
 - **整理 = 复制到库路径**: 优先用 Resource 已有文件, 缺失才现场 `acquire`; 复制哪些类型由 `Library.copy_resources` (或 payload 覆盖) 决定 (见 [data-model.md](data-model.md)). 目标路径上已有的产物一律按本次内容覆盖, NFO 同理, 不判断是否已存在; fanart 没有刮削来源, 内容取 thumb, 因此随 thumb 一同重写, 该路径上的自备背景图会被覆盖, 也没有单独的关闭途径.
+- **整理期候选获取**: thumb / trailer / poster 复制回退路径按库级生效 `metadata.thumb_download_strategy` 分派 —— priority 取顺序首个可获取者, quality 全候选独占临时择优后取胜者 (胜者提交缓存, 落选者不落盘). 候选获取在异步协调层完成, `_place_library_images` 只接收已准备的本地路径. 剧照是多个不同图片的集合, 择优语义不适用: 站点优先级不变, 取首个有产物的站点并取该站全部候选.
 - **封面角标**: `watermark.enabled` 时 poster / thumb 副本按源文件 FileInfo 与条目类型叠 PNG; Resource 原图与 fanart 不修改.
 - **海报来源**: poster 先经整理期重选 (`handlers/file.py::_prepare_poster_product`): `scraping.crop_poster` 开启且候选重建非空时, 从 raw 原始候选沿字段链重选 (none = 候选原样; right / face 按库级生效 `metadata` 节裁剪, 派生键与刮削同口径); `poster_urls` 含 `box:` 派生或被锁定时不重选, 以其首项为产物. 重选未发生 (用户产物获取失败 / 总开关关闭 / 候选为空) 时沿物化图复制路径: `metadata.crop_type` 策略矩阵放行的类型从已落盘 thumb 裁剪兜底 (face 经 `media/crop.py::resolve_face_execution` 检测固化执行策略, 与刮削入口同语义), 其余类型不裁.
 - **目标占用**: 判定分为四态: 空闲 / 已就位 / 被占用 / 无法判定. 源与目标已是同一文件 (含硬链同一 inode) 时视为就位, 只跳过视频落盘, 附属文件照常重写; 被占用时跳过该文件, 不改名、不覆盖、不移动, 视频与字幕一视同仁, 由调用方按冲突记账, 冲突条目 (源路径 + 被占用的目标路径; 字幕冲突的 `path` 记字幕源路径, 不记视频源路径) 写进任务结果供界面显示, 且 `conflicts` 恒为 `conflicted` 条数的前缀 (差额只留在任务日志里), 冲突不自动解决, 未落盘的行留在源路径, 由用户自行处理. 无法判定 (stat 失败, 或两者在两次读取之间被替换) 按失败记账并带上 stat 的错误说明, 不得计入冲突或放宽为空闲. 存在性与占用判定都经 `existing_disk_path` (跟随符号链接; 读不出状态时按不存在处理, 不抛异常): 目标位置是断链符号链接时按空闲处理, MOVE 会替换它, SYMLINK 因 EEXIST 记失败. 判定与落盘之间还有窗口, MOVE / COPY 期间目标被外部写入仍会覆盖, 这条保证是尽力而为.
@@ -124,7 +125,7 @@ handler 之间复用的阶段逻辑, 不是一条可跳步的总管线:
 `ScrapeHandler` 在聚合后、`upsert_metadata` 前调用 `materialize_images` (`src/amane/media/pipeline.py`) — 二进制写入 Resource 目录的主路径, 与是否整理无关:
 
 - **`scraping.download_resources`** 控制本步下载哪些类型 (thumb / poster / extrafanart / trailer).
-- **URL 重排契约**: 被下载类型的 URL 列表按本次下载成功 (含缓存命中) 稳定分区 — 成功者保序前置, 失败者保序沉底. 死 URL 不再占据首位, 但保留在尾部, 来源恢复后下次物化可重新尝试. 未选中下载的类型无成败信息, 保持聚合优先级原序; extrafanart 为站点分组 dict, 不重排. `raw` 快照保持站点原始数据.
+- **URL 重排契约**: 被下载类型的 URL 列表按本次下载成功 (含缓存命中) 稳定分区 — 成功者保序前置, 失败者保序沉底. 死 URL 不再占据首位, 但保留在尾部, 来源恢复后下次物化可重新尝试. 未选中下载的类型无成败信息, 保持聚合优先级原序; extrafanart 为站点分组 dict, 不重排. `raw` 快照保持站点原始数据. `quality` 策略的 poster / thumb 首项为择优胜者 (其余成功候选保序在其后) —— 落库与展示均以首项取图, 否则仍取到低清候选.
 - 裁剪海报 → 判定经 `media/crop.py::resolve_crop_plan` (全局 `metadata` 节的策略矩阵, `scraping.poster_crop_skip_ratio` 显式传入), Right 比例由 `crop_aspect` 解析, 派生键 `args = {executed}:{aspect}:{ratio:.4f}`; 超分就地覆盖. 失败不阻断刮削.
 
 Face 检测的并发来源有两处: 刮削物化在事件循环内同步调用, 整理期兜底裁剪经 `@in_thread` 进入线程池 (`handlers/file.py::_place_library_images`). 两条路径共用 `media/crop.py` 的进程内单实例检测器, 该实例的状态可变, 并发访问的隔离方式见 [config.md](config.md).
