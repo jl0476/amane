@@ -161,7 +161,8 @@ class ResourceStore:
         self._guards: dict[str, _LockEntry] = {}
         self._guards_lock = asyncio.Lock()
         self._heal_lock = asyncio.Lock()
-        """自愈与覆盖落库互斥: 覆盖的"挂标记 → 换文件 → 落记录"整段持锁, 自愈整段持锁.
+        """自愈与落库 (覆盖提交 / 就地超分) 互斥: 覆盖的"挂标记 → 换文件 → 落记录"整段持锁,
+        自愈整段持锁.
 
         读路径的自愈因此撞不上在飞提交: 标记在库而盘上仍是旧字节这一窗口, 提交正持锁,
         自愈等提交走完再看盘上字节 —— 标记要么已被提交撤掉, 要么提交确实夭折, 两种都不是
@@ -236,9 +237,9 @@ class ResourceStore:
         否则失效 —— 旧字节的超分结果不适用于新字节.
         盘上仍是旧字节 (文件尚未换新): 只撤待提交标记, 记录原样仍指盘上那份.
 
-        自愈与落库 (覆盖提交) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 → 落记录"期间
-        读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) —— 在飞提交的
-        标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+        自愈与落库 (覆盖提交 / 就地超分) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 →
+        落记录"期间读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) ——
+        在飞提交的标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
         """
         if not record.meta or PENDING_KEY not in record.meta:
             return
@@ -299,19 +300,6 @@ class ResourceStore:
             session.add(row)
             await session.commit()
             return row
-
-    async def _write_record(self, record: Resource) -> None:
-        """按记录的主键回写一行."""
-        async with self._session() as session:
-            row = await session.get(Resource, record.id)
-            if row is None:
-                return
-            row.content_hash = record.content_hash
-            row.size = record.size
-            row.mime_type = record.mime_type
-            row.meta = record.meta
-            session.add(row)
-            await session.commit()
 
     async def acquire(
         self,
