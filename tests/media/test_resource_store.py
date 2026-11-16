@@ -2238,3 +2238,56 @@ async def test_commit_overwrite_updates_row_in_place(resource_store: ResourceSto
     assert rows[0].id == existing.id  # 原地更新同一行
     assert rows[0].content_hash == ResourceStore._hash_file(cached_path)
     assert rows[0].meta is not None and "pending" not in rows[0].meta
+
+
+@pytest.mark.asyncio
+async def test_derived_commit_rebuilds_record_deleted_before_commit(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """派生提交的既有记录读取在 producer 之前且锁外, 读取到落库之间该行被删除: 提交须重建 (IMPL-11 派生).
+
+    落库段回退复用读取到的 detached 旧对象时, ``session.add`` 按主键发出 UPDATE, 行已删除则
+    更新零行抛出 ``StaleDataError`` —— 派生文件已移入目标路径而库中无记录, 派生 URL 返回 404.
+    """
+
+    async def producer(dest: Path) -> bool:
+        dest.write_bytes(b"rebuild-derived-bytes")
+        return True
+
+    r1 = await resource_store.acquire_derived("https://s/t.jpg", "crop", "0.7", producer)
+    assert r1 is not None
+    locator = r1.url
+    dest_path = resource_store.full_path(r1)
+
+    # 盘上字节改为与记录不符: 第二次调用错过命中, 重跑 producer 并进入提交流程.
+    dest_path.write_bytes(b"stale-bytes")
+
+    heal_locked_paused, read_done, proceed = _pause_commit_after_locked_read()
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_locked_paused)
+
+    derived = asyncio.create_task(resource_store.acquire_derived("https://s/t.jpg", "crop", "0.7", producer))
+    try:
+        await read_done.wait()  # 命中核对的既有记录读取已完成 (producer 尚未执行)
+        # 模拟另一进程在读取与落库之间删行 (CLEANUP 回收未引用派生行).
+        async with resource_store._session() as session:
+            result = await session.exec(select(Resource).where(Resource.url == locator))
+            row = result.first()
+            assert row is not None
+            await session.delete(row)
+            await session.commit()
+    finally:
+        proceed.set()
+        r2 = await derived
+    monkeypatch.undo()
+
+    assert r2 is not None
+    # 记录须存在且描述盘上字节: 不得留下"文件在而记录无"的 404.
+    record = await resource_store.get_by_url(locator)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(dest_path)
+    assert record.size == len(b"rebuild-derived-bytes")
+    assert record.meta == {"op": "crop", "src": "https://s/t.jpg", "args": "0.7"}
+    async with resource_store._session() as session:
+        found = await session.exec(select(Resource).where(Resource.url == locator))
+        rows = list(found.all())
+    assert len(rows) == 1  # 不落重复行

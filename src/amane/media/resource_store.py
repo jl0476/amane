@@ -576,7 +576,7 @@ class ResourceStore:
                 if src_version is not None:
                     meta[SRC_VERSION_KEY] = src_version
 
-                return await self._commit_derived(locator, dest, tmp, existing, content_hash, size, mime, meta)
+                return await self._commit_derived(locator, dest, tmp, content_hash, size, mime, meta)
             finally:
                 tmp.unlink(missing_ok=True)
 
@@ -585,22 +585,32 @@ class ResourceStore:
         locator: str,
         dest: Path,
         tmp: Path,
-        existing: Resource | None,
         content_hash: str,
         size: int,
         mime: str | None,
         meta: dict,
     ) -> Resource | None:
-        """派生产物的可恢复提交: 挂待提交标记 → 原子移入 → 落库撤标记. 磁盘错误返回 None.
+        """派生产物的可恢复提交: 写入待提交标记 → 原子移入 → 落库撤标记. 磁盘错误返回 None.
 
         派生 locator 由 ``(src_url, op, args)`` 决定, 必然存在: 既有记录要覆盖, 首次入库则无记录可标记,
         记录缺失即无失配可言.
 
-        「挂标记 → 换文件 → 落记录」整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除
+        既有记录在本临界区内重读 (读取经由 ``_heal_locked``, 该锁非重入, ``get_by_url`` 不得在锁内
+        调用): ``acquire_derived`` 的命中核对读取发生在 producer 之前且自愈锁已释放, producer 期间
+        行可被并发删行 (CLEANUP 回收未引用派生行) 或插入同 locator 新行, 命中核对读到的旧对象不作
+        为落库依据.
+
+        「重读 → 写标记 → 换文件 → 落库」整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除
         (或在提交夭折后由自愈接手). 少了这段互斥, 读路径会在「标记在库、盘上仍是旧字节」的窗口撤掉
         尚未提交的标记, 提交随后夭折就留下永久失配.
+
+        自愈锁只约束本进程, 其他进程仍可在临界区内删行: 落库段按 locator (``Resource.url``) 重查,
+        行缺失时新建行 (INSERT, 不复用任何读取到的 detached 旧对象 —— ``session.add`` 对带主键的
+        detached 对象按主键发出 UPDATE, 行已删除则更新零行或静默不重建), 他方插入的同 locator
+        新行就地更新, 不落重复行.
         """
         async with self._heal_lock:
+            existing = await self._heal_locked(select(Resource).where(Resource.url == locator))
             if existing is not None:
                 await self._mark_pending_derived(existing, content_hash, meta, self._relative_path(dest))
 
@@ -613,19 +623,12 @@ class ResourceStore:
                 return None
 
             async with self._session() as session:
-                if existing is not None:
-                    # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记一并覆盖回去
-                    # (meta 整列写), 留下「标记还在」的假中间态.
-                    row = await session.get(Resource, existing.id)
-                    if row is None:
-                        row = existing
-                        session.add(row)
-                    row.file_path = self._relative_path(dest)
-                    row.content_hash = content_hash
-                    row.size = size
-                    row.mime_type = mime
-                    row.meta = meta
-                else:
+                # 按 locator 重查, 不按重读时旧对象的主键: 其他进程可在临界区内删除该行,
+                # 或删除后插入同 locator 的新行 —— 新行主键不同, 按旧主键重查查不到.
+                result = await session.exec(select(Resource).where(Resource.url == locator))
+                row = result.first()
+                if row is None:
+                    logger.warning("resource record rebuilt on derived commit", locator=locator)
                     row = Resource(
                         url=locator,
                         file_path=self._relative_path(dest),
@@ -634,7 +637,13 @@ class ResourceStore:
                         mime_type=mime,
                         meta=meta,
                     )
-                    session.add(row)
+                else:
+                    row.file_path = self._relative_path(dest)
+                    row.content_hash = content_hash
+                    row.size = size
+                    row.mime_type = mime
+                    row.meta = meta
+                session.add(row)
                 await session.commit()
                 return row
 
