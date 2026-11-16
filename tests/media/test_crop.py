@@ -1,5 +1,6 @@
 """测试裁剪策略中立面: 策略解析、默认态判定、cv2 可用性访问器与 Face 检测执行 (检测先于键构造)."""
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
+from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
@@ -577,6 +579,76 @@ async def test_runtime_detection_exception_degrades_right_key(
         assert len(producer_calls) == 1
         assert len(_degrade_warnings(logs)) == 1
     assert await resource_store.get_by_url(derived_locator(url, "crop", "face:legacy:0.7000")) is None
+
+
+# ---------------------------------------------------------------- 源快照一致性 (IMPL-07)
+
+
+async def _seed_source(store: Any, url: str, content: bytes) -> Path:
+    """把源内容预置为 store 的缓存条目: 记录 + 本地文件 (源版本核对的依据)."""
+    client = AsyncMock()
+    client.resolve_final_url = AsyncMock(return_value=url)
+
+    async def download(_url: str, dest: Path, **kwargs: object) -> bool:
+        dest.write_bytes(content)
+        return True
+
+    client.download = AsyncMock(side_effect=download)
+    path = await store.acquire(url, client)
+    assert path is not None
+    return path
+
+
+@pytest.mark.asyncio
+async def test_face_crop_uses_single_source_snapshot(resource_store: Any, tmp_path: Path) -> None:
+    """检测之后源被换新: 产物与源版本标记须对应同一份源内容 (IMPL-07).
+
+    检测按源 A 固化人脸框, 换新后盘上是源 B. 产物若按 A 的框裁 B, 记下的源版本却是 B, 两者混用;
+    正确的产物是「按 A 的框裁 A」且版本标记记 A —— 检测、裁剪、版本标记三者须同源于一份快照.
+    """
+    plan = _face_plan()
+    src_url = "https://img.example.com/covers/snapshot.jpg"
+
+    # 源 A: 含人脸样例 (pristine 副本用于推导期望裁剪窗与期望版本).
+    pristine_a = tmp_path / "pristine_a.jpg"
+    shutil.copyfile(_FACE_FIXTURE, pristine_a)
+    # 源 B: 人脸位置与 A 明显不同, 框套错时产物像素随之改变.
+    source_b = tmp_path / "source_b.jpg"
+    canvas = Image.new("RGB", (512, 512), (30, 30, 36))
+    canvas.paste(Image.open(_FACE_FIXTURE).convert("RGB").crop((148, 123, 414, 450)).resize((90, 110)), (30, 330))
+    canvas.save(source_b, format="JPEG", quality=95)
+
+    # 源缓存条目: 检测与裁剪面对的是它.
+    source_a = await _seed_source(resource_store, src_url, pristine_a.read_bytes())
+
+    # 检测后把源换新: 检测读到 A, 盘上此后是 B.
+    real_detect = crop_mod._detect_faces
+
+    def detect_then_swap(path: Path) -> tuple[tuple[int, int], list[tuple[int, int, int, int]]]:
+        result = real_detect(path)
+        shutil.copyfile(source_b, source_a)  # 源换新
+        return result
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(crop_mod, "_detect_faces", detect_then_swap)
+    try:
+        res = await _acquire_face(resource_store, source_a, src_url, plan)
+    finally:
+        monkeypatch.undo()
+
+    assert res is not None
+    assert res.meta is not None
+    assert res.meta["src"] == src_url
+    assert source_a.read_bytes() == source_b.read_bytes()  # 前置: 源确实被换新
+
+    # 产物像素: 须与「检测时的源 A 按检测框裁剪」一致, 不得是 A 的框套在 B 上.
+    product = resource_store.full_path(res)
+    expected_window = _expected_window(_oracle_faces(pristine_a), (512, 512), plan.ratio)
+    _assert_same_window(product, pristine_a, expected_window)
+
+    # 版本标记须描述产物实际面对的那份源 (A), 不是换新后的 B.
+    assert res.meta.get("srcv") is not None
+    assert res.meta["srcv"] == hashlib.sha256(pristine_a.read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------- 并发检测隔离 (IMPL-08)

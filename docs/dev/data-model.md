@@ -140,6 +140,8 @@ PATCH 三态: **省略键** = 不更新 (`exclude_unset`); **显式值** = 写�
 
 `meta` (JSON, 默认 `{}`) 记可逆来源与处理标记: 裁剪记 `{'op':'crop','src':底层locator,'args':str}` (不记内部 URL); `args` 为像素框, 顺时针旋转非 0 时追加 `:r90` — 键必须覆盖角度, 否则换角度命中旧结果. 超分追加 `{'sr':{tool,model,scale}}`, **就地覆盖**文件 (URL 不变). 派生另记 `{'srcv':源内容hash}`: 派生命中须核对源版本, 源图内容更新后派生重跑 (`src/amane/media/resource_store.py::ResourceStore.acquire_derived`); 源无记录则无从核对, 不阻命中. 源以内部 URL 给出时先解析回底层 locator 再核对版本, 否则查不到源行, 版本核对静默失效.
 
+Face 裁剪的检测 / 裁剪 / 版本标记共用一份源快照 (`ResourceStore.source_snapshot`): 检测按源 A 固化人脸框后源被换新时, 产物仍按 A 裁剪, 版本标记也记 A, 二者不混用两个版本的源. 快照是源的独占副本, 派生记录只记版本 hash, 不引用副本路径 (`media/crop.py::acquire_face_crop`).
+
 与记录自身字节绑定的标记 (`sr`) 在**内容被替换**时失效: 覆盖缓存 (quality 择优胜出) 撤除旧标记, 否则新原图被误判为已超分而跳过 (`resource_store.py::_commit_temp_locked`). 同 hash 幂等与"既有胜"字节未变, 标记保留. 自愈路径同此判据: 记录记的 hash 就是盘上那份字节则 `sr` 保留 (否则二次超分), 否则撤除.
 
 **按引用回收**: 不是 LRU 缓存. 刮削换 URL / 改裁剪参数后旧条目留到 CLEANUP 回收未引用项 (含派生). 原始像素须 invalidate 重下 (就地超分后不可恢复). 见 [task-system.md](task-system.md) CLEANUP. `content_hash` 兼作 ETag, 见 [api.md](api.md); 同一 locator 的写入按 locator 串行 (`ResourceStore._serialized`), 先写文件再写记录, 二者恒对应盘上那份字节.

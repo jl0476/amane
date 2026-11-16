@@ -131,6 +131,17 @@ class ResolvedSource:
     path: Path
 
 
+@dataclass(frozen=True)
+class SourceSnapshot:
+    """源内容快照: 独占副本的路径与其字节版本.
+
+    检测 / 裁剪 / 版本标记都基于同一份快照, 三者因此对应同一份源内容.
+    """
+
+    path: Path
+    version: str
+
+
 class UpscaleOutcome(StrEnum):
     """``SKIPPED`` 表示盘上已是记录所指的那份字节, 调用方不应计作失败."""
 
@@ -434,6 +445,34 @@ class ResourceStore:
     def url_hash(url: str) -> str:
         return _url_hash(url)
 
+    @asynccontextmanager
+    async def source_snapshot(self, src_path: Path) -> AsyncGenerator[SourceSnapshot]:
+        """源内容快照: 源的独占副本, 供检测 / 裁剪 / 版本标记共用同一份字节.
+
+        副本与源同目录, 复制是原子的读: 源被改名换新时, 副本要么是换新前的那份, 要么是换新后的
+        那份, 不会取到半截内容. 副本在离开上下文时删除; 派生记录只记版本 hash, 不引用副本路径,
+        因此不存在「副本已删而记录仍指向它」的悬空引用.
+
+        复制失败时以源路径本身作快照: 快照退化为「直接用源文件」, 版本取当时盘上的字节.
+        此时一致性退化为尽力而为 (源在检测与裁剪之间换新仍会混用), 但流程不中断.
+        """
+        tmp = src_path.with_name(f"{src_path.stem}{TMP_MARK}snap-{uuid4().hex[:8]}{src_path.suffix}")
+        try:
+            shutil.copyfile(src_path, tmp)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            logger.warning("source snapshot failed", path=str(src_path))
+            try:
+                version = self._hash_file(src_path)
+            except OSError:
+                version = ""
+            yield SourceSnapshot(path=src_path, version=version)
+            return
+        try:
+            yield SourceSnapshot(path=tmp, version=self._hash_file(tmp))
+        finally:
+            tmp.unlink(missing_ok=True)
+
     async def acquire_derived(
         self,
         src_url: str,
@@ -442,16 +481,20 @@ class ResourceStore:
         producer: Callable[[Path], Awaitable[bool]],
         *,
         ext: str = ".jpg",
+        src_snapshot: SourceSnapshot | None = None,
     ) -> Resource | None:
         """同 (src_url, op, args) 命中已有记录且磁盘仍是记录的那份字节则直出. producer 失败返回 None.
 
         命中还须核对源内容版本: 源图内容更新后派生产物须重跑, 否则派生缓存复用的是旧源的裁剪结果.
+
+        ``src_snapshot`` 给定时源版本取快照字节: 命中核对与版本标记都描述同一份源内容, 派生产物
+        与其版本标记因此不会混用两个版本的源.
         """
         locator = derived_locator(src_url, op, args)
         dest = self._compute_path(locator, ext=ext)
         async with self._serialized(locator):
             existing = await self.get_by_url(locator)
-            src_version = await self._source_version(src_url)
+            src_version = await self._source_version(src_url, snapshot=src_snapshot)
             if (
                 existing is not None
                 and self._matches_record(self.full_path(existing), existing)
@@ -494,7 +537,7 @@ class ResourceStore:
                 await session.commit()
                 return record
 
-    async def _source_version(self, src_url: str) -> str | None:
+    async def _source_version(self, src_url: str, *, snapshot: SourceSnapshot | None = None) -> str | None:
         """源内容版本: 源文件盘上字节的 hash; 源无记录或文件缺失时返回 None (无从核对).
 
         按盘上字节算, 不信记录列: 源字节被换掉而记录未更新时 (覆盖中途夭折等),
@@ -502,12 +545,17 @@ class ResourceStore:
 
         源以内部 URL (``/api/resources/{hash}``) 形式给出时先解析回底层 locator ——
         Resource 行的 ``url`` 存的是底层 locator, 按内部 URL 直查查不到行, 源版本就无从核对.
+
+        ``snapshot`` 给定时版本取快照字节: 快照是派生实际面对的那份源内容, 版本须描述它.
+        重读盘上字节会取到另一版本 (检测与裁剪之间的源换新), 那样版本标记与产物就混用了两个版本.
         """
         if not src_url:
             return None
         source = await self._source_record(src_url)
         if source is None:
             return None
+        if snapshot is not None:
+            return snapshot.version
         path = self.full_path(source)
         if not path.exists():
             return None

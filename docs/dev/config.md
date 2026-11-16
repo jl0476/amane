@@ -122,6 +122,8 @@ payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段�
 
 Face 检测器是进程内共享的单实例 (`src/amane/media/crop.py::_load_detector`), 实例持有可变状态: 输入尺寸与 `dnn::Net` 的推理缓冲. 因此 "设置尺寸 + 检测" 与实例创建都必须在 `src/amane/media/crop.py::_detector_lock` 的互斥区内完成 — 不允许绕开互斥区直接使用该实例. 多个任务并发时检测串行执行, 单次检测耗时因此叠加, 但每个检出框严格对应其输入图.
 
+Face 裁剪的检测与裁剪必须读同一份源: 两者之间源被换新时, 检出框与裁剪输入不同源, 产物即错配. 派生物化入口 (`src/amane/media/crop.py::acquire_face_crop`) 因此先固定源快照, 检测与裁剪都基于该快照, 源版本标记也取该快照的字节 — 允许绕开快照直接用源文件.
+
 ## `watermark` (Hot)
 
 只在 ORGANIZE 落盘封面时绘制, 不修改 Resource; 片库 CSS overlay 不读 `enabled`. 角标高度 = 图高 × `scale` (不按宽、不按 PNG 原图像素); `corners` 是 `x-frozen-keys` 五类到四角的映射, 同角按中字 / 无码 / 破解 / 流出 / 分辨率向内叠. PNG 覆盖仍是 `{data_dir}/watermarks/{stem}.png`.

@@ -291,20 +291,25 @@ async def acquire_face_crop(
 ) -> Resource | None:
     """Face 请求的派生产物获取 (检测先于键构造). ``thumb_path`` 须已在本地, 由调用方保证.
 
-    流程: 检测固化 executed → 以固化 executed 构造派生键 → acquire_derived. face 检出时 producer
-    闭包使用预计算窗裁剪, 缓存 miss 重跑同窗, 结果确定性一致; 降级产物落 right 键, face 键永不存储 right 产物.
+    流程: 固定源快照 → 检测固化 executed → 以固化 executed 构造派生键 → acquire_derived. face 检出时
+    producer 闭包使用预计算窗裁剪, 缓存 miss 重跑同窗, 结果确定性一致; 降级产物落 right 键, face 键永不
+    存储 right 产物.
+
+    检测 / 裁剪 / 源版本标记都用同一份源快照: 源在检测之后被换新时, 产物仍按检测时的源裁剪, 版本标记
+    也记检测时的源, 二者不会混用两个版本的源. 快照只是独占副本, 派生记录不引用它.
     """
-    execution = resolve_face_execution(plan, thumb_path)
-    args = format_crop_args(execution.plan.executed, aspect, execution.plan.ratio)
-    if execution.box is not None:
-        box = execution.box
+    async with store.source_snapshot(thumb_path) as snapshot:
+        execution = resolve_face_execution(plan, snapshot.path)
+        args = format_crop_args(execution.plan.executed, aspect, execution.plan.ratio)
+        if execution.box is not None:
+            box = execution.box
 
-        async def producer(dest: Path) -> bool:
-            return crop_face_window(thumb_path, dest, box, jpeg_quality=jpeg_quality)
-    else:
-        ratio = execution.plan.ratio
+            async def producer(dest: Path) -> bool:
+                return crop_face_window(snapshot.path, dest, box, jpeg_quality=jpeg_quality)
+        else:
+            ratio = execution.plan.ratio
 
-        async def producer(dest: Path) -> bool:
-            return crop_poster(thumb_path, dest, poster_ratio=ratio, jpeg_quality=jpeg_quality)
+            async def producer(dest: Path) -> bool:
+                return crop_poster(snapshot.path, dest, poster_ratio=ratio, jpeg_quality=jpeg_quality)
 
-    return await store.acquire_derived(thumb_src, "crop", args, producer)
+        return await store.acquire_derived(thumb_src, "crop", args, producer, src_snapshot=snapshot)
