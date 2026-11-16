@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
+import structlog
 from PIL import Image
 from sqlalchemy import event
 from sqlmodel import select
@@ -926,6 +927,10 @@ async def test_commit_temp_different_hash_lower_res_reselects(
     temp.write_bytes(high)
 
     with capture_logs() as logs:
+        # 换新未缓存的 logger 再进入提交: api 测试的 setup_logging 序列会让模块 logger
+        # 缓存旧配置的 processors 列表实例, capture_logs 就地改写当前实例时, 持旧实例的
+        # 缓存 logger 逃逸捕获, 断言偶发落空.
+        monkeypatch.setattr("amane.media.resource_store.logger", structlog.get_logger())
         result = await resource_store.commit_temp(url, temp)
 
     assert result.success is True
