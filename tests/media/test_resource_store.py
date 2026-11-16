@@ -5,11 +5,12 @@ import hashlib
 import io
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
+from sqlalchemy import event
 from sqlmodel import select
 from structlog.testing import capture_logs
 
@@ -23,6 +24,9 @@ from amane.media.resource_store import (
 )
 from amane.net.egress import EgressPolicy
 from amane.net.http import RateLimiters, WebClient
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 def test_derived_locator_deterministic():
@@ -1429,24 +1433,43 @@ async def test_stale_pending_marker_still_stripped(resource_store: ResourceStore
 
 
 @pytest.mark.asyncio
+async def test_untrusted_pending_marker_stripped(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """形态不可信的待提交标记 (外部写坏库): 读路径须撤除, 不得永久滞留.
+
+    标记不是字符串也不是带 hash 的字典时无从判定中间态, 但留着会让标记永久滞留 —— 每次读都
+    撞上它, 又永远判不出该做什么.
+    """
+    url = "https://s/untrusted-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        # 字典形态但没有 hash 字段: 无从判定中间态.
+        row.meta = {**(row.meta or {}), "pending": {"nohash": 1}}
+        session.add(row)
+        await session.commit()
+
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.meta is not None and "pending" not in record.meta
+    assert record.content_hash == ResourceStore._hash_file(cached_path)  # 记录仍指盘上那份
+
+
+@pytest.mark.asyncio
 async def test_heal_checks_db_state_not_caller_snapshot(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
-    """读路径的快照早于提交挂标记时: 自愈仍须按库态修复记录与盘上字节的失配.
+    """读路径取行时提交已挂标记: 自愈仍须按库态修复记录与盘上字节的失配.
 
     自愈若按调用方手里的快照判有无标记, 取快照到自愈之间刚挂上的标记会被漏掉, 记录留在旧 hash,
-    盘上却是新字节 —— 旧 ETag 于是按旧记录返回新内容.
+    盘上却是新字节 —— 旧 ETag 于是按旧记录返回新内容. 读路径的取行已移进自愈锁内, 判定依据是
+    锁内读到的库态.
     """
     url = "https://s/heal-late-pending.jpg"
     old_bytes = _png(100, 100)
     cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
     new_bytes = _png(200, 150)
-
-    # 读路径先取快照: 此时库中还没有待提交标记.
-    async with resource_store._session() as session:
-        result = await session.exec(select(Resource).where(Resource.url == url))
-        row = result.first()
-        assert row is not None
-        snapshot = Resource.model_validate(row.model_dump())
-    assert snapshot.meta is not None and "pending" not in snapshot.meta
 
     # 提交挂上标记并换文件, 随后夭折: 盘上是新字节, 记录仍是旧 hash 且带标记.
     new_hash = hashlib.sha256(new_bytes).hexdigest()
@@ -1457,11 +1480,12 @@ async def test_heal_checks_db_state_not_caller_snapshot(resource_store: Resource
         await resource_store._mark_pending(row, new_hash)
     cached_path.write_bytes(new_bytes)
 
-    # 读路径拿着陈旧快照自愈: 须按库态修复, 不按快照.
-    await resource_store._heal_record(snapshot, cached_path)
+    # 读路径按库态自愈: 记录须补齐到盘上那份字节.
+    record = await resource_store.get_by_url(url)
 
-    assert snapshot.content_hash == ResourceStore._hash_file(cached_path)
-    assert snapshot.meta is not None and "pending" not in snapshot.meta
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.meta is not None and "pending" not in record.meta
 
 
 @pytest.mark.asyncio
@@ -1494,18 +1518,18 @@ async def test_heal_write_does_not_clobber_concurrent_commit(
 
     assert cached_path.read_bytes() == bytes_a
 
-    # 读路径: 快照在此刻取到 (旧 hash + pending), 自愈被拦在快照之后.
+    # 读路径: 自愈锁还没取, 提交得以在读之前落库.
     paused = asyncio.Event()
     proceed = asyncio.Event()
     armed = False
     original_heal = ResourceStore._heal_record
 
-    async def heal_pause_first(self: ResourceStore, record: Resource, full_path: Path) -> None:
-        # 只拦这次读的自愈: 自愈锁还没取, 提交得以在快照之后落库.
+    async def heal_pause_first(self: ResourceStore, stmt: Any) -> Any:
+        # 只拦这次读的自愈: 自愈锁还没取, 提交得以在读之前落库.
         if armed and not paused.is_set():
             paused.set()
             await proceed.wait()
-        await original_heal(self, record, full_path)
+        return await original_heal(self, stmt)
 
     monkeypatch.setattr(ResourceStore, "_heal_record", heal_pause_first)
 
@@ -1558,12 +1582,12 @@ async def test_upscale_write_excluded_from_heal(resource_store: ResourceStore, m
     original_locked = ResourceStore._heal_locked
     seen = {"n": 0}
 
-    async def heal_hold(self: ResourceStore, row_id: int | None) -> Resource | None:
+    async def heal_hold(self: ResourceStore, stmt: Any) -> Any:
         seen["n"] += 1
         if seen["n"] == 1:
             paused.set()
             await proceed.wait()
-        return await original_locked(self, row_id)
+        return await original_locked(self, stmt)
 
     monkeypatch.setattr(ResourceStore, "_heal_locked", heal_hold)
 
@@ -1863,3 +1887,80 @@ async def test_derived_replace_failure_leaves_no_pending(
     assert record.content_hash == ResourceStore._hash_file(derived_path)
     assert record.meta is not None and "pending" not in record.meta
     assert _tmp_leftovers(resource_store) == []
+
+
+# --- 读路径的一次往返与陈旧 ETag 窗口 ---
+
+
+@pytest.mark.asyncio
+async def test_read_returns_row_read_inside_heal_lock(
+    resource_store: ResourceStore, resource_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+):
+    """读路径取行之后有提交落地: 调用方拿到的行须是最新库态, 不得是取行时的旧快照.
+
+    读路径先取行 → 一次完整提交落地 (换文件 + 落库) → 读路径才进自愈: 此时库态已无待提交标记,
+    自愈无事可做, 调用方手里的行仍是旧 hash. 用旧 hash 发 ETag 就是一次性陈旧 304. 取行移进
+    自愈锁内后, 调用方拿到的就是库里的当前行.
+    """
+    url = "https://s/heal-latest-row.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    old_hash = hashlib.sha256(old_bytes).hexdigest()
+
+    # 提交在读路径取行之后、自愈之前落地: 盘上换新, 库里的行同步更新.
+    new_bytes = _png(200, 150)
+    original_locked = ResourceStore._heal_locked
+    seen = {"n": 0}
+
+    async def heal_after_commit(self: ResourceStore, *args: Any, **kwargs: Any) -> Any:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            cached_path.write_bytes(new_bytes)
+            async with self._session() as session:
+                row = await session.get(Resource, 1)
+                assert row is not None
+                row.content_hash = ResourceStore._hash_file(cached_path)
+                row.size = len(new_bytes)
+                row.mime_type = "image/png"
+                session.add(row)
+                await session.commit()
+        return await original_locked(self, *args, **kwargs)
+
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_after_commit)
+
+    record = await resource_store.get_by_url(url)
+    monkeypatch.undo()
+
+    assert record is not None
+    # 调用方拿到的行须描述盘上当前字节, 不得停在取行时的旧 hash.
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.content_hash != old_hash
+
+
+@pytest.mark.asyncio
+async def test_read_path_issues_single_select(
+    resource_store: ResourceStore, resource_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+):
+    """读路径只发一次 SELECT: 取行与自愈锁内读行合并为一次查询.
+
+    读吞吐曾因读路径每次都另开一次会话重读一行而近乎减半 —— 代价在多一次 DB 往返而非锁本身.
+    判据是读路径发出的 SELECT 次数: 自愈锁内那一次读取代调用方先前那次.
+    """
+    url = "https://s/heal-round-trip.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+
+    selects: list[str] = []
+
+    @event.listens_for(resource_engine.sync_engine, "before_cursor_execute")
+    def _count_selects(conn: Any, cursor: Any, statement: str, *args: Any, **kwargs: Any) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    try:
+        record = await resource_store.get_by_url(url)
+    finally:
+        event.remove(resource_engine.sync_engine, "before_cursor_execute", _count_selects)
+
+    assert record is not None
+    # 一次取行 = 一次 SELECT; 不得是两次 (取行 + 自愈锁内重读).
+    assert len(selects) == 1, f"读路径的 SELECT 次数异常: {len(selects)}"

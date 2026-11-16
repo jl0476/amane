@@ -19,6 +19,7 @@ from uuid import uuid4
 import structlog
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel.sql.expression import SelectOfScalar
 
 from ..db.models import Resource
 from .file_type import detect_media_type
@@ -84,7 +85,8 @@ class _Pending:
 def _pending(meta: dict | None) -> _Pending | None:
     """解析待提交标记: 字符串形态是普通资源, 字典形态是派生资源 (带待写入的 meta 与路径).
 
-    标记不是这两种形态时按不可信处理, 返回 None (无从判定中间态).
+    标记不是这两种形态时按不可信处理, 返回 None (无从判定中间态). 调用方据此撤除该标记 ——
+    不可信形态无从自愈, 留着只会让标记永久滞留.
     """
     if not meta:
         return None
@@ -251,28 +253,36 @@ class ResourceStore:
         return self._base_dir.parent
 
     async def resolve(self, url: str) -> Path | None:
+        stmt = select(Resource).where(Resource.url == url)
+        # 自愈须在锁内的独立会话做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
+        record = await self._heal_record(stmt)
+        if record is None:
+            return None
+
+        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径核对盘上字节.
+        full_path = self._base_dir / record.file_path
+        if not full_path.exists():
+            # 文件丢失则删除记录.
+            logger.warning("resource file missing, invalidating record", url=url, path=str(full_path))
+            await self._invalidate_record(record.id)
+            return None
+        return full_path
+
+    async def _invalidate_record(self, row_id: int | None) -> None:
+        """删除一行: 行不在时无须处理."""
+        if row_id is None:
+            return
         async with self._session() as session:
-            stmt = select(Resource).where(Resource.url == url)
-            result = await session.exec(stmt)
-            record = result.first()
-            if record is None:
-                return None
+            row = await session.get(Resource, row_id)
+            if row is None:
+                return
+            await session.delete(row)
+            await session.commit()
 
-            full_path = self._base_dir / record.file_path
-            if not full_path.exists():
-                # 文件丢失则删除记录.
-                logger.warning("resource file missing, invalidating record", url=url, path=str(full_path))
-                await session.delete(record)
-                await session.commit()
-                return None
+    async def _heal_record(self, stmt: SelectOfScalar[Resource]) -> Resource | None:
+        """读一行并按盘上字节自愈: 取行与自愈在自愈锁内一次完成.
 
-        # 自愈须在会话外做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
-        await self._heal_record(record, full_path)
-        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径返回.
-        return self._base_dir / record.file_path
-
-    async def _heal_record(self, record: Resource, full_path: Path) -> None:
-        """覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
+        覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
 
         盘上已是待提交的那份字节 (文件换新后夭折): 记录补齐 hash/size/类型. 与旧字节绑定的标记
         (超分标记) 是否失效, 取决于这份字节自身是否带有效超分: 记录记的 hash 就是它则保留,
@@ -283,39 +293,36 @@ class ResourceStore:
         落记录"期间读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) ——
         在飞提交的标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
 
-        有无待提交标记一律按锁内重读到的库态判定, 不按调用方手里的快照: 取快照到自愈之间, 提交
-        可能刚挂上标记 —— 按快照判定会跳过自愈, 留下「盘上是新字节、记录仍是旧 hash」的失配,
-        旧 ETag 于是按旧记录返回新内容.
+        取行放在锁内: 取行与自愈之间不会插入一整次提交落地 (提交持同一把锁), 调用方拿到的就是
+        库里的当前行 —— 用旧 hash 发 ETag 的一次性陈旧 304 窗口因此关闭. 取行也在锁内, 读路径
+        不必为自愈另开一次会话重读一行, 少一次 DB 往返.
         """
         async with self._heal_lock:
-            healed = await self._heal_locked(record.id)
-        if healed is None:
-            return
-        # 调用方拿着的是自愈前的副本: 同步过来, 否则读到的还是旧标记与旧 hash.
-        record.content_hash = healed.content_hash
-        record.size = healed.size
-        record.mime_type = healed.mime_type
-        record.meta = healed.meta
-        record.file_path = healed.file_path
+            return await self._heal_locked(stmt)
 
-    async def _heal_locked(self, row_id: int | None) -> Resource | None:
-        """自愈临界区: 持自愈锁.
+    async def _heal_locked(self, stmt: SelectOfScalar[Resource]) -> Resource | None:
+        """自愈临界区: 持自愈锁, 按语句取行并自愈.
 
-        判定依据是锁内重读到的当前库态, 不是读路径先前取到的快照: 取快照到进锁之间, 可能有
-        新的提交挂上标记 —— 按快照判定会拿旧标记去撤新提交的标记.
+        判定依据是锁内读到的当前库态: 取行到自愈之间若有新的提交挂上标记, 按先前的快照判定会
+        拿旧标记去撤新提交的标记.
 
-        返回自愈后的行 (未自愈则 None), 供调用方同步自己手里的副本.
+        返回锁内读到的行 (有标记则已自愈). 无标记时也返回该行: 它就是库里的当前行, 不会引入
+        失配, 却让调用方拿到最新库态.
         """
-        if row_id is None:
-            return None
         async with self._session() as session:
-            row = await session.get(Resource, row_id)
+            result = await session.exec(stmt)
+            row = result.first()
             if row is None:
                 return None
             meta = dict(row.meta) if row.meta else {}
             pending = _pending(meta)
             if pending is None:
-                return None
+                if PENDING_KEY in meta:
+                    # 不可信形态的标记 (外部写坏库): 无从判定中间态, 撤掉免得永久滞留.
+                    row.meta = _without_pending(meta)
+                    session.add(row)
+                    await session.commit()
+                return row
             # 派生资源的待提交路径可能与记录当前路径不同 (扩展名变更): 按待提交路径核对盘上字节.
             rel_path = pending.path or row.file_path
             full_path = self._base_dir / rel_path
@@ -462,13 +469,8 @@ class ResourceStore:
         return ResolvedSource(locator=url, path=path)
 
     async def get_by_url(self, url: str) -> Resource | None:
-        async with self._session() as session:
-            result = await session.exec(select(Resource).where(Resource.url == url))
-            record = result.first()
-        if record is None:
-            return None
-        await self._heal_record(record, self._base_dir / record.file_path)
-        return record
+        stmt = select(Resource).where(Resource.url == url)
+        return await self._heal_record(stmt)
 
     async def list_all(self) -> list[Resource]:
         async with self._session() as session:
@@ -477,18 +479,16 @@ class ResourceStore:
 
     async def get_by_url_hash(self, url_hash: str) -> tuple[Resource, Path] | None:
         # 文件名即 _url_hash(url); 按前缀匹配定位, 无需在 DB 存 hash 列.
-        async with self._session() as session:
-            pattern = f"{url_hash[:2]}/{url_hash}.%"
-            result = await session.exec(select(Resource).where(col(Resource.file_path).like(pattern)))
-            record = result.first()
+        pattern = f"{url_hash[:2]}/{url_hash}.%"
+        stmt = select(Resource).where(col(Resource.file_path).like(pattern))
+        record = await self._heal_record(stmt)
         if record is None:
             return None
+        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径返回.
         full_path = self._base_dir / record.file_path
         if not full_path.exists():
             return None
-        await self._heal_record(record, full_path)
-        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径返回.
-        return record, self._base_dir / record.file_path
+        return record, full_path
 
     @staticmethod
     def url_hash(url: str) -> str:
