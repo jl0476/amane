@@ -254,28 +254,31 @@ class ResourceStore:
 
     async def resolve(self, url: str) -> Path | None:
         stmt = select(Resource).where(Resource.url == url)
-        # 自愈须在锁内的独立会话做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
-        record = await self._heal_record(stmt)
-        if record is None:
-            return None
+        # 取行、核对盘上字节、删记录整段持自愈锁: 与提交互斥, 中间不会插入一次提交落地.
+        # 少了这段互斥, 一次刚补回文件的提交留下的记录会被本调用删掉 —— 库里既无记录也无可用
+        # 缓存条目, 下次读会重下同一 locator, 而重下会撞 Resource.url 唯一约束.
+        async with self._heal_lock:
+            record = await self._heal_locked(stmt)
+            if record is None:
+                return None
 
-        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径核对盘上字节.
-        full_path = self._base_dir / record.file_path
-        if not full_path.exists():
-            # 文件丢失则删除记录.
-            logger.warning("resource file missing, invalidating record", url=url, path=str(full_path))
-            await self._invalidate_record(record.id)
-            return None
+            # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径核对盘上字节.
+            full_path = self._base_dir / record.file_path
+            if not full_path.exists():
+                # 文件丢失则删除记录.
+                logger.warning("resource file missing, invalidating record", url=url, path=str(full_path))
+                await self._delete_row(record.id)
+                return None
         return full_path
 
-    async def _invalidate_record(self, row_id: int | None) -> None:
+    async def _delete_row(self, row_id: int | None) -> None:
         """删除一行: 行不在时无须处理.
 
-        持自愈锁删除: 与提交互斥, 免得删掉一次刚落地并补回文件的提交留下的记录.
+        调用方须持自愈锁 —— 自愈锁非重入, 此处不再取.
         """
         if row_id is None:
             return
-        async with self._heal_lock, self._session() as session:
+        async with self._session() as session:
             row = await session.get(Resource, row_id)
             if row is None:
                 return

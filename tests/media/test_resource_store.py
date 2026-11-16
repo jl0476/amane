@@ -284,6 +284,63 @@ async def test_resolve_deletes_record_when_file_missing(resource_store: Resource
         assert result.first() is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_missing_file_does_not_delete_concurrent_commit(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """resolve 判文件缺失到删记录之间: 刚补回文件的提交留下的记录不得被删掉.
+
+    resolve 的取行、核对盘上字节、删记录整段持自愈锁, 与提交互斥: 中间不会插入一次提交落地.
+    少了这段互斥, 一次刚补回文件的提交留下的记录会被本调用删掉 —— 库里既无记录也无可用缓存条目,
+    下次读会重下同一 locator, 而重下会撞 ``Resource.url`` 唯一约束.
+    """
+    url = "https://s/missing-then-restored.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+
+    # 文件丢失: resolve 将判缺失.
+    cached_path.unlink()
+
+    # resolve 取行后暂停 (仍在自愈锁内), 提交此刻起只能等锁.
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    original_heal_locked = ResourceStore._heal_locked
+    seen = {"n": 0}
+
+    async def heal_locked_pause(self: ResourceStore, stmt: Any) -> Any:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            paused.set()
+            await proceed.wait()
+        return await original_heal_locked(self, stmt)
+
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_locked_pause)
+
+    new_bytes = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-restore.jpg"
+    temp.write_bytes(new_bytes)
+
+    resolve = asyncio.create_task(resource_store.resolve(url))
+    await paused.wait()  # resolve 持锁, 已取到行
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    await asyncio.sleep(0.1)
+    # 提交持同一把锁: resolve 未放锁前提交落不了地.
+    assert not commit.done()
+
+    proceed.set()
+    resolved = await resolve
+    await commit
+    monkeypatch.undo()
+
+    # 提交已补回文件并落库: 记录须在, 且与盘上字节一致.
+    assert resolved is not None or cached_path.exists()
+    assert cached_path.read_bytes() == new_bytes
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        assert row.content_hash == ResourceStore._hash_file(cached_path)
+
+
 class TestInternalUrl:
     @pytest.mark.parametrize(
         ("url", "expected"),
