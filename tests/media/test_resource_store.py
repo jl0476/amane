@@ -270,6 +270,20 @@ class TestGetByUrlHash:
         assert await resource_store.get_by_url_hash("deadbeefdeadbeef") is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_deletes_record_when_file_missing(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """盘上文件丢失时 resolve 须删掉记录: 留下无文件的记录会让后续读一直判缓存命中."""
+    url = "https://s/missing-file.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    cached_path.unlink()
+
+    assert await resource_store.resolve(url) is None
+
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        assert result.first() is None
+
+
 class TestInternalUrl:
     @pytest.mark.parametrize(
         ("url", "expected"),
@@ -1456,6 +1470,39 @@ async def test_untrusted_pending_marker_stripped(resource_store: ResourceStore, 
     assert record is not None
     assert record.meta is not None and "pending" not in record.meta
     assert record.content_hash == ResourceStore._hash_file(cached_path)  # 记录仍指盘上那份
+
+
+@pytest.mark.asyncio
+async def test_read_returns_record_when_disk_bytes_unreadable(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """盘上字节读不出时读路径仍须返回该行: 判成「行不存在」会让重下撞唯一约束.
+
+    自愈按盘上字节判定中间态, 字节读不出时无从判定, 但行本身还在库里. 读路径若把它当作
+    「行不存在」, 调用方会重下同一 locator, 落库时撞 ``Resource.url`` 唯一约束.
+    """
+    url = "https://s/unreadable-disk.jpg"
+    await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+
+    # 造一条待提交标记 (自愈会按盘上字节核对), 再让盘上字节读不出.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        row.meta = {**(row.meta or {}), "pending": "f" * 64}
+        session.add(row)
+        await session.commit()
+
+    def failing_hash(path: Path) -> str:
+        raise OSError("disk read failed")
+
+    monkeypatch.setattr(ResourceStore, "_hash_file", staticmethod(failing_hash))
+
+    record = await resource_store.get_by_url(url)
+    monkeypatch.undo()
+
+    assert record is not None  # 行存在即须返回, 不得判成行不存在
+    assert record.url == url
 
 
 @pytest.mark.asyncio

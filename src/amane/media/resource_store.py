@@ -269,10 +269,13 @@ class ResourceStore:
         return full_path
 
     async def _invalidate_record(self, row_id: int | None) -> None:
-        """删除一行: 行不在时无须处理."""
+        """删除一行: 行不在时无须处理.
+
+        持自愈锁删除: 与提交互斥, 免得删掉一次刚落地并补回文件的提交留下的记录.
+        """
         if row_id is None:
             return
-        async with self._session() as session:
+        async with self._heal_lock, self._session() as session:
             row = await session.get(Resource, row_id)
             if row is None:
                 return
@@ -334,7 +337,9 @@ class ResourceStore:
                 try:
                     disk_hash = self._hash_file(full_path)
                 except OSError:
-                    return None
+                    # 盘上字节读不出 (权限 / I/O 错误): 无从判定中间态, 原样返回该行.
+                    # 不返回 None —— 那会被读路径当作「行不存在」, 缓存未命中后重下会撞唯一约束.
+                    return row
                 rel_path = row.file_path
 
             if disk_hash == pending.content_hash:
