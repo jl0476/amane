@@ -66,7 +66,7 @@ Worker 替换不取消运行中任务: `_rebuild()` 构建新 worker 后旧 work
 
 名单只增不减: 历史库由数据迁移把全部 15 个模板字段写入名单 (迁移时刻的库行值就是生效输入, 全量保留才能保持落盘); 建库 / 改库请求中显式给出的模板字段由 `src/amane/api/routes/libraries.py` 按 `model_fields_set` 追加; 新建库名单为空, 全部跟随全局.
 
-payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo / metadata, scope_type 只收 library, 预留节 (download / watermark / provider) 与 watch_dir 的写操作 (PUT / DELETE) 一律 422; parser 不是 section, 识别词存 `parse_rules` 表. `metadata.crop_type` 是稀疏矩阵, 缺键回退策略定义在 `src/amane/media/crop.py::resolve_crop_plan` (config 默认与该回退须一致, 不然跨层漂移). 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
+payload 键缺失 = 继承, 键存在 = 覆盖; 禁止 JSON null, 可空字段的「显式取空」写作空对象 `{}`, 解析期映射为 `None` — 与 HotSettings 落盘 `exclude_none` 的空语义一致. section 白名单 (`SECTION_MODELS`) 只含 common / naming / nfo / metadata / watermark, scope_type 只收 library, 预留节 (download / provider) 与 watch_dir 的写操作 (PUT / DELETE) 一律 422; parser 不是 section, 识别词存 `parse_rules` 表. `metadata.crop_type` 是稀疏矩阵, 缺键回退策略定义在 `src/amane/media/crop.py::resolve_crop_plan` (config 默认与该回退须一致, 不然跨层漂移). 覆盖 CRUD 与生效配置端点位于 `src/amane/api/routes/libraries.py` (overrides / effective-config), 写入校验经 `validate_override_payload`.
 
 ## 配置项增补规范
 
@@ -126,4 +126,4 @@ Face 裁剪的检测与裁剪必须读同一份源: 两者之间源被换新时,
 
 ## `watermark` (Hot)
 
-只在 ORGANIZE 落盘封面时绘制, 不修改 Resource; 片库 CSS overlay 不读 `enabled`. 角标高度 = 图高 × `scale` (不按宽、不按 PNG 原图像素); `corners` 是 `x-frozen-keys` 五类到角位的映射, 值可取四角或 `auto` (stack 下解析为左上), 同角按中字 / 无码 / 破解 / 流出 / 分辨率向内叠. PNG 覆盖查找链见 `src/amane/media/watermarks/__init__.py::load_stamp`: `custom_folder` 非 None 时完全替代 (仅该目录与内置包); 否则 `style` ≠ default 走 `{data_dir}/watermarks/{style}/`, default 走旧位置 `{data_dir}/watermarks/{stem}.png`, style ≠ default 不回退旧位置.
+只在 ORGANIZE 落盘封面时绘制, 不修改 Resource; 片库 CSS overlay 不读 `enabled`. 支持库级覆盖: 任务入口经 `resolve_effective_config` 合成后随 `EffectiveOrganizeConfig` 下传 `src/amane/handlers/file.py::_place_library_images`, 未注入时回全局. 角标高度 = 图高 × `scale` (不按宽、不按 PNG 原图像素); `corners` 是 `x-frozen-keys` 五类到角位的映射, 值可取四角或 `auto` (stack 下解析为左上), 同角按中字 / 无码 / 破解 / 流出 / 分辨率向内叠. PNG 覆盖查找链见 `src/amane/media/watermarks/__init__.py::load_stamp`: `custom_folder` 非 None 时完全替代 (仅该目录与内置包); 否则 `style` ≠ default 走 `{data_dir}/watermarks/{style}/`, default 走旧位置 `{data_dir}/watermarks/{stem}.png`, style ≠ default 不回退旧位置.

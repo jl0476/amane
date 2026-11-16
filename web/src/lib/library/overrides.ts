@@ -15,6 +15,7 @@ export const OVERRIDE_SECTIONS = exhaustiveTuple<OverrideSection>()(
   "naming",
   "nfo",
   "metadata",
+  "watermark",
 );
 
 /** Deep equality for config values (primitives, arrays, plain objects). */

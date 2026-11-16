@@ -812,6 +812,17 @@
         "label": "Watermark size",
         "description": "Fraction of the image height"
       },
+      "kinds": {
+        "label": "Watermark kinds",
+        "description": "Disabled kinds get no stamp; missing kinds default to on",
+        "options": {
+          "subtitle": "Subtitle",
+          "uncensored": "Uncensored",
+          "cracked": "Cracked",
+          "leaked": "Leaked",
+          "definition": "Resolution"
+        }
+      },
       "corners": {
         "label": "Watermark position",
         "description": "Multiple in the same corner stack in order: subtitle → uncensored → cracked → leaked → resolution",
@@ -827,9 +838,42 @@
             "top_left": "Top left",
             "top_right": "Top right",
             "bottom_left": "Bottom left",
-            "bottom_right": "Bottom right"
+            "bottom_right": "Bottom right",
+            "auto": "Auto"
           }
         }
+      },
+      "layout": {
+        "label": "Layout",
+        "description": "stack stacks stamps inward in the same corner; clockwise rotates corners in phase order",
+        "options": {
+          "stack": "Stack",
+          "clockwise": "Clockwise"
+        }
+      },
+      "offset_x": {
+        "label": "Horizontal offset",
+        "description": "Pixels shifted inward from the automatic padding (left corners rightward, right corners leftward)"
+      },
+      "offset_y": {
+        "label": "Vertical offset",
+        "description": "Pixels shifted downward from the automatic padding (bottom corners upward)"
+      },
+      "gap": {
+        "label": "Same-corner gap",
+        "description": "Pixel gap between adjacent stamps in one corner; empty for automatic derivation"
+      },
+      "start": {
+        "label": "Rotation start corner",
+        "description": "Start corner index for clockwise (0 top-left / 1 top-right / 2 bottom-right / 3 bottom-left); ignored by stack"
+      },
+      "style": {
+        "label": "Style name",
+        "description": "Non-default styles use the {style} subdirectory of the watermark dir; default uses the legacy location"
+      },
+      "custom_folder": {
+        "label": "Custom watermark folder",
+        "description": "When set, fully replaces watermark dir lookup: only this folder and the builtin pack participate"
       }
     },
     "actor_scraping": {

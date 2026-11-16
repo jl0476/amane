@@ -131,7 +131,7 @@ async def resolve_effective_config(
     library: Library,
     payload: OrganizePayload,
 ) -> EffectiveOrganizeConfig:
-    """四层合成 common / naming / nfo / metadata; 第 4 层只读 payload.explicit_fields 列出的字段.
+    """四层合成 common / naming / nfo / metadata / watermark; 第 4 层只读 payload.explicit_fields 列出的字段.
 
     explicit_fields 是入队前持久化的用户显式字段名单 (JSON 往返后 ``model_fields_set`` 不可靠).
     名单与 payload 字段集及非 None 值取交集后才进入合成层: 带外写入的畸形名单 (未知键或 None 值)
@@ -151,11 +151,6 @@ async def resolve_effective_config(
     nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
     metadata_cfg = await resolver.resolve(MetadataConfig, scope=library, library=library)
     watermark_cfg = await resolver.resolve(WatermarkConfig, scope=library, library=library)
-    # watermark 覆盖节未注册 (任务 6 激活): resolver 对未注册节不挂全局层, 上面返回全默认,
-    # 直接采用会丢全局水印配置 (零回归红线). 未注册期间回退全局值; 注册后 resolve 首层即
-    # 全局值 (model_fields_set 恒非空), 该分支失效, 可随任务 6 移除.
-    if not watermark_cfg.model_fields_set:
-        watermark_cfg = config.watermark
     return EffectiveOrganizeConfig(
         naming=naming,
         common=common,
@@ -646,6 +641,7 @@ def _place_library_images(
 
     ``poster_local`` 由整理期重选 (_prepare_poster_product) 预先准备, 本函数不访问 Resource store;
     兜底裁剪策略取 ``metadata_cfg`` (整理链上游显式传递), None 时回全局 ``config.metadata``.
+    水印配置取 ``watermark_cfg`` (库级生效配置), None 时回全局 ``config.watermark``.
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
     水印只作用于本轮写出的图, 跳过的既有图不重编码; 分派按 ``watermark_cfg.targets`` (规格 §3.4),
