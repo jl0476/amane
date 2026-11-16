@@ -1071,7 +1071,7 @@ export const putLibraryOverride = <ThrowOnError extends boolean = false>(options
 /**
  * Get Effective Config
  *
- * common / naming / nfo / metadata 四节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层).
+ * common / naming / nfo / metadata / watermark 五节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层).
  */
 export const getEffectiveConfig = <ThrowOnError extends boolean = false>(options: Options<GetEffectiveConfigData, ThrowOnError>): RequestResult<GetEffectiveConfigResponses, GetEffectiveConfigErrors, ThrowOnError> => (options.client ?? client).get<GetEffectiveConfigResponses, GetEffectiveConfigErrors, ThrowOnError>({ url: '/api/libraries/{library_id}/effective-config', ...options });
 

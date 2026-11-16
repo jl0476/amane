@@ -106,6 +106,7 @@ class EffectiveOrganizeConfig:
     common: OrganizeCommonConfig
     nfo_options: NfoOptions
     metadata: MetadataConfig
+    watermark: WatermarkConfig
 
 
 type PosterOrigin = Literal["user", "reselect"]
@@ -130,7 +131,7 @@ async def resolve_effective_config(
     library: Library,
     payload: OrganizePayload,
 ) -> EffectiveOrganizeConfig:
-    """四层合成 common / naming / nfo / metadata; 第 4 层只读 payload.explicit_fields 列出的字段.
+    """四层合成 common / naming / nfo / metadata / watermark; 第 4 层只读 payload.explicit_fields 列出的字段.
 
     explicit_fields 是入队前持久化的用户显式字段名单 (JSON 往返后 ``model_fields_set`` 不可靠).
     名单与 payload 字段集及非 None 值取交集后才进入合成层: 带外写入的畸形名单 (未知键或 None 值)
@@ -149,8 +150,13 @@ async def resolve_effective_config(
     common = await resolver.resolve(OrganizeCommonConfig, scope=library, library=library)
     nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
     metadata_cfg = await resolver.resolve(MetadataConfig, scope=library, library=library)
+    watermark_cfg = await resolver.resolve(WatermarkConfig, scope=library, library=library)
     return EffectiveOrganizeConfig(
-        naming=naming, common=common, nfo_options=NfoOptions(**nfo.model_dump()), metadata=metadata_cfg
+        naming=naming,
+        common=common,
+        nfo_options=NfoOptions(**nfo.model_dump()),
+        metadata=metadata_cfg,
+        watermark=watermark_cfg,
     )
 
 
@@ -173,6 +179,7 @@ async def execute_file_operations(
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     repo: Repository | None = None,
@@ -270,6 +277,7 @@ async def execute_file_operations(
             naming=naming,
             overwrite_image=overwrite_image,
             metadata_cfg=metadata_cfg,
+            watermark_cfg=watermark_cfg,
             prepared_poster=prepared_poster,
         )
 
@@ -383,6 +391,7 @@ async def apply_file_operations(
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     task_id: int | None = None,
@@ -391,8 +400,8 @@ async def apply_file_operations(
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
     Library 由 MediaFile.library_id 派生.
 
-    ``naming`` / ``nfo_options`` / ``metadata_cfg`` / 覆写开关是任务入口解析好的生效配置, 原样下传,
-    不在此回读库行. ``rules`` 是该库的识别词集 (调用方注入).
+    ``naming`` / ``nfo_options`` / ``metadata_cfg`` / ``watermark_cfg`` / 覆写开关是任务入口解析好的
+    生效配置, 原样下传, 不在此回读库行. ``rules`` 是该库的识别词集 (调用方注入).
     """
     if media_file_id is None:
         return None
@@ -437,6 +446,7 @@ async def apply_file_operations(
         naming=naming,
         nfo_options=nfo_options,
         metadata_cfg=metadata_cfg,
+        watermark_cfg=watermark_cfg,
         overwrite_video=overwrite_video,
         overwrite_image=overwrite_image,
         repo=repo,
@@ -620,12 +630,14 @@ def _place_library_images(
     file_info: FileInfo | None = None,
     content_type: ContentType,
     watermark_dir: Path | None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_image: bool = True,
 ) -> int:
     """复制封面 / 海报 / 预告片 / extrafanart 到库路径, 返回因目标已有产物而跳过的张数.
 
     ``poster_local`` 由整理期重选 (_prepare_poster_product) 预先准备, 本函数不访问 Resource store;
     兜底裁剪策略取 ``metadata_cfg`` (整理链上游显式传递), None 时回全局 ``config.metadata``.
+    水印配置取 ``watermark_cfg`` (库级生效配置), None 时回全局 ``config.watermark``.
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
     水印只作用于本轮写出的图, 跳过的既有图不重编码.
@@ -700,7 +712,7 @@ def _place_library_images(
 
     # 叠加水印 (thumb / poster); 跳过的产物不重写, 水印也随之不动.
     # overwrite_image=True 时保持对既有图叠印: 覆盖写路径的产物也算本轮写的.
-    wm = config.watermark if config is not None else WatermarkConfig()
+    wm = watermark_cfg if watermark_cfg is not None else (config.watermark if config is not None else WatermarkConfig())
     if wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
         if (thumb_written or overwrite_image) and paths.thumb.exists():
@@ -908,6 +920,7 @@ async def _download_images_via_store(
     naming: NamingConfig | None = None,
     overwrite_image: bool = True,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     prepared_poster: PreparedPoster | None = None,
 ) -> int:
     """优先用 Resource 已有文件; 缺失则现场 acquire. 返回因目标已有图片而跳过的张数.
@@ -985,6 +998,7 @@ async def _download_images_via_store(
         file_info=file_info,
         content_type=content_type,
         watermark_dir=watermark_dir,
+        watermark_cfg=watermark_cfg,
         overwrite_image=overwrite_image,
     )
 
@@ -1159,6 +1173,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     naming=effective.naming,
                     nfo_options=effective.nfo_options,
                     metadata_cfg=effective.metadata,
+                    watermark_cfg=effective.watermark,
                     overwrite_video=effective.common.overwrite_video,
                     overwrite_image=effective.common.overwrite_image,
                     task_id=task_id,

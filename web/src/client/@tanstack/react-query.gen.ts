@@ -2585,7 +2585,7 @@ export const getEffectiveConfigQueryKey = (options: Options<GetEffectiveConfigDa
 /**
  * Get Effective Config
  *
- * common / naming / nfo / metadata 四节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层).
+ * common / naming / nfo / metadata / watermark 五节的四层合成结果 (全局 → 库行名单内 → 覆盖表; 无任务层).
  */
 export const getEffectiveConfigOptions = (options: Options<GetEffectiveConfigData>) => queryOptions<GetEffectiveConfigResponse, GetEffectiveConfigError, GetEffectiveConfigResponse, ReturnType<typeof getEffectiveConfigQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {

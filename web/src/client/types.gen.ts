@@ -1232,13 +1232,14 @@ export type DownloadableResource = 'thumb' | 'poster' | 'extrafanart' | 'trailer
 /**
  * EffectiveConfigResponse
  *
- * GET /api/libraries/{id}/effective-config: 四节四层合成的生效配置 (无任务层).
+ * GET /api/libraries/{id}/effective-config: 五节四层合成的生效配置 (无任务层).
  */
 export type EffectiveConfigResponse = {
     common: OrganizeCommonConfig;
     naming: NamingConfig;
     nfo: NfoConfig;
     metadata: MetadataConfig;
+    watermark: WatermarkConfig;
 };
 
 /**
@@ -6377,19 +6378,53 @@ export type WatermarkConfig = {
      */
     scale?: number;
     /**
+     * Kinds
+     */
+    kinds?: {
+        [key in WatermarkKind]?: boolean;
+    };
+    /**
      * Corners
      */
     corners?: {
         [key in WatermarkKind]?: WatermarkCorner;
     };
+    /**
+     * Layout
+     */
+    layout?: 'stack' | 'clockwise';
+    /**
+     * Offset X
+     */
+    offset_x?: number;
+    /**
+     * Offset Y
+     */
+    offset_y?: number;
+    /**
+     * Gap
+     */
+    gap?: number | null;
+    /**
+     * Start
+     */
+    start?: number;
+    /**
+     * Style
+     */
+    style?: string;
+    /**
+     * Custom Folder
+     */
+    custom_folder?: string | null;
 };
 
 /**
  * WatermarkCorner
  *
- * 角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐.
+ * 角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐; AUTO 不指定角位, 由布局层解析 (stack 下 = TOP_LEFT).
  */
-export type WatermarkCorner = 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+export type WatermarkCorner = 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right' | 'auto';
 
 /**
  * WatermarkKind

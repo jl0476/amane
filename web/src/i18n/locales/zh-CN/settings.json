@@ -812,6 +812,17 @@
         "label": "水印大小",
         "description": "相对图片高度的比例"
       },
+      "kinds": {
+        "label": "水印类别",
+        "description": "关闭的类别不取章; 缺失的类别默认开启",
+        "options": {
+          "subtitle": "中字",
+          "uncensored": "无码",
+          "cracked": "破解",
+          "leaked": "流出",
+          "definition": "分辨率"
+        }
+      },
       "corners": {
         "label": "水印位置",
         "description": "同角多个按中字 → 无码 → 破解 → 流出 → 分辨率顺序叠加",
@@ -827,9 +838,42 @@
             "top_left": "左上",
             "top_right": "右上",
             "bottom_left": "左下",
-            "bottom_right": "右下"
+            "bottom_right": "右下",
+            "auto": "自动"
           }
         }
+      },
+      "layout": {
+        "label": "布局模式",
+        "description": "stack 同角向内叠; clockwise 按相位顺序顺时针轮转四角",
+        "options": {
+          "stack": "同角叠放",
+          "clockwise": "顺时针轮转"
+        }
+      },
+      "offset_x": {
+        "label": "横向偏移",
+        "description": "在自动边距基础上向内收的像素 (左角向右, 右角向左)"
+      },
+      "offset_y": {
+        "label": "纵向偏移",
+        "description": "在自动边距基础上向下推的像素 (下角向上)"
+      },
+      "gap": {
+        "label": "同角间距",
+        "description": "同角相邻两枚的像素间距; 留空自动推导"
+      },
+      "start": {
+        "label": "轮转起始角",
+        "description": "clockwise 的起始角序号 (0 左上 / 1 右上 / 2 右下 / 3 左下); stack 忽略"
+      },
+      "style": {
+        "label": "样式名",
+        "description": "非 default 走水印目录的 {style} 子目录, default 走旧位置"
+      },
+      "custom_folder": {
+        "label": "自定义水印目录",
+        "description": "设置后完全替代水印目录查找, 仅该目录与内置包参与"
       }
     },
     "actor_scraping": {

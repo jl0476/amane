@@ -4,20 +4,29 @@
 effective-config 是四层合成的只读投影 (无任务层), 断言以全局默认与覆盖语义为准.
 """
 
+import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from httpx2 import ASGITransport, AsyncClient
+from PIL import Image
 
 from amane.api.routes import API_PREFIX
-from amane.config import HotSettings, MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig
+from amane.config import HotSettings, MetadataConfig, NamingConfig, NfoConfig, OrganizeCommonConfig, WatermarkConfig
+from amane.db.models import MediaFileStatus
 from tests.api.conftest import make_app
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from amane.db.repository import Repository
 
 _GLOBAL_NAMING = NamingConfig().model_dump(mode="json")
 _GLOBAL_COMMON = OrganizeCommonConfig().model_dump(mode="json")
 _GLOBAL_NFO = NfoConfig().model_dump(mode="json")
 _GLOBAL_METADATA = MetadataConfig().model_dump(mode="json")
+_GLOBAL_WATERMARK = WatermarkConfig().model_dump(mode="json")
 
 
 async def _create_library(client: AsyncClient, safe_path: Path, name: str, **extra: Any) -> int:
@@ -59,6 +68,7 @@ async def test_overrides_crud_roundtrip(client: AsyncClient, safe_path: Path) ->
         "naming": _GLOBAL_NAMING,
         "nfo": _GLOBAL_NFO,
         "metadata": _GLOBAL_METADATA,
+        "watermark": _GLOBAL_WATERMARK,
     }
 
 
@@ -78,9 +88,9 @@ async def test_put_empty_payload_replaces_whole_section(client: AsyncClient, saf
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("section", ["download", "watermark", "provider", "parser"])
+@pytest.mark.parametrize("section", ["download", "provider", "parser"])
 async def test_write_rejects_reserved_sections(client: AsyncClient, safe_path: Path, section: str) -> None:
-    """白名单外的预留 section 一律 422 (PUT 与 DELETE 同判), 不落库; metadata 已激活不再在此列."""
+    """白名单外的预留 section 一律 422 (PUT 与 DELETE 同判), 不落库; metadata / watermark 已激活不再在此列."""
     library_id = await _create_library(client, safe_path, "reserved")
     base = f"libraries/{library_id}/overrides"
 
@@ -91,14 +101,16 @@ async def test_write_rejects_reserved_sections(client: AsyncClient, safe_path: P
 
 
 @pytest.mark.asyncio
-async def test_reserved_list_no_longer_contains_metadata(client: AsyncClient, safe_path: Path) -> None:
-    """metadata 节已激活: PUT/DELETE 不再 422; download / watermark / provider 仍预留."""
-    library_id = await _create_library(client, safe_path, "reserved-metadata")
+async def test_watermark_no_longer_reserved(client: AsyncClient, safe_path: Path) -> None:
+    """metadata / watermark 节已激活: PUT/DELETE 不再 422; download / provider 仍预留."""
+    library_id = await _create_library(client, safe_path, "reserved-activated")
     base = f"libraries/{library_id}/overrides"
 
     assert (await client.put(f"{base}/metadata", json={"crop_aspect": "emby"})).status_code == 200
     assert (await client.delete(f"{base}/metadata")).status_code == 204
-    for section in ("download", "watermark", "provider"):
+    assert (await client.put(f"{base}/watermark", json={"scale": 0.1})).status_code == 200
+    assert (await client.delete(f"{base}/watermark")).status_code == 204
+    for section in ("download", "provider"):
         assert (await client.put(f"{base}/{section}", json={"overwrite_video": True})).status_code == 422
         assert (await client.delete(f"{base}/{section}")).status_code == 422
     assert (await client.get(f"libraries/{library_id}/overrides")).json() == {"overrides": {}}
@@ -128,6 +140,51 @@ async def test_metadata_section_put_effective_delete_roundtrip(client: AsyncClie
     assert (await client.delete(f"{base}/metadata")).status_code == 204
     effective = await client.get(f"libraries/{library_id}/effective-config")
     assert effective.json()["metadata"] == _GLOBAL_METADATA
+
+
+# --- 任务 6: watermark 节激活 (规格 §3.1) ---
+
+
+@pytest.mark.asyncio
+async def test_watermark_unknown_key_rejected(client: AsyncClient, safe_path: Path) -> None:
+    """合法 payload 先落库, 随后未知键 422 且不落库 (extra=forbid 经覆盖写路径同样生效)."""
+    library_id = await _create_library(client, safe_path, "wm-unknown")
+    base = f"libraries/{library_id}/overrides"
+
+    assert (await client.put(f"{base}/watermark", json={"scale": 0.1})).status_code == 200
+
+    for payload in ({"no_such_field": True}, {"kinds": {"subtitle": None}}):
+        resp = await client.put(f"{base}/watermark", json=payload)
+        assert resp.status_code == 422, payload
+    listed = await client.get(f"libraries/{library_id}/overrides")
+    assert listed.json() == {"overrides": {"watermark": {"scale": 0.1}}}
+
+
+@pytest.mark.asyncio
+async def test_watermark_section_roundtrip(client: AsyncClient, safe_path: Path) -> None:
+    """PUT watermark → effective-config 含 watermark 节 (稀疏键与全局默认逐键合并) → DELETE 回到继承."""
+    library_id = await _create_library(client, safe_path, "wm-roundtrip")
+    base = f"libraries/{library_id}/overrides"
+    payload = {"enabled": True, "corners": {"subtitle": "auto"}, "layout": "clockwise", "start": 2}
+
+    put = await client.put(f"{base}/watermark", json=payload)
+    assert put.status_code == 200
+    assert put.json() == {"section": "watermark", "payload": payload}
+
+    effective = await client.get(f"libraries/{library_id}/effective-config")
+    assert effective.status_code == 200
+    watermark = effective.json()["watermark"]
+    assert watermark["enabled"] is True
+    assert watermark["layout"] == "clockwise"
+    assert watermark["start"] == 2
+    # 稀疏 corners 覆盖: 覆盖键与全局默认矩阵逐键合并, 未覆盖键继承
+    assert watermark["corners"]["subtitle"] == "auto"
+    assert watermark["corners"]["definition"] == "top_left"
+    assert watermark["scale"] == _GLOBAL_WATERMARK["scale"]
+
+    assert (await client.delete(f"{base}/watermark")).status_code == 204
+    effective = await client.get(f"libraries/{library_id}/effective-config")
+    assert effective.json()["watermark"] == _GLOBAL_WATERMARK
 
 
 @pytest.mark.asyncio
@@ -385,3 +442,96 @@ async def test_schema_endpoint_lists_syntaxes(client: AsyncClient) -> None:
         assert syntaxes["jinja"]["default_optional_templates"][field] == default
     # 视频模板之外的字段与顶层 optional_defaults 同名同集
     assert set(syntaxes["native"]["default_optional_templates"]) == set(body["optional_defaults"])
+
+
+# --- 任务 6: watermark 覆盖驱动的端到端整理 (规格 §3.1, 与覆盖节激活同点验收) ---
+
+
+class _StampImageClient:
+    """只为 ResourceStore 供图: 下载写出真实 JPEG, 其余方法用不到."""
+
+    async def download(self, url: str, dest: Path, **kwargs: object) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (200, 280), "blue").save(dest)
+        return True
+
+    async def resolve_final_url(self, url: str, **kwargs: object) -> str:
+        return url
+
+
+def _stamp_red(pixel: tuple[int, ...]) -> bool:
+    """采样点落在红章上 (蓝底图的红章呈高 R 低 B)."""
+    return pixel[0] > 180 and pixel[2] < 80
+
+
+async def _wait_task_done(client: AsyncClient, task_id: int) -> None:
+    for _ in range(100):
+        check = await client.get(f"tasks/{task_id}")
+        if check.json()["status"] in ("done", "failed"):
+            break
+        await asyncio.sleep(0.1)
+    assert check.json()["status"] == "done"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_watermark_library_override_end_to_end(
+    app: FastAPI, client: AsyncClient, repo: Repository, safe_path: Path, tmp_path: Path
+) -> None:
+    """库级 watermark 覆盖驱动整理产物: 全局水印关闭, 两库不同覆盖 → 整理后两库产物互不相同且都带章."""
+    watermark_dir = tmp_path / "data" / "watermarks"
+    watermark_dir.mkdir(parents=True)
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(watermark_dir / "uncensored.png")
+
+    source = await app.state.runtime.resource_store.acquire("https://s/wm-e2e.jpg", _StampImageClient())
+    assert source is not None
+    source_bytes = source.read_bytes()
+
+    meta = await repo.upsert_metadata(number="HEYZO-1234", thumb_urls=["https://s/wm-e2e.jpg"])
+    assert meta.id is not None
+
+    setups = [
+        ("wm-a", {"enabled": True, "scale": 0.2}),
+        ("wm-b", {"enabled": True, "scale": 0.08, "corners": {"uncensored": "bottom_right"}}),
+    ]
+    roots: list[Path] = []
+    lib_ids: list[int] = []
+    for name, override in setups:
+        lib_id = await _create_library(
+            client, safe_path, name, video_template="{number}.{ext}", copy_resources=["thumb"]
+        )
+        src = safe_path / name / "incoming" / "HEYZO-1234.mp4"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"video")
+        await repo.create_media_file(
+            lib_id, path=str(src), number="HEYZO-1234", status=MediaFileStatus.SCRAPED, metadata_id=meta.id
+        )
+        assert (await client.put(f"libraries/{lib_id}/overrides/watermark", json=override)).status_code == 200
+        roots.append(safe_path / name)
+        lib_ids.append(lib_id)
+
+    for lib_id in lib_ids:
+        submitted = await client.post("tasks", json={"type": "organize", "library_id": lib_id})
+        assert submitted.status_code == 202
+        await _wait_task_done(client, int(submitted.json()["id"]))
+
+    products: list[bytes] = []
+    for root in roots:
+        thumb = root / "thumb.jpg"
+        assert thumb.exists()
+        product = thumb.read_bytes()
+        products.append(product)
+        assert product != source_bytes
+
+    # 同一源图, 不同覆盖 → 产物互不相同
+    assert products[0] != products[1]
+
+    # scale=0.2 章印左上 (60,20), scale=0.08 + corners=bottom_right 章印右下 (170,265):
+    # 各库仅在自己覆盖指定的角位出现红章, 空间上互证 scale 与 corners 都随覆盖生效.
+    with Image.open(roots[0] / "thumb.jpg") as painted:
+        painter = painted.convert("RGB")
+        assert _stamp_red(painter.getpixel((60, 20)))
+        assert not _stamp_red(painter.getpixel((170, 265)))
+    with Image.open(roots[1] / "thumb.jpg") as painted:
+        painter = painted.convert("RGB")
+        assert not _stamp_red(painter.getpixel((60, 20)))
+        assert _stamp_red(painter.getpixel((170, 265)))

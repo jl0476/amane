@@ -2079,6 +2079,9 @@ export const EffectiveConfigResponseSchema = {
         },
         metadata: {
             $ref: '#/components/schemas/MetadataConfig'
+        },
+        watermark: {
+            $ref: '#/components/schemas/WatermarkConfig'
         }
     },
     type: 'object',
@@ -2086,10 +2089,11 @@ export const EffectiveConfigResponseSchema = {
         'common',
         'naming',
         'nfo',
-        'metadata'
+        'metadata',
+        'watermark'
     ],
     title: 'EffectiveConfigResponse',
-    description: 'GET /api/libraries/{id}/effective-config: 四节四层合成的生效配置 (无任务层).'
+    description: 'GET /api/libraries/{id}/effective-config: 五节四层合成的生效配置 (无任务层).'
 } as const;
 
 export const EmbeddingKindSchema = {
@@ -3741,13 +3745,25 @@ export const HotSettingsSchema = {
             default: {
                 enabled: false,
                 scale: 0.08,
+                kinds: {
+                    cracked: true,
+                    definition: true,
+                    leaked: true,
+                    subtitle: true,
+                    uncensored: true
+                },
                 corners: {
                     cracked: 'top_left',
                     definition: 'top_left',
                     leaked: 'top_left',
                     subtitle: 'top_left',
                     uncensored: 'top_left'
-                }
+                },
+                layout: 'stack',
+                offset_x: 0,
+                offset_y: 0,
+                start: 0,
+                style: 'default'
             }
         },
         llm: {
@@ -11790,6 +11806,17 @@ export const WatermarkConfigSchema = {
             title: 'Scale',
             default: 0.08
         },
+        kinds: {
+            additionalProperties: {
+                type: 'boolean'
+            },
+            propertyNames: {
+                $ref: '#/components/schemas/WatermarkKind'
+            },
+            type: 'object',
+            title: 'Kinds',
+            'x-frozen-keys': true
+        },
         corners: {
             additionalProperties: {
                 $ref: '#/components/schemas/WatermarkCorner'
@@ -11800,8 +11827,67 @@ export const WatermarkConfigSchema = {
             type: 'object',
             title: 'Corners',
             'x-frozen-keys': true
+        },
+        layout: {
+            type: 'string',
+            enum: [
+                'stack',
+                'clockwise'
+            ],
+            title: 'Layout',
+            default: 'stack'
+        },
+        offset_x: {
+            type: 'integer',
+            minimum: 0,
+            title: 'Offset X',
+            default: 0
+        },
+        offset_y: {
+            type: 'integer',
+            minimum: 0,
+            title: 'Offset Y',
+            default: 0
+        },
+        gap: {
+            anyOf: [
+                {
+                    type: 'integer',
+                    minimum: 0
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Gap'
+        },
+        start: {
+            type: 'integer',
+            maximum: 3,
+            minimum: 0,
+            title: 'Start',
+            default: 0
+        },
+        style: {
+            type: 'string',
+            pattern: '^[a-z0-9_-]+$',
+            title: 'Style',
+            default: 'default'
+        },
+        custom_folder: {
+            anyOf: [
+                {
+                    type: 'string',
+                    format: 'path'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Custom Folder'
         }
     },
+    additionalProperties: false,
     type: 'object',
     title: 'WatermarkConfig'
 } as const;
@@ -11812,10 +11898,11 @@ export const WatermarkCornerSchema = {
         'top_left',
         'top_right',
         'bottom_left',
-        'bottom_right'
+        'bottom_right',
+        'auto'
     ],
     title: 'WatermarkCorner',
-    description: '角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐.'
+    description: '角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐; AUTO 不指定角位, 由布局层解析 (stack 下 = TOP_LEFT).'
 } as const;
 
 export const WatermarkKindSchema = {

@@ -12,7 +12,7 @@ import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from amane.config import HotSettings, MetadataConfig, NamingConfig
+from amane.config import HotSettings, MetadataConfig, NamingConfig, WatermarkConfig
 from amane.config.overrides import (
     SECTION_MODELS,
     ConfigResolver,
@@ -22,7 +22,7 @@ from amane.config.overrides import (
 from amane.db.engine import get_session
 from amane.db.models import CONFIG_OVERRIDE_SCOPE_LIBRARY, ConfigOverride, Library
 from amane.db.repository import Repository
-from amane.enums import CropStrategy
+from amane.enums import CropStrategy, WatermarkCorner, WatermarkKind
 from amane.library import DEFAULT_SUBTITLE_EXTENSIONS
 from amane.media.crop import resolve_crop_plan
 from amane.parsing import ContentType
@@ -93,8 +93,8 @@ async def resolver_env(tmp_path: Path) -> AsyncIterator[tuple[Repository, AsyncE
 
 
 def test_section_whitelist_matches_implemented_sections():
-    """白名单恰好是四个已实现 section, 且模型都拒绝未知键."""
-    assert set(SECTION_MODELS) == {"common", "naming", "nfo", "metadata"}
+    """白名单恰好是五个已实现 section, 且模型都拒绝未知键."""
+    assert set(SECTION_MODELS) == {"common", "naming", "nfo", "metadata", "watermark"}
     for model in SECTION_MODELS.values():
         assert model.model_config.get("extra") == "forbid"
 
@@ -292,9 +292,9 @@ async def test_four_layer_synthesis(
     assert _projection(resolved) == expected
 
 
-@pytest.mark.parametrize("section", ["download", "watermark", "provider", "parser"])
+@pytest.mark.parametrize("section", ["download", "provider", "parser"])
 def test_validate_rejects_reserved_sections(section: str) -> None:
-    """白名单外的预留 section 一律拒绝; parser 不是 section."""
+    """白名单外的预留 section 一律拒绝; parser 不是 section; watermark 已激活不再在此列."""
     with pytest.raises(ValueError, match="未实现"):
         validate_override_payload(section, {})
 
@@ -382,3 +382,63 @@ def test_metadata_default_matrix_matches_crop_fallback(content_type: ContentType
         candidate_size=None,
     )
     assert with_config.requested == fallback.requested
+
+
+# --- 任务 6: watermark 节激活 (规格 §3.1) ---
+
+
+def test_watermark_config_defaults() -> None:
+    """WatermarkConfig 默认值矩阵 (规格 §3.1 表): 全部默认组合起来 = 现状行为."""
+    config = WatermarkConfig()
+    assert config.enabled is False
+    assert config.scale == 0.08
+    assert config.kinds == dict.fromkeys(WatermarkKind, True)
+    assert config.corners == dict.fromkeys(WatermarkKind, WatermarkCorner.TOP_LEFT)
+    assert config.layout == "stack"
+    assert config.offset_x == 0
+    assert config.offset_y == 0
+    assert config.gap is None
+    assert config.start == 0
+    assert config.style == "default"
+    assert config.custom_folder is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"kinds": {"subtitle": "maybe"}}, id="kinds_non_bool_string"),
+        pytest.param({"kinds": {"subtitle": [True]}}, id="kinds_non_bool_container"),
+        pytest.param({"corners": {"subtitle": "middle"}}, id="corners_unknown_corner"),
+        pytest.param({"layout": "diagonal"}, id="layout_unknown_literal"),
+        pytest.param({"scale": 0.5}, id="scale_out_of_range"),
+        pytest.param({"offset_x": -1}, id="offset_x_negative"),
+        pytest.param({"offset_y": -1}, id="offset_y_negative"),
+        pytest.param({"gap": -1}, id="gap_negative"),
+        pytest.param({"start": 4}, id="start_out_of_range"),
+        pytest.param({"style": "Big Style"}, id="style_charset_rejected"),
+        pytest.param({"enabled": None}, id="null_rejected"),
+        pytest.param({"targets": ["bogus"]}, id="targets_unknown_member_rejected"),
+        pytest.param({"no_such_field": True}, id="unknown_key"),
+    ],
+)
+def test_watermark_invalid_payload_rejected(payload: dict[str, Any]) -> None:
+    """kinds/corners/layout/offset/gap/start/style/custom_folder 越界与未知键全部拒; targets 现阶段是未知键."""
+    with pytest.raises(ValidationError):
+        validate_override_payload("watermark", payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"scale": 0.1}, id="plain_field"),
+        pytest.param({"kinds": {"subtitle": False}}, id="sparse_kinds_keys_completed"),
+        pytest.param({"corners": {"definition": "auto"}}, id="corners_auto_value"),
+        pytest.param({"corners": {"gone": "top_left"}}, id="unknown_kind_key_dropped"),
+        pytest.param({"gap": 0, "start": 3}, id="boundary_zero_gap_and_top_start"),
+        pytest.param({"custom_folder": "/tmp/stamps"}, id="custom_folder_path"),
+        pytest.param({}, id="empty_payload_inherits"),
+    ],
+)
+def test_watermark_payload_accepts_valid(payload: dict[str, Any]) -> None:
+    """合法 payload 通过: 稀疏 kinds/corners 键补齐, auto 角位与边界值放行."""
+    validate_override_payload("watermark", payload)
