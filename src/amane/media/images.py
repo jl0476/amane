@@ -303,9 +303,11 @@ def apply_cover_watermarks(
     watermark_dir: Path | None = None,
     scale: float = _DEFAULT_SCALE,
     corners: Mapping[WatermarkKind, WatermarkCorner] | None = None,
+    kinds: Mapping[WatermarkKind, bool] | None = None,
 ) -> bool:
     """叠到库路径封面/海报. 无标记或无图则不动. 不修改 Resource 原图."""
     stems = _stamp_stems(has_subtitle=has_subtitle, uncensored=uncensored, mosaic=mosaic, definition=definition)
+    stems = [stem for stem in stems if kinds is None or kinds.get(_stamp_kind(stem), True)]
     if not stems:
         return False
     try:
@@ -346,6 +348,7 @@ def apply_cover_watermarks_from_info(
     watermark_dir: Path | None = None,
     scale: float = _DEFAULT_SCALE,
     corners: Mapping[WatermarkKind, WatermarkCorner] | None = None,
+    kinds: Mapping[WatermarkKind, bool] | None = None,
 ) -> bool:
     """``content_type`` 是条目类型: 无码章与列表角标同用 ``parsing/file_info.py::shows_uncensored`` 的口径."""
     return apply_cover_watermarks(
@@ -358,4 +361,5 @@ def apply_cover_watermarks_from_info(
         watermark_dir=watermark_dir,
         scale=scale,
         corners=corners,
+        kinds=kinds,
     )

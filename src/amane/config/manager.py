@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 import tomli_w
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -518,15 +518,28 @@ def _reorder_route(eligible: list[Any], order: list[str]) -> list[str]:
 
 
 class WatermarkConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = False
     scale: float = Field(default=0.08, ge=0.03, le=0.25)
     """角标高度 = 图高 × scale."""
+
+    kinds: dict[WatermarkKind, bool] = Field(
+        default_factory=lambda: dict.fromkeys(WatermarkKind, True),
+        json_schema_extra={"x-frozen-keys": True},
+    )
+    """逐类开关; false 的相位不取章. 缺 key 补 true; 未知 key 丢弃."""
 
     corners: dict[WatermarkKind, WatermarkCorner] = Field(
         default_factory=lambda: dict.fromkeys(WatermarkKind, WatermarkCorner.TOP_LEFT),
         json_schema_extra={"x-frozen-keys": True},
     )
     """缺 key 补左上; 未知 key 丢弃."""
+
+    @field_validator("kinds", mode="before")
+    @classmethod
+    def _complete_kinds(cls, v: Any) -> Any:
+        return _complete_frozen_dict(v, dict.fromkeys(WatermarkKind, True))
 
     @field_validator("corners", mode="before")
     @classmethod
