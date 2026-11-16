@@ -551,6 +551,9 @@ class WatermarkConfig(BaseModel):
     start: int = Field(default=0, ge=0, le=3)
     """clockwise 的起始角序号 (0=左上 1=右上 2=右下 3=左下); stack 忽略."""
 
+    targets: frozenset[Literal["thumb", "poster", "fanart"]] = frozenset({"thumb", "poster"})
+    """作用目标集合; 集合外的产物不叠水印. fanart 指剧照 (extrafanart) 逐张, 不含 fanart.jpg 副本."""
+
     style: str = Field(default="default", pattern=r"^[a-z0-9_-]+$")
     """样式名: 非 default 走 `{data_dir}/watermarks/{style}/` 子目录, default 走旧位置 (media/watermarks::load_stamp 查找链)."""
 

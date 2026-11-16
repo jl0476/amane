@@ -26,10 +26,6 @@ DEFAULT_STYLE = "default"
 _STEM_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 
-def user_watermark_dir(data_dir: Path) -> Path:
-    return data_dir / USER_DIRNAME
-
-
 def is_stamp_stem(stem: str) -> bool:
     return bool(stem) and all(ch in _STEM_CHARS for ch in stem)
 

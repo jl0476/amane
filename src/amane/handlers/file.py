@@ -106,6 +106,7 @@ class EffectiveOrganizeConfig:
     common: OrganizeCommonConfig
     nfo_options: NfoOptions
     metadata: MetadataConfig
+    watermark: WatermarkConfig
 
 
 type PosterOrigin = Literal["user", "reselect"]
@@ -149,8 +150,18 @@ async def resolve_effective_config(
     common = await resolver.resolve(OrganizeCommonConfig, scope=library, library=library)
     nfo = await resolver.resolve(NfoConfig, scope=library, library=library)
     metadata_cfg = await resolver.resolve(MetadataConfig, scope=library, library=library)
+    watermark_cfg = await resolver.resolve(WatermarkConfig, scope=library, library=library)
+    # watermark 覆盖节未注册 (任务 6 激活): resolver 对未注册节不挂全局层, 上面返回全默认,
+    # 直接采用会丢全局水印配置 (零回归红线). 未注册期间回退全局值; 注册后 resolve 首层即
+    # 全局值 (model_fields_set 恒非空), 该分支失效, 可随任务 6 移除.
+    if not watermark_cfg.model_fields_set:
+        watermark_cfg = config.watermark
     return EffectiveOrganizeConfig(
-        naming=naming, common=common, nfo_options=NfoOptions(**nfo.model_dump()), metadata=metadata_cfg
+        naming=naming,
+        common=common,
+        nfo_options=NfoOptions(**nfo.model_dump()),
+        metadata=metadata_cfg,
+        watermark=watermark_cfg,
     )
 
 
@@ -168,11 +179,12 @@ async def execute_file_operations(
     config: HotSettings | None = None,
     library: Library | None = None,
     safe_dirs: Sequence[Path] | None = (),
-    watermark_dir: Path | None = None,
+    data_dir: Path | None = None,
     actor_genders: dict[str, ActorGender] | None = None,
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     repo: Repository | None = None,
@@ -184,6 +196,9 @@ async def execute_file_operations(
     ``naming`` 非 None 时模板类字段 (strm 正文 / 链接模式 / 字幕扩展名 / 剧照文件名) 取自生效配置,
     不回读库行 (规格 3.1.3). ``metadata_cfg`` 是任务入口解析的库级生效 MetadataConfig, 驱动整理期
     海报重选 (规格 §3.6); None 时本轮不重选, poster 走现状物化图复制路径.
+    ``watermark_cfg`` 是任务入口解析的库级生效 WatermarkConfig, 驱动水印分派 (规格 §3.4);
+    None 时回全局 ``config.watermark``. ``data_dir`` 是水印查找链的 data_dir 根 (章图第 2/3 级),
+    与 ``watermark_cfg.custom_folder`` 双来源 (media/images.py::apply_cover_watermarks).
     ``overwrite_video`` / ``overwrite_image`` 是覆写策略开关:
     ``overwrite_video`` 接入 OCCUPIED 分派 (False 维持冲突跳过, True 进入覆写协议, 规格 3.4.2),
     ``overwrite_image`` 接入图片写入. 覆写协议需要 ``repo`` (journal 与索引接管) 与 ``library``
@@ -265,11 +280,12 @@ async def execute_file_operations(
             kinds,
             file_info=file_info,
             content_type=metadata.content_type,
-            watermark_dir=watermark_dir,
+            data_dir=data_dir,
             library=library,
             naming=naming,
             overwrite_image=overwrite_image,
             metadata_cfg=metadata_cfg,
+            watermark_cfg=watermark_cfg,
             prepared_poster=prepared_poster,
         )
 
@@ -379,10 +395,11 @@ async def apply_file_operations(
     copy_resources: Sequence[DownloadableResource] | None = None,
     web_client: WebClient | None = None,
     safe_dirs: Sequence[Path] | None = (),
-    watermark_dir: Path | None = None,
+    data_dir: Path | None = None,
     naming: NamingConfig | None = None,
     nfo_options: NfoOptions | None = None,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_video: bool = False,
     overwrite_image: bool = True,
     task_id: int | None = None,
@@ -391,8 +408,9 @@ async def apply_file_operations(
     """缺少 media_file_id 或对应记录时返回 None (跳过, 不视为失败).
     Library 由 MediaFile.library_id 派生.
 
-    ``naming`` / ``nfo_options`` / ``metadata_cfg`` / 覆写开关是任务入口解析好的生效配置, 原样下传,
-    不在此回读库行. ``rules`` 是该库的识别词集 (调用方注入).
+    ``naming`` / ``nfo_options`` / ``metadata_cfg`` / ``watermark_cfg`` / 覆写开关是任务入口解析好的
+    生效配置, 原样下传, 不在此回读库行. ``data_dir`` 是水印查找链的 data_dir 根 (应用数据目录).
+    ``rules`` 是该库的识别词集 (调用方注入).
     """
     if media_file_id is None:
         return None
@@ -432,11 +450,12 @@ async def apply_file_operations(
         config=config,
         library=library,
         safe_dirs=safe_dirs,
-        watermark_dir=watermark_dir,
+        data_dir=data_dir,
         actor_genders=actor_genders,
         naming=naming,
         nfo_options=nfo_options,
         metadata_cfg=metadata_cfg,
+        watermark_cfg=watermark_cfg,
         overwrite_video=overwrite_video,
         overwrite_image=overwrite_image,
         repo=repo,
@@ -619,7 +638,8 @@ def _place_library_images(
     metadata_cfg: MetadataConfig | None = None,
     file_info: FileInfo | None = None,
     content_type: ContentType,
-    watermark_dir: Path | None,
+    data_dir: Path | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     overwrite_image: bool = True,
 ) -> int:
     """复制封面 / 海报 / 预告片 / extrafanart 到库路径, 返回因目标已有产物而跳过的张数.
@@ -628,7 +648,9 @@ def _place_library_images(
     兜底裁剪策略取 ``metadata_cfg`` (整理链上游显式传递), None 时回全局 ``config.metadata``.
     ``overwrite_image=False`` 时目标已有图片则整块跳过 (fanart 与 thumb 同源, 随 thumb 一同跳过),
     记入 skipped; True (默认) 维持覆盖写, 不判断目标上是否已有产物.
-    水印只作用于本轮写出的图, 跳过的既有图不重编码.
+    水印只作用于本轮写出的图, 跳过的既有图不重编码; 分派按 ``watermark_cfg.targets`` (规格 §3.4),
+    None 时回全局 ``config.watermark``. ``data_dir`` 与 ``watermark_cfg.custom_folder`` 是章图查找链
+    的双来源 (media/images.py::apply_cover_watermarks).
     """
     skipped = 0
     thumb_written = False
@@ -689,6 +711,7 @@ def _place_library_images(
             paths.trailer.parent.mkdir(parents=True, exist_ok=True)
             _copy_into_library(trailer_local, paths.trailer)
 
+    extrafanart_written: list[Path] = []
     if extrafanart_targets and DownloadableResource.extrafanart in kinds:
         paths.extrafanart_dir.mkdir(parents=True, exist_ok=True)
         for name, p in extrafanart_targets:
@@ -697,32 +720,42 @@ def _place_library_images(
                 skipped += 1
                 continue
             _copy_into_library(p, target)
+            extrafanart_written.append(target)
 
-    # 叠加水印 (thumb / poster); 跳过的产物不重写, 水印也随之不动.
+    # 叠加水印 (targets 分派: thumb / poster / fanart); 跳过的产物不重写, 水印也随之不动.
     # overwrite_image=True 时保持对既有图叠印: 覆盖写路径的产物也算本轮写的.
-    wm = config.watermark if config is not None else WatermarkConfig()
+    # 剧照逐张叠印, 单张失败由 apply_cover_watermarks 内记 warning 后返回, 不中断其余张.
+    wm = watermark_cfg if watermark_cfg is not None else (config.watermark if config is not None else WatermarkConfig())
     if wm.enabled and file_info is not None:
         jpeg_quality = config.scraping.jpeg_quality if config is not None else 95
-        if (thumb_written or overwrite_image) and paths.thumb.exists():
+        info = file_info
+
+        def stamp(path: Path) -> None:
             apply_cover_watermarks_from_info(
-                paths.thumb,
-                file_info,
+                path,
+                info,
                 content_type,
                 jpeg_quality=jpeg_quality,
-                watermark_dir=watermark_dir,
+                data_dir=data_dir,
+                custom_folder=wm.custom_folder,
+                style=wm.style,
                 scale=wm.scale,
                 corners=wm.corners,
+                kinds=wm.kinds,
+                layout=wm.layout,
+                offset_x=wm.offset_x,
+                offset_y=wm.offset_y,
+                gap=wm.gap,
+                start=wm.start,
             )
-        if (poster_written or overwrite_image) and paths.poster.exists():
-            apply_cover_watermarks_from_info(
-                paths.poster,
-                file_info,
-                content_type,
-                jpeg_quality=jpeg_quality,
-                watermark_dir=watermark_dir,
-                scale=wm.scale,
-                corners=wm.corners,
-            )
+
+        if "thumb" in wm.targets and (thumb_written or overwrite_image) and paths.thumb.exists():
+            stamp(paths.thumb)
+        if "poster" in wm.targets and (poster_written or overwrite_image) and paths.poster.exists():
+            stamp(paths.poster)
+        if "fanart" in wm.targets:
+            for target in extrafanart_written:
+                stamp(target)
     return skipped
 
 
@@ -903,11 +936,12 @@ async def _download_images_via_store(
     kinds: set[DownloadableResource],
     file_info: FileInfo | None,
     content_type: ContentType,
-    watermark_dir: Path | None = None,
+    data_dir: Path | None = None,
     library: Library | None = None,
     naming: NamingConfig | None = None,
     overwrite_image: bool = True,
     metadata_cfg: MetadataConfig | None = None,
+    watermark_cfg: WatermarkConfig | None = None,
     prepared_poster: PreparedPoster | None = None,
 ) -> int:
     """优先用 Resource 已有文件; 缺失则现场 acquire. 返回因目标已有图片而跳过的张数.
@@ -920,6 +954,7 @@ async def _download_images_via_store(
     剧照是多个不同图片的集合, 择优语义不适用: 站点优先级不变, 每站取该站全部候选.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     幕后图候选按库开关追加到剧照集合 (规格 §3.5), 经同一命名模板接续编号.
+    ``data_dir`` 与 ``watermark_cfg`` 原样下传 _place_library_images (水印双来源与分派, 规格 §3.4).
     """
     quality = metadata_cfg is not None and metadata_cfg.thumb_download_strategy == "quality"
 
@@ -984,7 +1019,8 @@ async def _download_images_via_store(
         metadata_cfg=metadata_cfg,
         file_info=file_info,
         content_type=content_type,
-        watermark_dir=watermark_dir,
+        data_dir=data_dir,
+        watermark_cfg=watermark_cfg,
         overwrite_image=overwrite_image,
     )
 
@@ -1007,7 +1043,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         resource_store: ResourceStore,
         web_client: WebClient | None = None,
         safe_dirs: Sequence[Path] | None = (),
-        watermark_dir: Path | None = None,
+        data_dir: Path | None = None,
         *,
         library_locks: LibraryTaskLocks | None = None,
         parse_rules: ParseRuleProvider | None = None,
@@ -1018,7 +1054,7 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
         self._web_client = web_client
         self._resource_store = resource_store
         self._safe_dirs = safe_dirs
-        self._watermark_dir = watermark_dir
+        self._data_dir = data_dir
         self._library_locks = library_locks if library_locks is not None else LibraryTaskLocks()
         self._parse_rules = parse_rules
 
@@ -1155,10 +1191,11 @@ class OrganizeHandler(TaskHandler[OrganizePayload, OrganizeResult]):
                     copy_resources=copy_resources,
                     web_client=self._web_client,
                     safe_dirs=self._safe_dirs,
-                    watermark_dir=self._watermark_dir,
+                    data_dir=self._data_dir,
                     naming=effective.naming,
                     nfo_options=effective.nfo_options,
                     metadata_cfg=effective.metadata,
+                    watermark_cfg=effective.watermark,
                     overwrite_video=effective.common.overwrite_video,
                     overwrite_image=effective.common.overwrite_image,
                     task_id=task_id,

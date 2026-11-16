@@ -392,11 +392,10 @@ class TestCoverWatermarks:
     def test_user_stamp_overrides_builtin(self, tmp_path: Path):
         dest = tmp_path / "cover.jpg"
         Image.new("RGB", (200, 280), "blue").save(dest)
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+        (tmp_path / "watermarks").mkdir()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
         assert apply_cover_watermarks(
-            dest, has_subtitle=True, uncensored=False, mosaic=None, definition=None, watermark_dir=user_dir
+            dest, has_subtitle=True, uncensored=False, mosaic=None, definition=None, data_dir=tmp_path
         )
         with Image.open(dest) as img:
             pixel = img.convert("RGB").getpixel((6, 6))
@@ -407,11 +406,10 @@ class TestCoverWatermarks:
         dest = tmp_path / "cover.jpg"
         Image.new("RGB", (200, 280), "blue").save(dest)
         before = dest.read_bytes()
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        (user_dir / "subtitle.png").write_bytes(b"not a png")
+        (tmp_path / "watermarks").mkdir()
+        (tmp_path / "watermarks" / "subtitle.png").write_bytes(b"not a png")
         assert apply_cover_watermarks(
-            dest, has_subtitle=True, uncensored=False, mosaic=None, definition=None, watermark_dir=user_dir
+            dest, has_subtitle=True, uncensored=False, mosaic=None, definition=None, data_dir=tmp_path
         )
         assert dest.read_bytes() != before
 
@@ -425,9 +423,8 @@ class TestCoverWatermarks:
 
     def test_scale_shrinks_stamp(self, tmp_path: Path):
         """图高 × scale 为角标高度; 大 scale 覆盖到的像素在小 scale 下仍是底色."""
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+        (tmp_path / "watermarks").mkdir()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
         def paint(scale: float) -> Path:
             dest = tmp_path / f"cover-{scale}.jpg"
@@ -438,7 +435,7 @@ class TestCoverWatermarks:
                 uncensored=False,
                 mosaic=None,
                 definition=None,
-                watermark_dir=user_dir,
+                data_dir=tmp_path,
                 scale=scale,
             )
             return dest
@@ -454,9 +451,8 @@ class TestCoverWatermarks:
 
     def test_same_height_keeps_stamp_size(self, tmp_path: Path):
         """等高校宽不同的封面/海报, 角标高度相同."""
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+        (tmp_path / "watermarks").mkdir()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
         def paint(name: str, size: tuple[int, int]) -> Image.Image:
             dest = tmp_path / f"{name}.jpg"
@@ -467,7 +463,7 @@ class TestCoverWatermarks:
                 uncensored=False,
                 mosaic=None,
                 definition=None,
-                watermark_dir=user_dir,
+                data_dir=tmp_path,
                 scale=0.2,
             )
             return Image.open(dest).convert("RGB")
@@ -487,16 +483,15 @@ class TestCoverWatermarks:
     def test_corner_top_right(self, tmp_path: Path):
         dest = tmp_path / "cover.jpg"
         Image.new("RGB", (400, 300), "blue").save(dest)
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+        (tmp_path / "watermarks").mkdir()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
         apply_cover_watermarks(
             dest,
             has_subtitle=True,
             uncensored=False,
             mosaic=None,
             definition=None,
-            watermark_dir=user_dir,
+            data_dir=tmp_path,
             scale=0.2,
             corners={WatermarkKind.SUBTITLE: WatermarkCorner.TOP_RIGHT},
         )
@@ -511,16 +506,15 @@ class TestCoverWatermarks:
     def test_corner_bottom_left(self, tmp_path: Path):
         dest = tmp_path / "cover.jpg"
         Image.new("RGB", (400, 300), "blue").save(dest)
-        user_dir = tmp_path / "watermarks"
-        user_dir.mkdir()
-        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+        (tmp_path / "watermarks").mkdir()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
         apply_cover_watermarks(
             dest,
             has_subtitle=True,
             uncensored=False,
             mosaic=None,
             definition=None,
-            watermark_dir=user_dir,
+            data_dir=tmp_path,
             scale=0.2,
             corners={WatermarkKind.SUBTITLE: WatermarkCorner.BOTTOM_LEFT},
         )

@@ -812,7 +812,6 @@ async def test_custom_skip_ratio_respected_both_entries(resource_store: Resource
         config=organize_cfg,
         file_info=None,
         content_type=ContentType.CENSORED,
-        watermark_dir=None,
     )
     assert Image.open(cropped.poster).size == (376, 538)
 
@@ -827,7 +826,6 @@ async def test_custom_skip_ratio_respected_both_entries(resource_store: Resource
         config=organize_cfg,
         file_info=None,
         content_type=ContentType.FC2,
-        watermark_dir=None,
     )
     assert not skipped.poster.exists()
 

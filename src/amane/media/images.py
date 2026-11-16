@@ -9,7 +9,7 @@ from PIL import Image, ImageOps
 
 from ..enums import WatermarkCorner, WatermarkKind
 from ..parsing import ContentType, FileInfo, Mosaic, shows_uncensored
-from .watermarks import DEFAULT_STYLE, USER_DIRNAME, load_stamp
+from .watermarks import DEFAULT_STYLE, load_stamp
 
 logger = structlog.get_logger()
 
@@ -337,26 +337,6 @@ def _paste_stamps(
                 y += stamp_h + gap
 
 
-def _resolve_watermark_roots(
-    watermark_dir: Path | None,
-    data_dir: Path | None,
-    custom_folder: Path | None,
-    style: str,
-) -> tuple[Path | None, Path | None, str]:
-    """旧单参数 ``watermark_dir`` → data_dir 根的过渡换算 (任务 5 随 file.py 接线退役).
-
-    ``watermark_dir`` 的旧语义是 watermarks 根目录本身 (``user_watermark_dir`` 产物),
-    故换算取其父目录; 目录名不是 USER_DIRNAME 时拒绝 — 静默换算会找错位置.
-    """
-    if watermark_dir is None:
-        return data_dir, custom_folder, style
-    if data_dir is not None or custom_folder is not None:
-        raise ValueError("watermark_dir 是退役中的过渡别名, 不能与 data_dir / custom_folder 同传")
-    if watermark_dir.name != USER_DIRNAME:
-        raise ValueError(f"watermark_dir 必须是 {USER_DIRNAME} 目录 (user_watermark_dir 产物): {watermark_dir}")
-    return watermark_dir.parent, custom_folder, style
-
-
 def apply_cover_watermarks(
     path: Path,
     *,
@@ -365,7 +345,6 @@ def apply_cover_watermarks(
     mosaic: Mosaic | None,
     definition: str | None,
     jpeg_quality: int = _DEFAULT_JPEG_QUALITY,
-    watermark_dir: Path | None = None,
     data_dir: Path | None = None,
     custom_folder: Path | None = None,
     style: str = DEFAULT_STYLE,
@@ -382,10 +361,9 @@ def apply_cover_watermarks(
 
     章图按 media/watermarks::load_stamp 的查找链解析: ``custom_folder`` 非 None 时完全替代
     data_dir 系各级; ``style`` ≠ default 走样式子目录, default 走旧位置.
-    ``watermark_dir`` 是退役中的过渡别名 (任务 5 接线生效配置后移除): 语义为 watermarks
-    根目录本身, 换算成 ``data_dir = watermark_dir.parent``.
+    两个路径来源由调用方从生效配置解析: ``data_dir`` 是应用数据目录根, ``custom_folder`` /
+    ``style`` 取自 WatermarkConfig.
     """
-    data_dir, custom_folder, style = _resolve_watermark_roots(watermark_dir, data_dir, custom_folder, style)
     stems = _stamp_stems(has_subtitle=has_subtitle, uncensored=uncensored, mosaic=mosaic, definition=definition)
     stems = [stem for stem in stems if kinds is None or kinds.get(_stamp_kind(stem), True)]
     if not stems:
@@ -436,7 +414,6 @@ def apply_cover_watermarks_from_info(
     content_type: ContentType,
     *,
     jpeg_quality: int = _DEFAULT_JPEG_QUALITY,
-    watermark_dir: Path | None = None,
     data_dir: Path | None = None,
     custom_folder: Path | None = None,
     style: str = DEFAULT_STYLE,
@@ -457,7 +434,6 @@ def apply_cover_watermarks_from_info(
         mosaic=info.mosaic,
         definition=info.definition,
         jpeg_quality=jpeg_quality,
-        watermark_dir=watermark_dir,
         data_dir=data_dir,
         custom_folder=custom_folder,
         style=style,

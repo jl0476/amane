@@ -37,7 +37,6 @@ from ..handlers import (
 )
 from ..library import InventoryStore
 from ..llm import TranslationCache, TranslationCoalescer, build_translator
-from ..media.watermarks import user_watermark_dir
 from ..net.browser import BrowserPool
 from ..net.http import RateLimiters, WebClient, site_proxy_overrides
 from ..organize import recover_organize_journals
@@ -622,7 +621,7 @@ def build_handlers(
             resource_store,
             web_client,
             safe_dirs,
-            watermark_dir=user_watermark_dir(state_dir) if state_dir is not None else None,
+            data_dir=state_dir,
             library_locks=library_locks,
             parse_rules=parse_rules,
         ),

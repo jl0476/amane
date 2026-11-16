@@ -3,9 +3,9 @@
 import io
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import pytest
@@ -21,6 +21,7 @@ from amane.db.repo_types import WriteMode
 from amane.enums import CropStrategy, DownloadableResource
 from amane.handlers import OrganizeHandler, OrganizePayload, ScrapeHandler, ScrapePayload
 from amane.handlers.file import (
+    FileOperationsResult,
     _acquire_candidates_local,
     _copy_into_library,
     execute_file_operations,
@@ -298,9 +299,8 @@ async def test_watermark_respects_enabled(resource_store: ResourceStore, tmp_pat
     src.parent.mkdir(parents=True)
     src.write_bytes(b"movie")
 
-    user_dir = tmp_path / "watermarks"
-    user_dir.mkdir()
-    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+    (tmp_path / "watermarks").mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
     mf = MediaFile(path=str(src), library_id=1)
     meta = Metadata(number="MIDV-123", thumb_urls=["https://s/t.jpg"])
@@ -314,7 +314,7 @@ async def test_watermark_respects_enabled(resource_store: ResourceStore, tmp_pat
         file_info=parse_file_info(src, has_external_subtitle=mf.has_external_subtitle),
         web_client=client,
         config=HotSettings(watermark=WatermarkConfig(enabled=enabled, scale=0.2)),
-        watermark_dir=user_dir,
+        data_dir=tmp_path,
     )
     assert result.outcome is PlaceOutcome.PLACED
     with Image.open(paths.thumb) as img:
@@ -334,9 +334,8 @@ async def test_watermark_from_external_subtitle(resource_store: ResourceStore, t
     src.parent.mkdir(parents=True)
     src.write_bytes(b"movie")
 
-    user_dir = tmp_path / "watermarks"
-    user_dir.mkdir()
-    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+    (tmp_path / "watermarks").mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
     mf = MediaFile(path=str(src), library_id=1, has_external_subtitle=True)
     meta = Metadata(number="MIDV-123", thumb_urls=["https://s/t.jpg"])
@@ -350,7 +349,7 @@ async def test_watermark_from_external_subtitle(resource_store: ResourceStore, t
         file_info=parse_file_info(src, has_external_subtitle=mf.has_external_subtitle),
         web_client=client,
         config=HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2)),
-        watermark_dir=user_dir,
+        data_dir=tmp_path,
     )
     assert result.outcome is PlaceOutcome.PLACED
     with Image.open(paths.thumb) as img:
@@ -1194,9 +1193,8 @@ async def test_watermark_leaves_skipped_images_untouched(
     src.parent.mkdir(parents=True)
     src.write_bytes(b"movie")
 
-    user_dir = tmp_path / "watermarks"
-    user_dir.mkdir()
-    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
+    (tmp_path / "watermarks").mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
     paths = _paths(tmp_path / "out")
     paths.thumb.parent.mkdir(parents=True, exist_ok=True)
@@ -1216,7 +1214,7 @@ async def test_watermark_leaves_skipped_images_untouched(
         file_info=parse_file_info(src, has_external_subtitle=mf.has_external_subtitle),
         web_client=client,
         config=HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2)),
-        watermark_dir=user_dir,
+        data_dir=tmp_path,
         overwrite_image=overwrite_image,
     )
 
@@ -1235,6 +1233,194 @@ async def test_watermark_leaves_skipped_images_untouched(
             assert image.read_bytes() == content
             assert image.stat().st_mtime_ns == mtime
             assert _pixel(image) == pixel
+
+
+# --- MDC P3 任务 5: 水印作用目标 (targets) 与库级生效配置传递 ---
+
+type WatermarkTarget = Literal["thumb", "poster", "fanart"]
+
+
+def _targets(*members: WatermarkTarget) -> frozenset[WatermarkTarget]:
+    return frozenset(members)
+
+
+class _GarbageImageClient(FakeClient):
+    """指定 URL 写非图片字节: 诱导单张剧照叠印失败."""
+
+    def __init__(self, garbage_urls: set[str]) -> None:
+        self._garbage_urls = garbage_urls
+
+    async def download(self, url: str, dest: Path, **kwargs) -> bool:
+        if url in self._garbage_urls:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"not-an-image")
+            return True
+        return await super().download(url, dest, **kwargs)
+
+
+def _assert_stamped(path: Path, stamped: bool) -> None:
+    """判定位 (20, 20) 落在 scale=0.2 的左上章面内: 红章为真, 蓝底为假."""
+    with Image.open(path) as img:
+        pixel = img.convert("RGB").getpixel((20, 20))
+    assert isinstance(pixel, tuple)
+    assert (pixel[0] > 180 and pixel[2] < 80) is stamped
+
+
+def _stamp_paths(tmp_path: Path, name: str = "lib") -> ResolvedPaths:
+    """带 context 的库路径 (extrafanart 文件名渲染需要); 产物落 {tmp_path}/{name}/MIDV-123/."""
+    root = tmp_path / name
+    root.mkdir(exist_ok=True)
+    lib = Library(name="t", path=str(root), video_template="{number}/{number}.{ext}")
+    return resolve_paths(lib, Metadata(number="MIDV-123"), ext="mp4", source_path=tmp_path / "src" / "MIDV-123-C.mp4")
+
+
+async def _stamp_organize(
+    tmp_path: Path,
+    resource_store: ResourceStore,
+    watermark_cfg: WatermarkConfig | None,
+    *,
+    extrafanart_urls: Sequence[str] = (),
+    paths: ResolvedPaths | None = None,
+    client: FakeClient | None = None,
+    config: HotSettings | None = None,
+    overwrite_image: bool = True,
+) -> tuple[FileOperationsResult, ResolvedPaths]:
+    """水印分派测试的公共整理路径: -C 源名 (中字相位) + data_dir 章图; watermark_cfg 直传入.
+
+    有码条目: poster 无候选时回退从 thumb 裁剪, 保证三个目标都有本轮产物.
+    """
+    src = tmp_path / "src" / "MIDV-123-C.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"movie")
+    (tmp_path / "watermarks").mkdir(exist_ok=True)
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
+
+    if paths is None:
+        paths = _stamp_paths(tmp_path)
+    meta = Metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        extrafanart_urls={"dmm": list(extrafanart_urls)},
+    )
+    result = await execute_file_operations(
+        media_file=MediaFile(path=str(src), library_id=1),
+        metadata=meta,
+        paths=paths,
+        move_mode=MoveMode.COPY,
+        resource_store=resource_store,
+        file_info=parse_file_info(src),
+        web_client=cast("WebClient", client if client is not None else FakeClient()),
+        config=config if config is not None else HotSettings(),
+        data_dir=tmp_path,
+        watermark_cfg=watermark_cfg,
+        overwrite_image=overwrite_image,
+    )
+    return result, paths
+
+
+@pytest.mark.asyncio
+async def test_targets_default_thumb_poster(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """默认 targets = {thumb, poster}: 封面与海报叠印, 剧照不叠 (兼容现状)."""
+    result, paths = await _stamp_organize(
+        tmp_path,
+        resource_store,
+        WatermarkConfig(enabled=True, scale=0.2),
+        extrafanart_urls=["https://s/e1.jpg", "https://s/e2.jpg"],
+    )
+    assert result.outcome is PlaceOutcome.PLACED
+    _assert_stamped(paths.thumb, True)
+    _assert_stamped(paths.poster, True)
+    for name in ("1.jpg", "2.jpg"):
+        _assert_stamped(paths.extrafanart_dir / name, False)
+
+
+@pytest.mark.asyncio
+async def test_targets_exclude_thumb(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """targets 不含 thumb: thumb 原样, poster 照叠."""
+    result, paths = await _stamp_organize(
+        tmp_path, resource_store, WatermarkConfig(enabled=True, scale=0.2, targets=_targets("poster"))
+    )
+    assert result.outcome is PlaceOutcome.PLACED
+    _assert_stamped(paths.thumb, False)
+    _assert_stamped(paths.poster, True)
+
+
+@pytest.mark.asyncio
+async def test_targets_fanart_stamps_all(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """targets 含 fanart: 剧照每张叠印, thumb / poster 照常."""
+    result, paths = await _stamp_organize(
+        tmp_path,
+        resource_store,
+        WatermarkConfig(enabled=True, scale=0.2, targets=_targets("thumb", "poster", "fanart")),
+        extrafanart_urls=["https://s/e1.jpg", "https://s/e2.jpg"],
+    )
+    assert result.outcome is PlaceOutcome.PLACED
+    _assert_stamped(paths.thumb, True)
+    _assert_stamped(paths.poster, True)
+    for name in ("1.jpg", "2.jpg"):
+        _assert_stamped(paths.extrafanart_dir / name, True)
+
+
+@pytest.mark.asyncio
+async def test_fanart_overwrite_false_skips(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """overwrite_image=False: 已有剧照跳过不叠 (字节原样), 本轮新增剧照照叠."""
+    paths = _stamp_paths(tmp_path)
+    paths.extrafanart_dir.mkdir(parents=True)
+    Image.new("RGB", (800, 538), "green").save(paths.extrafanart_dir / "1.jpg")
+    existing = paths.extrafanart_dir / "1.jpg"
+    before = existing.read_bytes()
+
+    result, paths = await _stamp_organize(
+        tmp_path,
+        resource_store,
+        WatermarkConfig(enabled=True, scale=0.2, targets=_targets("fanart")),
+        extrafanart_urls=["https://s/e1.jpg", "https://s/e2.jpg"],
+        paths=paths,
+        overwrite_image=False,
+    )
+    assert result.outcome is PlaceOutcome.PLACED
+    assert result.skipped_images == 1  # 仅已有 1.jpg; thumb / poster 本轮写出不计跳过
+    assert existing.read_bytes() == before
+    _assert_stamped(existing, False)
+    _assert_stamped(paths.extrafanart_dir / "2.jpg", True)
+
+
+@pytest.mark.asyncio
+async def test_fanart_stamp_failure_isolated(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """单张剧照叠印失败记 warning, 不中断其余张."""
+    with capture_logs() as logs:
+        result, paths = await _stamp_organize(
+            tmp_path,
+            resource_store,
+            WatermarkConfig(enabled=True, scale=0.2, targets=_targets("fanart")),
+            extrafanart_urls=["https://s/e1.jpg", "https://s/e2.jpg"],
+            client=_GarbageImageClient({"https://s/e1.jpg"}),
+        )
+    assert result.outcome is PlaceOutcome.PLACED
+    # 坏图已复制落盘但未被改写 (叠印失败保留原样), 其余张照叠.
+    assert (paths.extrafanart_dir / "1.jpg").read_bytes() == b"not-an-image"
+    _assert_stamped(paths.extrafanart_dir / "2.jpg", True)
+    failed = [log for log in logs if log["event"] == "cover watermark failed"]
+    assert any(str(log.get("path", "")).endswith("1.jpg") for log in failed)
+
+
+@pytest.mark.asyncio
+async def test_watermark_config_dispatch_changes_product(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """传入的 WatermarkConfig 是唯一取值来源: 直传值胜过全局层 (分派不经覆盖层)."""
+    _, paths_on = await _stamp_organize(
+        tmp_path, resource_store, WatermarkConfig(enabled=True, scale=0.2), paths=_stamp_paths(tmp_path, "lib-on")
+    )
+    _assert_stamped(paths_on.thumb, True)  # 全局水印关, 直传开 → 叠
+
+    _, paths_off = await _stamp_organize(
+        tmp_path,
+        resource_store,
+        WatermarkConfig(enabled=False),
+        paths=_stamp_paths(tmp_path, "lib-off"),
+        config=HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2)),
+    )
+    _assert_stamped(paths_off.thumb, False)  # 全局水印开, 直传关 → 不叠
 
 
 # --- 任务 27: MediaFile.link_path 持久化 ---

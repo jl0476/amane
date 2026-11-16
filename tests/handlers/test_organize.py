@@ -498,16 +498,15 @@ async def test_organize_writes_subtitle_tag_for_external_subtitle(
     assert source.id is not None
 
     paths_dir = lib_root / "Studio" / "MIDV-123"
-    watermark_dir = tmp_path / "watermarks"
-    watermark_dir.mkdir()
-    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(watermark_dir / "subtitle.png")
+    (tmp_path / "watermarks").mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "subtitle.png")
 
     config = HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2))
     with patch(
         "amane.handlers.file.apply_cover_watermarks_from_info", wraps=apply_cover_watermarks_from_info
     ) as watermark:
         org = OrganizeHandler(
-            repo, config, resource_store, web_client=cast("WebClient", _FakeImageClient()), watermark_dir=watermark_dir
+            repo, config, resource_store, web_client=cast("WebClient", _FakeImageClient()), data_dir=tmp_path
         )
         result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
     assert result.success is True
@@ -554,13 +553,12 @@ async def test_organize_stamps_uncensored_from_entry_type(
     )
     assert source.id is not None
 
-    watermark_dir = tmp_path / "watermarks"
-    watermark_dir.mkdir()
-    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(watermark_dir / "uncensored.png")
+    (tmp_path / "watermarks").mkdir()
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(tmp_path / "watermarks" / "uncensored.png")
 
     config = HotSettings(watermark=WatermarkConfig(enabled=True, scale=0.2))
     org = OrganizeHandler(
-        repo, config, resource_store, web_client=cast("WebClient", _FakeImageClient()), watermark_dir=watermark_dir
+        repo, config, resource_store, web_client=cast("WebClient", _FakeImageClient()), data_dir=tmp_path
     )
     result = await org.handle(OrganizePayload(library_id=lib.id, path=str(src_dir)))
     assert result.success is True
