@@ -1,5 +1,6 @@
 """测试裁剪策略中立面: 策略解析、默认态判定、cv2 可用性访问器与 Face 检测执行 (检测先于键构造)."""
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
+from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
@@ -577,6 +579,166 @@ async def test_runtime_detection_exception_degrades_right_key(
         assert len(producer_calls) == 1
         assert len(_degrade_warnings(logs)) == 1
     assert await resource_store.get_by_url(derived_locator(url, "crop", "face:legacy:0.7000")) is None
+
+
+# ---------------------------------------------------------------- 源快照一致性 (IMPL-07)
+
+
+async def _seed_source(store: Any, url: str, content: bytes) -> Path:
+    """把源内容预置为 store 的缓存条目: 记录 + 本地文件 (源版本核对的依据)."""
+    client = AsyncMock()
+    client.resolve_final_url = AsyncMock(return_value=url)
+
+    async def download(_url: str, dest: Path, **kwargs: object) -> bool:
+        dest.write_bytes(content)
+        return True
+
+    client.download = AsyncMock(side_effect=download)
+    path = await store.acquire(url, client)
+    assert path is not None
+    return path
+
+
+@pytest.mark.asyncio
+async def test_face_crop_uses_single_source_snapshot(resource_store: Any, tmp_path: Path) -> None:
+    """检测之后源被换新: 产物与源版本标记须对应同一份源内容 (IMPL-07).
+
+    检测按源 A 固化人脸框, 换新后盘上是源 B. 产物若按 A 的框裁 B, 记下的源版本却是 B, 两者混用;
+    正确的产物是「按 A 的框裁 A」且版本标记记 A —— 检测、裁剪、版本标记三者须同源于一份快照.
+    """
+    plan = _face_plan()
+    src_url = "https://img.example.com/covers/snapshot.jpg"
+
+    # 源 A: 含人脸样例 (pristine 副本用于推导期望裁剪窗与期望版本).
+    pristine_a = tmp_path / "pristine_a.jpg"
+    shutil.copyfile(_FACE_FIXTURE, pristine_a)
+    # 源 B: 人脸位置与 A 明显不同, 框套错时产物像素随之改变.
+    source_b = tmp_path / "source_b.jpg"
+    canvas = Image.new("RGB", (512, 512), (30, 30, 36))
+    canvas.paste(Image.open(_FACE_FIXTURE).convert("RGB").crop((148, 123, 414, 450)).resize((90, 110)), (30, 330))
+    canvas.save(source_b, format="JPEG", quality=95)
+
+    # 源缓存条目: 检测与裁剪面对的是它.
+    source_a = await _seed_source(resource_store, src_url, pristine_a.read_bytes())
+
+    # 检测后把源换新: 检测读到 A, 盘上此后是 B.
+    real_detect = crop_mod._detect_faces
+
+    def detect_then_swap(path: Path) -> tuple[tuple[int, int], list[tuple[int, int, int, int]]]:
+        result = real_detect(path)
+        shutil.copyfile(source_b, source_a)  # 源换新
+        return result
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(crop_mod, "_detect_faces", detect_then_swap)
+    try:
+        res = await _acquire_face(resource_store, source_a, src_url, plan)
+    finally:
+        monkeypatch.undo()
+
+    assert res is not None
+    assert res.meta is not None
+    assert res.meta["src"] == src_url
+    assert source_a.read_bytes() == source_b.read_bytes()  # 前置: 源确实被换新
+
+    # 产物像素: 须与「检测时的源 A 按检测框裁剪」一致, 不得是 A 的框套在 B 上.
+    product = resource_store.full_path(res)
+    expected_window = _expected_window(_oracle_faces(pristine_a), (512, 512), plan.ratio)
+    _assert_same_window(product, pristine_a, expected_window)
+
+    # 版本标记须描述产物实际面对的那份源 (A), 不是换新后的 B.
+    assert res.meta.get("srcv") is not None
+    assert res.meta["srcv"] == hashlib.sha256(pristine_a.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_face_crop_snapshot_copy_failure_yields_no_product(
+    resource_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """源快照复制失败: 本轮不产出派生图, 不得产出「检测框套在别的源上」的错配产物.
+
+    快照复制失败时若降级为「直接用源文件」, 检测与裁剪之间源被换新就会混用两个版本: 产物是
+    源 A 的检测框套在源 B 上, 而源版本标记记的是当时盘上的那份 —— 错配产物配一个看似自洽的
+    版本标记. 磁盘瞬时错误时宁可这一轮不出派生图, 也不出可能错配的图.
+    """
+    plan = _face_plan()
+    src_url = "https://img.example.com/covers/snapshot-copy-fail.jpg"
+
+    # 源 A: 含人脸样例 (pristine 副本用于推导期望裁剪窗与期望版本).
+    pristine_a = tmp_path / "pristine_a.jpg"
+    shutil.copyfile(_FACE_FIXTURE, pristine_a)
+    # 源 B: 人脸位置与 A 明显不同, 框套错时产物像素随之改变.
+    source_b = tmp_path / "source_b.jpg"
+    canvas = Image.new("RGB", (512, 512), (30, 30, 36))
+    canvas.paste(Image.open(_FACE_FIXTURE).convert("RGB").crop((148, 123, 414, 450)).resize((90, 110)), (30, 330))
+    canvas.save(source_b, format="JPEG", quality=95)
+
+    # 源缓存条目: 检测与裁剪面对的是它.
+    source_a = await _seed_source(resource_store, src_url, pristine_a.read_bytes())
+
+    # 快照复制失败: 复制抛 OSError, 副本不存在.
+    def failing_copyfile(src: str, dst: str, **kwargs: object) -> str:
+        raise OSError("snapshot copy failed")
+
+    monkeypatch.setattr(shutil, "copyfile", failing_copyfile)
+
+    res = await _acquire_face(resource_store, source_a, src_url, plan)
+    monkeypatch.undo()
+
+    # 本轮不产出派生图.
+    assert res is None
+
+    # 库里不得有该派生记录, 盘上不得有错配产物.
+    locator = derived_locator(src_url, "crop", "face:legacy:0.7000")
+    assert await resource_store.get_by_url(locator) is None
+    assert await resource_store.get_by_url(derived_locator(src_url, "crop", "right:legacy:0.7000")) is None
+
+
+@pytest.mark.asyncio
+async def test_face_crop_snapshot_copy_failure_keeps_existing_product(
+    resource_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """源快照复制失败时已有的派生产物不得被改写: 旧产物与其源版本标记须保持自洽.
+
+    降级为「直接用源文件」会拿旧产物去重跑, 换成与旧产物不同源的字节; 放弃派生则旧产物原样保留,
+    源版本标记仍描述它面对的那份源.
+    """
+    plan = _face_plan()
+    src_url = "https://img.example.com/covers/snapshot-copy-fail-existing.jpg"
+
+    pristine_a = tmp_path / "pristine_a.jpg"
+    shutil.copyfile(_FACE_FIXTURE, pristine_a)
+
+    # 已有派生产物: 先正常跑一轮.
+    source_a = await _seed_source(resource_store, src_url, pristine_a.read_bytes())
+    first = await _acquire_face(resource_store, source_a, src_url, plan)
+    assert first is not None
+    first_hash = first.content_hash
+    first_srcv = first.meta["srcv"] if first.meta else None
+    assert first_srcv is not None
+
+    # 源换新 + 快照复制失败: 本轮不重跑, 旧产物与旧源版本标记原样保留.
+    source_b = tmp_path / "source_b.jpg"
+    canvas = Image.new("RGB", (512, 512), (30, 30, 36))
+    canvas.paste(Image.open(_FACE_FIXTURE).convert("RGB").crop((148, 123, 414, 450)).resize((90, 110)), (30, 330))
+    canvas.save(source_b, format="JPEG", quality=95)
+    source_a.write_bytes(source_b.read_bytes())
+
+    def failing_copyfile(src: str, dst: str, **kwargs: object) -> str:
+        raise OSError("snapshot copy failed")
+
+    monkeypatch.setattr(shutil, "copyfile", failing_copyfile)
+    second = await _acquire_face(resource_store, source_a, src_url, plan)
+    monkeypatch.undo()
+
+    assert second is None  # 本轮无新产物
+
+    # 库里旧记录仍在, 字节与源版本标记未被改写.
+    locator = derived_locator(src_url, "crop", "face:legacy:0.7000")
+    record = await resource_store.get_by_url(locator)
+    assert record is not None
+    assert record.content_hash == first_hash
+    assert record.meta is not None and record.meta["srcv"] == first_srcv
 
 
 # ---------------------------------------------------------------- 并发检测隔离 (IMPL-08)
