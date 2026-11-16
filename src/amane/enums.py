@@ -178,12 +178,13 @@ class WatermarkKind(StrEnum):
 
 
 class WatermarkCorner(StrEnum):
-    """角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐."""
+    """角标锚点. 同角多枚按相位顺序向内叠 (上往下 / 下往上), 右角右对齐; AUTO 不指定角位, 由布局层解析 (stack 下 = TOP_LEFT)."""
 
     TOP_LEFT = "top_left"
     TOP_RIGHT = "top_right"
     BOTTOM_LEFT = "bottom_left"
     BOTTOM_RIGHT = "bottom_right"
+    AUTO = "auto"
 
 
 # 海报裁剪策略. 定义于 enums 中立层: config 与 media 两侧均需引用, enums 不依赖任何一侧 (避免包初始化循环).

@@ -534,7 +534,7 @@ class WatermarkConfig(BaseModel):
         default_factory=lambda: dict.fromkeys(WatermarkKind, WatermarkCorner.TOP_LEFT),
         json_schema_extra={"x-frozen-keys": True},
     )
-    """缺 key 补左上; 未知 key 丢弃."""
+    """缺 key 补左上; 未知 key 丢弃; "auto" 字面量归一化为 AUTO (由布局层解析, stack 下 = TOP_LEFT)."""
 
     @field_validator("kinds", mode="before")
     @classmethod

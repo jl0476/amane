@@ -320,7 +320,10 @@ def apply_cover_watermarks(
         target_h = max(_STAMP_MIN_HEIGHT, round(height * ratio))
         pad = max(4, target_h // 8)
         gap = max(4, target_h // 10)
-        grouped: dict[WatermarkCorner, list[Image.Image]] = {corner: [] for corner in WatermarkCorner}
+        # AUTO 不是可粘贴角位: 分组前解析为具体角 (stack 下 = TOP_LEFT).
+        grouped: dict[WatermarkCorner, list[Image.Image]] = {
+            corner: [] for corner in WatermarkCorner if corner is not WatermarkCorner.AUTO
+        }
         for stem in stems:
             raw = load_stamp(stem, watermark_dir)
             if raw is None:
@@ -328,7 +331,10 @@ def apply_cover_watermarks(
             fitted = _fit_stamp(raw, target_h)
             if fitted is None:
                 continue
-            grouped[_corner_for(stem, corners)].append(fitted)
+            corner = _corner_for(stem, corners)
+            if corner is WatermarkCorner.AUTO:
+                corner = WatermarkCorner.TOP_LEFT
+            grouped[corner].append(fitted)
         if not any(grouped.values()):
             return False
         _paste_stamps(img, grouped, pad=pad, gap=gap)
