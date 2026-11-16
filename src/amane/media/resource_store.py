@@ -204,12 +204,14 @@ class ResourceStore:
         self._guards: dict[str, _LockEntry] = {}
         self._guards_lock = asyncio.Lock()
         self._heal_lock = asyncio.Lock()
-        """自愈与落库 (覆盖提交 / 就地超分) 互斥: 覆盖的"挂标记 → 换文件 → 落记录"整段持锁,
-        自愈整段持锁.
+        """自愈与提交落库互斥: 覆盖提交自「读取既有记录」至「落库」整段持锁 (读取经由
+        ``_heal_locked``, 该锁非重入), 派生提交与就地超分的落库段同锁, 自愈整段持锁.
 
-        读路径的自愈因此撞不上在飞提交: 标记在库而盘上仍是旧字节这一窗口, 提交正持锁,
-        自愈等提交走完再看盘上字节 —— 标记要么已被提交撤掉, 要么提交确实夭折, 两种都不是
-        "在飞的标记". 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+        提交的读取与落库在同一临界区内, ``resolve`` 的删行无法插入其间; 自愈锁只约束本进程,
+        其他进程仍可在临界区内删行, 覆盖提交的落库段因此按 locator 重查并以新建行回退重建.
+        读路径的自愈等提交释放锁后再判定: 待提交标记要么已被提交撤除, 要么提交确实夭折,
+        两种都不是尚未提交的标记. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再获取
+        其他锁.
         """
         base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -844,34 +846,40 @@ class ResourceStore:
         overwrite = False
         try:
             temp_hash = self._hash_file(temp)
-            existing = await self.get_by_url(url)
-            existing_path = self.full_path(existing) if existing is not None else None
-            if existing_path is not None and existing_path.exists():
-                # 内容判定按盘上字节, 不信记录列: 磁盘被外部换掉时记录可能已过期.
-                existing_hash = self._hash_file(existing_path)
-                if existing_hash == temp_hash:
-                    temp.unlink(missing_ok=True)
-                    return AcquireResult(success=True, path=existing_path, used_url=url)
-                if _content_rank(existing_path) >= _content_rank(temp):
-                    # 既有不劣于本轮 (含同面积同字节的并列): 本轮落选, 只删本轮临时.
-                    temp.unlink(missing_ok=True)
-                    return AcquireResult(success=True, path=existing_path, used_url=url)
-                overwrite = True
-
             dest.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             temp.unlink(missing_ok=True)
             logger.warning("commit temp failed", url=url)
             return AcquireResult(success=False, failed=[url])
 
-        # 覆盖既有缓存时先挂待提交标记: 文件换新与记录落库之间若被取消或进程退出,
-        # 读路径据此按盘上字节自愈, 不会留下"记录 hash ≠ 盘上字节"的持久失配.
-        # 首次入库无既有记录可标记, 记录缺失即无失配可言.
-        #
-        # 挂标记 → 换文件 → 落记录整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除.
-        # 少了这段互斥, 读路径会在"标记在库、盘上仍是旧字节"的窗口撤掉在飞提交的标记, 提交随后
-        # 夭折就留下永久失配.
+        # 既有记录的读取经由 ``_heal_locked`` 完成并与落库同处一个自愈锁临界区
+        # (``get_by_url`` 内部会再次获取自愈锁, 该锁非重入, 锁内不得调用):
+        # ``resolve`` 的删行同样持锁, 无法插入读取与落库之间, 本进程内不存在
+        # "读取到的行在落库前被删除"的窗口. 自愈锁只约束本进程, 其他进程仍可在
+        # 临界区内删行或插入同 url 新行, 落库段因此按 locator 重查并以新建行回退重建.
         async with self._heal_lock:
+            existing = await self._heal_locked(select(Resource).where(Resource.url == url))
+            existing_path = self.full_path(existing) if existing is not None else None
+            try:
+                if existing_path is not None and existing_path.exists():
+                    # 内容判定按盘上字节, 不信记录列: 磁盘被外部换掉时记录可能已过期.
+                    existing_hash = self._hash_file(existing_path)
+                    if existing_hash == temp_hash:
+                        temp.unlink(missing_ok=True)
+                        return AcquireResult(success=True, path=existing_path, used_url=url)
+                    if _content_rank(existing_path) >= _content_rank(temp):
+                        # 既有不劣于本轮 (含同面积同字节的并列): 本轮落选, 只删本轮临时.
+                        temp.unlink(missing_ok=True)
+                        return AcquireResult(success=True, path=existing_path, used_url=url)
+                    overwrite = True
+            except OSError:
+                temp.unlink(missing_ok=True)
+                logger.warning("commit temp failed", url=url)
+                return AcquireResult(success=False, failed=[url])
+
+            # 覆盖既有缓存时先在记录上写入待提交标记: 文件换新与记录落库之间若被取消或
+            # 进程退出, 读路径据此按盘上字节自愈, 不会留下"记录 hash ≠ 盘上字节"的持久失配.
+            # 首次入库无既有记录可标记, 记录缺失即无失配可言.
             if existing is not None:
                 await self._mark_pending(existing, temp_hash)
 
@@ -887,29 +895,30 @@ class ResourceStore:
             size = dest.stat().st_size
             mime = detect_media_type(dest)
             async with self._session() as session:
-                if existing is not None:
-                    # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记
-                    # 一并覆盖回去 (meta 整列写), 留下"标记还在"的假中间态.
-                    row = await session.get(Resource, existing.id)
-                    if row is None:
-                        row = existing
-                        session.add(row)
+                # 按 locator 重查, 不按读取时旧对象的主键: 其他进程可在临界区内删除该行,
+                # 或删除后插入同 url 的新行 —— 新行主键不同, 按旧主键重查查不到.
+                result = await session.exec(select(Resource).where(Resource.url == url))
+                row = result.first()
+                if row is None:
+                    # 行在临界区内被其他进程删除: 新建行 (INSERT) 描述盘上那份字节.
+                    # 不得复用读取到的旧对象 —— 它是带主键的 detached 对象, ``session.add``
+                    # 对它按主键发出 UPDATE, 行已删除则更新零行 (StaleDataError), 记录无法重建.
+                    logger.warning("resource record rebuilt on commit", url=url)
+                    row = Resource(
+                        url=url,
+                        file_path=self._relative_path(dest),
+                        content_hash=temp_hash,
+                        size=size,
+                        mime_type=mime,
+                    )
+                else:
                     row.content_hash = temp_hash
                     row.size = size
                     row.mime_type = mime
                     # 字节已换新: 与旧字节绑定的标记 (超分标记) 一并失效 —— 旧字节的
                     # 超分结果不适用于新字节, 留着会让超分被误判为"已超分"而跳过.
                     row.meta = _without_content_bound(row.meta)
-                else:
-                    session.add(
-                        Resource(
-                            url=url,
-                            file_path=self._relative_path(dest),
-                            content_hash=temp_hash,
-                            size=size,
-                            mime_type=mime,
-                        )
-                    )
+                session.add(row)
                 await session.commit()
 
         if overwrite:

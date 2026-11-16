@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import io
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock
@@ -2068,3 +2068,173 @@ async def test_read_path_issues_single_select(
     assert record is not None
     # 一次取行 = 一次 SELECT; 不得是两次 (取行 + 自愈锁内重读).
     assert len(selects) == 1, f"读路径的 SELECT 次数异常: {len(selects)}"
+
+
+# --- 提交落库段的并发重建 (IMPL-11) ---
+
+
+def _pause_commit_after_locked_read() -> tuple[
+    Callable[[ResourceStore, Any], Awaitable[Resource | None]], asyncio.Event, asyncio.Event
+]:
+    """构造替代 ``_heal_locked`` 的包装: 提交在自愈锁内读取既有记录后暂停, 让删行进入读取与落库之间.
+
+    自愈锁只约束本进程, 不约束其他进程; 测试以直连会话在暂停期间删行, 模拟另一进程 ``resolve``
+    对文件缺失记录的删行结局. 提交持锁期间不得调用 ``resolve`` / ``get_by_url`` —— 与持锁方
+    同锁互等, 删行必须经由直连会话. 包装只在首次调用后暂停一次: 补丁安装到提交任务启动之间
+    没有其他调用方.
+
+    返回 (包装, 已读取事件, 放行事件).
+    """
+    original_heal_locked = ResourceStore._heal_locked
+    read_done = asyncio.Event()
+    proceed = asyncio.Event()
+    paused = False
+
+    async def heal_locked_then_pause(self: ResourceStore, stmt: Any) -> Resource | None:
+        nonlocal paused
+        record = await original_heal_locked(self, stmt)
+        if not paused:
+            paused = True
+            read_done.set()
+            await proceed.wait()
+        return record
+
+    return heal_locked_then_pause, read_done, proceed
+
+
+@pytest.mark.asyncio
+async def test_commit_rebuilds_record_deleted_before_commit(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """提交读取既有记录之后、落库之前该行被删除: 提交须重建记录 (IMPL-11).
+
+    落库段回退复用读取到的旧对象时, ``session.add`` 对带主键的 detached 对象按主键发出 UPDATE:
+    列有变化则更新零行抛出 ``StaleDataError``, 无变化则不重建 —— 两种结局都是文件已移入目标路径
+    而库中无记录, 资源接口对这次读取返回 404.
+    """
+    url = "https://s/rebuild-deleted.jpg"
+    new_bytes = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-rebuild.jpg"
+    temp.write_bytes(new_bytes)
+
+    # 存量是"记录在、文件缺": 提交将读取到既有记录.
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    cached_path.unlink()
+
+    heal_locked_paused, read_done, proceed = _pause_commit_after_locked_read()
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_locked_paused)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await read_done.wait()  # 提交已在自愈锁内读取到既有记录
+        # 模拟另一进程 resolve 对文件缺失记录的删行结局: 记录整行删除.
+        async with resource_store._session() as session:
+            result = await session.exec(select(Resource).where(Resource.url == url))
+            row = result.first()
+            assert row is not None
+            await session.delete(row)
+            await session.commit()
+    finally:
+        proceed.set()
+        result = await commit
+    monkeypatch.undo()
+
+    assert result.success is True
+    assert cached_path.read_bytes() == new_bytes  # 文件已移入目标路径
+
+    # 记录须存在且描述盘上字节: 不得留下"文件在而记录无"的 404.
+    record = await resource_store.get_by_url(url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(cached_path)
+    assert record.size == len(new_bytes)
+    assert record.meta is not None and "pending" not in record.meta
+    assert await resource_store.resolve(url) == cached_path
+
+
+@pytest.mark.asyncio
+async def test_commit_adopts_row_inserted_after_deletion(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """读取到的记录被删除后同 url 出现另一写入方的新行: 提交按 locator 定位该行并更新其内容列.
+
+    落库段按读取到的旧对象主键重查时查不到新行, 回退再插一行则违反 ``Resource.url`` 唯一约束.
+    """
+    url = "https://s/adopt-row.jpg"
+    new_bytes = _png(200, 150)
+    temp = resource_store._base_dir / "cand.amane-tmp-adopt.jpg"
+    temp.write_bytes(new_bytes)
+
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    row_path = cached_path.relative_to(resource_store._base_dir).as_posix()
+    cached_path.unlink()
+
+    heal_locked_paused, read_done, proceed = _pause_commit_after_locked_read()
+    monkeypatch.setattr(ResourceStore, "_heal_locked", heal_locked_paused)
+
+    commit = asyncio.create_task(resource_store.commit_temp(url, temp))
+    try:
+        await read_done.wait()  # 提交已在自愈锁内读取到既有记录
+        # 模拟另一进程 resolve 删行后, 另一实例的 acquire 重新下载并插入同 url 新行.
+        # 新行显式指定与旧行不同的主键: SQLite 会把刚删行的 rowid 复用给下一次插入,
+        # 主键相同则按旧主键重查恰好查到新行, 测不到该场景.
+        async with resource_store._session() as session:
+            result = await session.exec(select(Resource).where(Resource.url == url))
+            row = result.first()
+            assert row is not None and row.id is not None
+            old_id = row.id
+            await session.delete(row)
+            await session.commit()
+        async with resource_store._session() as session:
+            session.add(
+                Resource(
+                    id=old_id + 1,
+                    url=url,
+                    file_path=row_path,
+                    content_hash="a" * 64,
+                    size=1,
+                    mime_type="image/png",
+                )
+            )
+            await session.commit()
+    finally:
+        proceed.set()
+        result = await commit
+    monkeypatch.undo()
+
+    assert result.success is True
+    # 库中只有一行, 即另一写入方插入的那行, 内容列已被提交更新为盘上字节.
+    async with resource_store._session() as session:
+        found = await session.exec(select(Resource).where(Resource.url == url))
+        rows = list(found.all())
+    assert len(rows) == 1
+    assert rows[0].content_hash == ResourceStore._hash_file(cached_path)
+    assert rows[0].size == len(new_bytes)
+    assert await resource_store.resolve(url) == cached_path
+
+
+@pytest.mark.asyncio
+async def test_commit_overwrite_updates_row_in_place(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """既有记录仍在的正常覆盖: 落库原地更新同一行, 不另插新行.
+
+    落库段改为按 locator 重查后, 记录在库时必须仍执行原地更新, 重建分支只对缺失行生效.
+    """
+    url = "https://s/overwrite-in-place.jpg"
+    cached_path = await _seed_cache(resource_store, url, _png(100, 100), monkeypatch)
+    existing = await resource_store.get_by_url(url)
+    assert existing is not None and existing.id is not None
+
+    temp = resource_store._base_dir / "cand.amane-tmp-inplace.jpg"
+    new_bytes = _png(200, 150)
+    temp.write_bytes(new_bytes)
+
+    result = await resource_store.commit_temp(url, temp)
+
+    assert result.success is True
+    assert cached_path.read_bytes() == new_bytes
+    async with resource_store._session() as session:
+        found = await session.exec(select(Resource).where(Resource.url == url))
+        rows = list(found.all())
+    assert len(rows) == 1  # 不另插新行
+    assert rows[0].id == existing.id  # 原地更新同一行
+    assert rows[0].content_hash == ResourceStore._hash_file(cached_path)
+    assert rows[0].meta is not None and "pending" not in rows[0].meta
