@@ -548,7 +548,7 @@ async def _acquire_candidates_local(
     """整理期图片候选获取按生效 ``thumb_download_strategy`` 分派 (库级配置): priority 取顺序首个
     可获取者, quality 取全候选择优胜者.
 
-    thumb / trailer 与 poster 的复制回退路径共用; poster 的重选路径见
+    thumb 与 poster 的复制回退路径共用; poster 的重选路径见
     :func:`_prepare_poster_product`.
     """
     path, _ = await _acquire_candidates_local_url(urls, store, client, quality=quality)
@@ -914,8 +914,9 @@ async def _download_images_via_store(
 
     poster 来源: ``prepared_poster`` 非 None 时直接使用整理期重选 / 用户产物 (规格 §3.6),
     不再按 poster_urls 现场获取.
-    thumb / trailer 的候选获取按库级生效 ``thumb_download_strategy`` 分派: priority 取顺序
+    thumb / poster 的候选获取按库级生效 ``thumb_download_strategy`` 分派: priority 取顺序
     首个可获取者, quality 取全候选择优胜者 (独占临时择优); 未注入 ``metadata_cfg`` 时按 priority.
+    预告片是视频, 无画质可比维度, 恒取顺序首个可获取者 (库级 quality 对它不生效).
     剧照是多个不同图片的集合, 择优语义不适用: 站点优先级不变, 每站取该站全部候选.
     剧照文件名在这里渲染: 补零宽度取决于本轮剧照数量, 只有拿到文件列表后才定得下来.
     幕后图候选按库开关追加到剧照集合 (规格 §3.5), 经同一命名模板接续编号.
@@ -942,9 +943,8 @@ async def _download_images_via_store(
     trailer_local = None
     if DownloadableResource.trailer in kinds:
         trailer_urls = metadata.trailer_urls
-        trailer_local = (
-            await _acquire_candidates_local(trailer_urls, store, client, quality=quality) if trailer_urls else None
-        )
+        # 预告片是视频: 画质择优无比较维度 (读不出分辨率), 恒取顺序首个可获取者.
+        trailer_local, _ = await _acquire_first_local_url(trailer_urls, store, client)
 
     extrafanart: list[Path] = []
     if DownloadableResource.extrafanart in kinds:

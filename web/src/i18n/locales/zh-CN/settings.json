@@ -1135,7 +1135,7 @@
       },
       "thumb_download_strategy": {
         "label": "缩略图下载策略",
-        "description": "priority 按顺序取首个达标候选; quality 下载全部候选后择优",
+        "description": "priority 按顺序取首个达标候选; quality 下载全部候选后择优; 只作用于封面与海报",
         "options": {
           "priority": "速度优先",
           "quality": "质量优先"

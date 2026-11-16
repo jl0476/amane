@@ -1135,7 +1135,7 @@
       },
       "thumb_download_strategy": {
         "label": "Thumb download strategy",
-        "description": "priority takes the first adequate candidate in order; quality downloads all candidates and picks the best",
+        "description": "priority takes the first adequate candidate in order; quality downloads all candidates and picks the best; applies to cover and poster only",
         "options": {
           "priority": "Speed first",
           "quality": "Quality first"

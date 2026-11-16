@@ -20,7 +20,15 @@ from amane.media import pipeline as pipeline_mod
 from amane.media.resource_store import TMP_MARK
 from amane.organize import ResolvedPaths
 from amane.parsing import ContentType
-from tests.handlers.test_file_ops import MappedClient, _pixel_close, _seed_library
+from tests.handlers.test_file_ops import (
+    _TRAILER_LARGE,
+    _TRAILER_SMALL,
+    _TRAILER_URLS,
+    MappedClient,
+    VideoClient,
+    _pixel_close,
+    _seed_library,
+)
 from tests.helpers import LOAD_TOLERANT_TIMEOUT, await_for
 
 if TYPE_CHECKING:
@@ -1056,3 +1064,38 @@ async def test_quality_thumb_urls_lead_with_winner(resource_store: ResourceStore
     )
     assert out_prio.thumb_urls[0] == "https://s/t-low.jpg"
     assert out_prio.thumb_urls == _THUMB_URLS
+
+
+# --- R2 IMPL-09: 预告片是视频, 不参与图片画质择优 ---
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_quality_does_not_pick_trailer_by_bytes(resource_store: ResourceStore, tmp_path: Path) -> None:
+    """quality 策略不作用于预告片: 候选按来源顺序保留, 字节量不参与择优.
+
+    画质择优的比较键 (分辨率面积 → 字节数) 对视频无意义: 读不出分辨率时退化为比字节,
+    变成「下载全部候选择字节最多的」, 改来源优先级又增下载量.
+    """
+    stub = VideoClient({"https://s/trailer-small.mp4": _TRAILER_SMALL, "https://s/trailer-large.mp4": _TRAILER_LARGE})
+    cfg = HotSettings(metadata=MetadataConfig(thumb_download_strategy="quality"))
+    cfg.scraping.download_resources.append(DownloadableResource.trailer)
+    out = await materialize_images(
+        [],
+        [],
+        list(_TRAILER_URLS),
+        resource_store,
+        cast("WebClient", stub),
+        cfg,
+        tmp_path,
+        content_type=ContentType.CENSORED,
+        metadata_cfg=cfg.metadata,
+    )
+    # 落库列表按来源顺序: 首个候选仍是首项, 不被字节最多的候选顶替.
+    assert out.trailer_urls == _TRAILER_URLS
+    for url, payload in (
+        ("https://s/trailer-small.mp4", _TRAILER_SMALL),
+        ("https://s/trailer-large.mp4", _TRAILER_LARGE),
+    ):
+        stored = await resource_store.get_by_url(url)
+        assert stored is not None
+        assert resource_store.full_path(stored).read_bytes() == payload

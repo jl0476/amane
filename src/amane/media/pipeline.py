@@ -124,6 +124,7 @@ async def materialize_images(
     thumb / poster 候选获取按 ``metadata_cfg.thumb_download_strategy`` 分派 (R2 PLAN-09):
     quality 先全候选独占临时择优, 胜者才是后续裁剪判定与像素执行的输入; 落库的 poster / thumb
     列表首项为胜者, 其余成功候选保持原相对顺序, 否则展示与后续读取仍取到低清候选.
+    预告片是视频, 不参与该分派.
     """
     kinds = set(config.scraping.download_resources)
     crop_enabled = config.scraping.crop_poster
@@ -244,7 +245,8 @@ async def materialize_images(
                         await _maybe_upscale(store, res, config, data_dir)
                         break
 
-    # 下载预告片.
+    # 下载预告片: 预告片是视频, 画质择优的比较键 (分辨率面积 → 字节数) 对它无意义,
+    # 恒按来源顺序逐个获取, 不参与 quality 分派.
     trailer_ok: set[str] = set()
     if DownloadableResource.trailer in kinds:
         for url in trailer_urls:

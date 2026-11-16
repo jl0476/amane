@@ -2123,30 +2123,25 @@ _FANART_CANDIDATE_IMAGES = {
     "https://s/e-low.jpg": ((460, 460), "purple"),
     "https://s/e-high.jpg": ((500, 440), "orange"),
 }
-_TRAILER_CANDIDATES = ["https://s/v-low.jpg", "https://s/v-high.jpg"]
-_TRAILER_CANDIDATE_IMAGES = {
-    "https://s/v-low.jpg": ((320, 240), "purple"),
-    "https://s/v-high.jpg": ((640, 480), "orange"),
-}
 
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_organize_thumb_dispatch_by_library_strategy(
     repo: Repository, resource_store: ResourceStore, tmp_path: Path
 ) -> None:
-    """整理期 thumb / fanart / 预告片按库级生效策略分派: quality 取高分辨率者, priority 取首个候选.
+    """整理期 thumb / fanart 按库级生效策略分派: quality 取高分辨率者, priority 取首个候选.
 
+    预告片是视频, 恒取顺序首个可获取候选 (库级 quality 对它不生效).
     剧照是多个不同图片的集合, 择优语义不适用: 两个库都产出该站全部候选剧照.
     """
     client = cast(
         "WebClient",
-        MappedClient({**_THUMB_CANDIDATE_IMAGES, **_FANART_CANDIDATE_IMAGES, **_TRAILER_CANDIDATE_IMAGES}),
+        MappedClient({**_THUMB_CANDIDATE_IMAGES, **_FANART_CANDIDATE_IMAGES}),
     )
     meta = await repo.upsert_metadata(
         number="MIDV-123",
         content_type=ContentType.CENSORED,
         thumb_urls=_THUMB_CANDIDATES,
-        trailer_urls=_TRAILER_CANDIDATES,
         extrafanart_urls={"dmm": _FANART_CANDIDATES},
     )
     assert meta.id is not None
@@ -2189,12 +2184,8 @@ async def test_organize_thumb_dispatch_by_library_strategy(
     assert _pixel_close(extrafanart_q[0], (128, 0, 128))
     assert Image.open(extrafanart_q[1]).size == (500, 440)
     assert _pixel_close(extrafanart_q[1], (255, 165, 0))
-    # 预告片同按 quality 择优.
-    trailer_q = root_q / "MIDV-123" / "trailer.mp4"
-    assert Image.open(trailer_q).size == (640, 480)
-    assert _pixel_close(trailer_q, (255, 165, 0))
 
-    # priority 库: thumb / fanart / 预告片均取首个候选.
+    # priority 库: thumb / fanart 均取首个候选.
     thumb_p = root_p / "MIDV-123" / "thumb.jpg"
     assert Image.open(thumb_p).size == (600, 600)
     assert _pixel_close(thumb_p, (0, 0, 255))
@@ -2207,9 +2198,93 @@ async def test_organize_thumb_dispatch_by_library_strategy(
     assert _pixel_close(extrafanart_p[0], (128, 0, 128))
     assert Image.open(extrafanart_p[1]).size == (500, 440)
     assert _pixel_close(extrafanart_p[1], (255, 165, 0))
-    trailer_p = root_p / "MIDV-123" / "trailer.mp4"
-    assert Image.open(trailer_p).size == (320, 240)
-    assert _pixel_close(trailer_p, (128, 0, 128))
+
+
+# --- R2 IMPL-09: 预告片是视频, 不参与图片画质择优 ---
+
+_VIDEO_FIXTURE_DIR = Path(__file__).parent.parent / "media" / "fixtures"
+_TRAILER_SMALL = (_VIDEO_FIXTURE_DIR / "trailer_small.mp4").read_bytes()
+_TRAILER_LARGE = (_VIDEO_FIXTURE_DIR / "trailer_large.mp4").read_bytes()
+_TRAILER_URLS = ["https://s/trailer-small.mp4", "https://s/trailer-large.mp4"]
+
+
+class VideoClient:
+    """按 URL 写出真实 mp4 字节的下载桩: 预告片候选借此给出可区分的字节量.
+
+    未映射的 URL (封面等图片) 写出占位图, 与既有图片桩一致.
+    """
+
+    def __init__(self, videos: dict[str, bytes], images: dict[str, tuple[tuple[int, int], str]] | None = None) -> None:
+        self._videos = videos
+        self._images = images or {}
+        self.downloaded: list[str] = []
+
+    async def download(self, url: str, dest: Path, **kwargs: object) -> bool:
+        self.downloaded.append(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._videos.get(url)
+        if payload is not None:
+            dest.write_bytes(payload)
+            return True
+        size, color = self._images.get(url, ((800, 538), "blue"))
+        Image.new("RGB", size, color).save(dest)
+        return True
+
+    async def get_filesize(self, url: str, **kwargs: object) -> int | None:
+        return None
+
+    async def resolve_final_url(self, url: str, **kwargs: object) -> str:
+        return url
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_trailer_takes_first_candidate_under_quality(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """库级 quality 下预告片仍取顺序首个可获取候选, 且不下载全部候选; 图片候选照常择优.
+
+    预告片是视频: 画质择优的比较键 (分辨率面积 → 字节数) 对它无意义, 若参与择优会退化为
+    「下载全部候选选字节最多的」, 既改来源优先级又多付下载量.
+    """
+    stub = VideoClient(
+        {
+            "https://s/trailer-small.mp4": _TRAILER_SMALL,
+            "https://s/trailer-large.mp4": _TRAILER_LARGE,
+        },
+        _THUMB_CANDIDATE_IMAGES,
+    )
+    client = cast("WebClient", stub)
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t-low.jpg", "https://s/t-high.jpg"],
+        trailer_urls=list(_TRAILER_URLS),
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="q",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "quality"},
+    )
+    assert lib.id is not None
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 封面仍是图片: quality 照常择优 (高清候选胜出).
+    thumb = root / "MIDV-123" / "thumb.jpg"
+    assert Image.open(thumb).size == (800, 538)
+    assert _pixel_close(thumb, (0, 128, 0))
+
+    trailer = root / "MIDV-123" / "trailer.mp4"
+    assert trailer.read_bytes() == _TRAILER_SMALL  # 首个候选, 非字节最多的
+    assert "https://s/trailer-large.mp4" not in stub.downloaded  # 不下载后续候选
+    assert stub.downloaded.count("https://s/trailer-small.mp4") == 1
 
 
 @pytest.mark.asyncio(loop_scope="function")
