@@ -54,7 +54,7 @@ def test_user_file_wins(stem: str, tmp_path: Path) -> None:
     user_dir = tmp_path / "watermarks"
     user_dir.mkdir()
     Image.new("RGBA", (8, 8), (0, 255, 0, 255)).save(user_dir / f"{stem}.png")
-    img = load_stamp(stem, user_dir)
+    img = load_stamp(stem, tmp_path)
     assert img is not None
     pixel = img.getpixel((0, 0))
     assert pixel == (0, 255, 0, 255)
@@ -64,7 +64,7 @@ def test_corrupt_user_falls_back(tmp_path: Path) -> None:
     user_dir = tmp_path / "watermarks"
     user_dir.mkdir()
     (user_dir / "subtitle.png").write_bytes(b"garbage")
-    img = load_stamp("subtitle", user_dir)
+    img = load_stamp("subtitle", tmp_path)
     assert img is not None
     assert img.getbbox() is not None
 
@@ -73,5 +73,5 @@ def test_rejects_path_stem(tmp_path: Path) -> None:
     user_dir = tmp_path / "watermarks"
     user_dir.mkdir()
     Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(user_dir / "subtitle.png")
-    assert load_stamp("../watermarks/subtitle", user_dir) is None
-    assert load_stamp("subtitle.png", user_dir) is None
+    assert load_stamp("../watermarks/subtitle", tmp_path) is None
+    assert load_stamp("subtitle.png", tmp_path) is None

@@ -551,6 +551,12 @@ class WatermarkConfig(BaseModel):
     start: int = Field(default=0, ge=0, le=3)
     """clockwise 的起始角序号 (0=左上 1=右上 2=右下 3=左下); stack 忽略."""
 
+    style: str = Field(default="default", pattern=r"^[a-z0-9_-]+$")
+    """样式名: 非 default 走 `{data_dir}/watermarks/{style}/` 子目录, default 走旧位置 (media/watermarks::load_stamp 查找链)."""
+
+    custom_folder: Path | None = None
+    """自定义水印目录; 非 None 时完全替代 data_dir 系各级查找 (仅该目录与内置包)."""
+
     @field_validator("kinds", mode="before")
     @classmethod
     def _complete_kinds(cls, v: Any) -> Any:
