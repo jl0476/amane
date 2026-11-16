@@ -21,6 +21,10 @@
 ```bash
 git worktree add /tmp/golden-c412b72 c412b72 --detach
 cd /tmp/golden-c412b72 && uv sync --frozen
+# 本 fixtures 目录在 c412b72 尚不存在 (随基准改动入库): 先整体拷入基线检出同路径,
+# 脚本的 ROOT 相对路径以基线检出为 cwd, 缺这一步会在 shutil.copy 处 FileNotFoundError.
+# <head 检出> = 承载本 README 的工作树.
+cp -r <head 检出>/tests/media/fixtures/watermark_golden /tmp/golden-c412b72/tests/media/fixtures/
 uv run python /tmp/verify_golden.py   # 清单见下, 原地覆写 /tmp 副本后与 expected/ 比对
 ```
 
