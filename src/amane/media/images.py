@@ -1,6 +1,6 @@
 """海报裁剪与封面角标. 尺寸判定在本模块; 内容类型策略由 crop.py 的策略矩阵承担."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -211,6 +211,17 @@ _FIXED_KINDS: frozenset[str] = frozenset(
 _RIGHT_CORNERS = frozenset((WatermarkCorner.TOP_RIGHT, WatermarkCorner.BOTTOM_RIGHT))
 _BOTTOM_CORNERS = frozenset((WatermarkCorner.BOTTOM_LEFT, WatermarkCorner.BOTTOM_RIGHT))
 
+# 布局模式: stack 同角向内叠 (现状); clockwise 按相位顺序顺时针轮转四角.
+WatermarkLayout = Literal["stack", "clockwise"]
+
+# clockwise 的角位轮转序: 顺时针一圈, 起始角由 start 平移.
+_CLOCKWISE_WHEEL: tuple[WatermarkCorner, ...] = (
+    WatermarkCorner.TOP_LEFT,
+    WatermarkCorner.TOP_RIGHT,
+    WatermarkCorner.BOTTOM_RIGHT,
+    WatermarkCorner.BOTTOM_LEFT,
+)
+
 
 def _stamp_stems(
     *,
@@ -247,6 +258,36 @@ def _corner_for(stem: str, corners: Mapping[WatermarkKind, WatermarkCorner] | No
     return corners.get(kind, WatermarkCorner.TOP_LEFT)
 
 
+def _clockwise_corners(requested: Sequence[WatermarkCorner], start: int) -> list[WatermarkCorner]:
+    """AUTO 相位按相位序顺时针轮转取角 (起始 start); 显式角位钉死不轮转但占据其角位.
+
+    轮转指针只在 AUTO 相位上前进, 扫描时跳过已占角位 (防止后继相位落到同一角);
+    无空位时 (如四角全被显式钉死) 回退到 start 起始角, 同角多枚由调用方分组后向内叠.
+    """
+    origin = start % len(_CLOCKWISE_WHEEL)
+    assigned: list[WatermarkCorner] = []
+    occupied: set[WatermarkCorner] = set()
+    pointer = origin
+    for corner in requested:
+        if corner is not WatermarkCorner.AUTO:
+            assigned.append(corner)
+            occupied.add(corner)
+            continue
+        chosen: WatermarkCorner | None = None
+        for step in range(len(_CLOCKWISE_WHEEL)):
+            index = (pointer + step) % len(_CLOCKWISE_WHEEL)
+            candidate = _CLOCKWISE_WHEEL[index]
+            if candidate not in occupied:
+                chosen = candidate
+                pointer = (index + 1) % len(_CLOCKWISE_WHEEL)
+                break
+        if chosen is None:
+            chosen = _CLOCKWISE_WHEEL[origin]
+        assigned.append(chosen)
+        occupied.add(chosen)
+    return assigned
+
+
 def _fit_stamp(stamp: Image.Image, target_h: int) -> Image.Image | None:
     """裁掉透明边再按高度缩放. 无可见像素则跳过."""
     rgba = stamp.convert("RGBA")
@@ -268,26 +309,30 @@ def _paste_stamps(
     *,
     pad: int,
     gap: int,
+    offset_x: int = 0,
+    offset_y: int = 0,
 ) -> None:
-    """同角按列表顺序向内叠: 上角往下, 下角往上; 右角右对齐."""
+    """同角按列表顺序向内叠: 上角往下, 下角往上; 右角右对齐. offset 在 pad 落点上向内叠加."""
     width, height = img.size
+    pad_x = pad + offset_x
+    pad_y = pad + offset_y
     for corner, stamps in stamps_by_corner.items():
         if not stamps:
             continue
         right = corner in _RIGHT_CORNERS
         if corner in _BOTTOM_CORNERS:
-            y = height - pad
+            y = height - pad_y
             for stamp in stamps:
                 stamp_w, stamp_h = stamp.size
                 y -= stamp_h
-                x = width - pad - stamp_w if right else pad
+                x = width - pad_x - stamp_w if right else pad_x
                 img.paste(stamp, (x, y), stamp)
                 y -= gap
         else:
-            y = pad
+            y = pad_y
             for stamp in stamps:
                 stamp_w, stamp_h = stamp.size
-                x = width - pad - stamp_w if right else pad
+                x = width - pad_x - stamp_w if right else pad_x
                 img.paste(stamp, (x, y), stamp)
                 y += stamp_h + gap
 
@@ -304,6 +349,11 @@ def apply_cover_watermarks(
     scale: float = _DEFAULT_SCALE,
     corners: Mapping[WatermarkKind, WatermarkCorner] | None = None,
     kinds: Mapping[WatermarkKind, bool] | None = None,
+    layout: WatermarkLayout = "stack",
+    offset_x: int = 0,
+    offset_y: int = 0,
+    gap: int | None = None,
+    start: int = 0,
 ) -> bool:
     """叠到库路径封面/海报. 无标记或无图则不动. 不修改 Resource 原图."""
     stems = _stamp_stems(has_subtitle=has_subtitle, uncensored=uncensored, mosaic=mosaic, definition=definition)
@@ -319,11 +369,8 @@ def apply_cover_watermarks(
         ratio = min(_SCALE_MAX, max(_SCALE_MIN, scale))
         target_h = max(_STAMP_MIN_HEIGHT, round(height * ratio))
         pad = max(4, target_h // 8)
-        gap = max(4, target_h // 10)
-        # AUTO 不是可粘贴角位: 分组前解析为具体角 (stack 下 = TOP_LEFT).
-        grouped: dict[WatermarkCorner, list[Image.Image]] = {
-            corner: [] for corner in WatermarkCorner if corner is not WatermarkCorner.AUTO
-        }
+        paste_gap = max(4, target_h // 10) if gap is None else gap
+        loaded: list[tuple[str, Image.Image]] = []
         for stem in stems:
             raw = load_stamp(stem, watermark_dir)
             if raw is None:
@@ -331,13 +378,21 @@ def apply_cover_watermarks(
             fitted = _fit_stamp(raw, target_h)
             if fitted is None:
                 continue
-            corner = _corner_for(stem, corners)
-            if corner is WatermarkCorner.AUTO:
-                corner = WatermarkCorner.TOP_LEFT
-            grouped[corner].append(fitted)
-        if not any(grouped.values()):
+            loaded.append((stem, fitted))
+        if not loaded:
             return False
-        _paste_stamps(img, grouped, pad=pad, gap=gap)
+        # AUTO 不是可粘贴角位: 分组前按布局解析为具体角 (stack 下 = TOP_LEFT).
+        requested = [_corner_for(stem, corners) for stem, _ in loaded]
+        if layout == "clockwise":
+            assigned = _clockwise_corners(requested, start)
+        else:
+            assigned = [WatermarkCorner.TOP_LEFT if corner is WatermarkCorner.AUTO else corner for corner in requested]
+        grouped: dict[WatermarkCorner, list[Image.Image]] = {
+            corner: [] for corner in WatermarkCorner if corner is not WatermarkCorner.AUTO
+        }
+        for corner, (_, stamp) in zip(assigned, loaded, strict=True):
+            grouped[corner].append(stamp)
+        _paste_stamps(img, grouped, pad=pad, gap=paste_gap, offset_x=offset_x, offset_y=offset_y)
         _save_jpeg(img, path, jpeg_quality)
         return True
     except Exception as e:
@@ -355,6 +410,11 @@ def apply_cover_watermarks_from_info(
     scale: float = _DEFAULT_SCALE,
     corners: Mapping[WatermarkKind, WatermarkCorner] | None = None,
     kinds: Mapping[WatermarkKind, bool] | None = None,
+    layout: WatermarkLayout = "stack",
+    offset_x: int = 0,
+    offset_y: int = 0,
+    gap: int | None = None,
+    start: int = 0,
 ) -> bool:
     """``content_type`` 是条目类型: 无码章与列表角标同用 ``parsing/file_info.py::shows_uncensored`` 的口径."""
     return apply_cover_watermarks(
@@ -368,4 +428,9 @@ def apply_cover_watermarks_from_info(
         scale=scale,
         corners=corners,
         kinds=kinds,
+        layout=layout,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        gap=gap,
+        start=start,
     )

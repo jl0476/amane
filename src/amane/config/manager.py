@@ -536,6 +536,21 @@ class WatermarkConfig(BaseModel):
     )
     """缺 key 补左上; 未知 key 丢弃; "auto" 字面量归一化为 AUTO (由布局层解析, stack 下 = TOP_LEFT)."""
 
+    layout: Literal["stack", "clockwise"] = "stack"
+    """布局模式: stack 同角多枚向内叠; clockwise 按相位顺序轮转四角 (解析规则见 media/images.py::_clockwise_corners)."""
+
+    offset_x: int = Field(default=0, ge=0)
+    """pad 落点上向内的像素偏移 (x: 左角向右 / 右角向左)."""
+
+    offset_y: int = Field(default=0, ge=0)
+    """pad 落点上向内的像素偏移 (y: 上角向下 / 下角向上)."""
+
+    gap: int | None = Field(default=None, ge=0)
+    """同角相邻两枚的间距; None = 自动推导 max(4, target_h // 10)."""
+
+    start: int = Field(default=0, ge=0, le=3)
+    """clockwise 的起始角序号 (0=左上 1=右上 2=右下 3=左下); stack 忽略."""
+
     @field_validator("kinds", mode="before")
     @classmethod
     def _complete_kinds(cls, v: Any) -> Any:
