@@ -46,7 +46,11 @@ _PLACEHOLDER_PATH_MARKERS: tuple[str, ...] = ("/now_printing/", "/noimage.")
 # 覆盖缓存时先在记录上挂待提交标记, 文件换新后再落记录; 中途取消或进程退出会留下"标记在、字节新"
 # 的中间态, 读路径据此按盘上字节自愈 (见 ``_heal_record``).
 PENDING_KEY = "pending"
-"""``meta`` 内的待提交标记: 值为待写入记录的 content_hash."""
+"""``meta`` 内的待提交标记: 值为待写入记录的 content_hash.
+
+普通资源用字符串形态; 派生资源用 ``{'hash': 待写入的 content_hash, 'meta': 待写入的 meta}``,
+自愈时按该 meta 写回, 派生记录的源版本标记因此与盘上字节同步.
+"""
 
 SRC_VERSION_KEY = "srcv"
 """``meta`` 内的源内容版本: 派生记录记源内容 hash, 命中时核对源是否已变."""
@@ -67,12 +71,38 @@ def _without_pending(meta: dict | None) -> dict:
     return {k: v for k, v in meta.items() if k != PENDING_KEY}
 
 
-def _pending_hash(meta: dict | None) -> str | None:
-    """待提交标记所指的内容 hash; 标记不是字符串形态时返回 None (不可轻信)."""
+@dataclass(frozen=True)
+class _Pending:
+    """待提交标记的内容: 待写入的 content_hash 与待写入的 meta (None 表示 meta 不变)."""
+
+    content_hash: str
+    meta: dict | None
+    path: str | None
+    """待写入的相对路径; None 表示路径不变."""
+
+
+def _pending(meta: dict | None) -> _Pending | None:
+    """解析待提交标记: 字符串形态是普通资源, 字典形态是派生资源 (带待写入的 meta 与路径).
+
+    标记不是这两种形态时按不可信处理, 返回 None (无从判定中间态).
+    """
     if not meta:
         return None
-    pending = meta.get(PENDING_KEY)
-    return pending if isinstance(pending, str) else None
+    value = meta.get(PENDING_KEY)
+    if isinstance(value, str):
+        return _Pending(content_hash=value, meta=None, path=None)
+    if isinstance(value, dict):
+        content_hash = value.get("hash")
+        if not isinstance(content_hash, str):
+            return None
+        pending_meta = value.get("meta")
+        pending_path = value.get("path")
+        return _Pending(
+            content_hash=content_hash,
+            meta=pending_meta if isinstance(pending_meta, dict) else None,
+            path=pending_path if isinstance(pending_path, str) else None,
+        )
+    return None
 
 
 def _without_content_bound(meta: dict | None) -> dict:
@@ -238,7 +268,8 @@ class ResourceStore:
 
         # 自愈须在会话外做: 会话内开着读事务时, 另开会话写库会被 SQLite 锁住.
         await self._heal_record(record, full_path)
-        return full_path
+        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径返回.
+        return self._base_dir / record.file_path
 
     async def _heal_record(self, record: Resource, full_path: Path) -> None:
         """覆盖流程中途夭折的自愈: 记录带待提交标记时, 按盘上字节把记录修正过来.
@@ -251,9 +282,11 @@ class ResourceStore:
         自愈与落库 (覆盖提交 / 就地超分) 持同一把自愈锁, 整段互斥: 覆盖"挂标记 → 换文件 →
         落记录"期间读路径的自愈排队等待, 等到时标记已被覆盖撤除 (或在覆盖夭折后由自愈接手) ——
         在飞提交的标记不会被读路径撤掉. 锁序固定为「locator 锁 → 自愈锁」, 自愈锁内不再取别的锁.
+
+        有无待提交标记一律按锁内重读到的库态判定, 不按调用方手里的快照: 取快照到自愈之间, 提交
+        可能刚挂上标记 —— 按快照判定会跳过自愈, 留下「盘上是新字节、记录仍是旧 hash」的失配,
+        旧 ETag 于是按旧记录返回新内容.
         """
-        if not record.meta or PENDING_KEY not in record.meta:
-            return
         async with self._heal_lock:
             healed = await self._heal_locked(record.id)
         if healed is None:
@@ -263,6 +296,7 @@ class ResourceStore:
         record.size = healed.size
         record.mime_type = healed.mime_type
         record.meta = healed.meta
+        record.file_path = healed.file_path
 
     async def _heal_locked(self, row_id: int | None) -> Resource | None:
         """自愈临界区: 持自愈锁.
@@ -279,25 +313,39 @@ class ResourceStore:
             if row is None:
                 return None
             meta = dict(row.meta) if row.meta else {}
-            pending_hash = _pending_hash(meta)
-            if pending_hash is None:
+            pending = _pending(meta)
+            if pending is None:
                 return None
-            full_path = self._base_dir / row.file_path
+            # 派生资源的待提交路径可能与记录当前路径不同 (扩展名变更): 按待提交路径核对盘上字节.
+            rel_path = pending.path or row.file_path
+            full_path = self._base_dir / rel_path
             try:
                 disk_hash = self._hash_file(full_path)
             except OSError:
-                return None
+                # 待提交路径读不出 (文件尚未移入): 按记录当前路径判定, 那份仍是盘上字节.
+                full_path = self._base_dir / row.file_path
+                try:
+                    disk_hash = self._hash_file(full_path)
+                except OSError:
+                    return None
+                rel_path = row.file_path
 
-            if disk_hash == pending_hash:
+            if disk_hash == pending.content_hash:
                 size = full_path.stat().st_size
                 mime = detect_media_type(full_path)
-                # 超分标记属不属于这份字节: 记录自己记的 hash 就是它时才保留, 否则失效 ——
-                # 旧字节的超分结果不适用于新字节, 而这份字节自带的超分结果仍然有效.
-                keep_sr = row.content_hash == disk_hash
+                if pending.meta is not None:
+                    # 派生资源: 待写入的 meta (含源版本标记) 一并写回 ——
+                    # 盘上字节与其源版本须同批落库, 否则版本标记描述的是另一份源.
+                    row.meta = {k: v for k, v in pending.meta.items() if k != PENDING_KEY}
+                else:
+                    # 超分标记属不属于这份字节: 记录自己记的 hash 就是它时才保留, 否则失效 ——
+                    # 旧字节的超分结果不适用于新字节, 而这份字节自带的超分结果仍然有效.
+                    keep_sr = row.content_hash == disk_hash
+                    row.meta = {k: v for k, v in meta.items() if k != PENDING_KEY and not (k == "sr" and not keep_sr)}
+                row.file_path = rel_path
                 row.content_hash = disk_hash
                 row.size = size
                 row.mime_type = mime
-                row.meta = {k: v for k, v in meta.items() if k != PENDING_KEY and not (k == "sr" and not keep_sr)}
                 session.add(row)
                 await session.commit()
                 logger.warning(
@@ -439,7 +487,8 @@ class ResourceStore:
         if not full_path.exists():
             return None
         await self._heal_record(record, full_path)
-        return record, full_path
+        # 自愈可能改写路径 (派生资源待提交的路径与记录当前路径不同): 按自愈后的路径返回.
+        return record, self._base_dir / record.file_path
 
     @staticmethod
     def url_hash(url: str) -> str:
@@ -503,39 +552,84 @@ class ResourceStore:
                 return existing
 
             dest.parent.mkdir(parents=True, exist_ok=True)
-            ok = await producer(dest)
-            if not ok or not dest.exists():
-                logger.warning("derived producer failed", src=src_url, op=op, args=args)
-                return None
 
-            size = dest.stat().st_size
-            mime = detect_media_type(dest)
-            content_hash = self._hash_file(dest)
-            meta = {"op": op, "src": src_url, "args": args}
-            if src_version is not None:
-                meta[SRC_VERSION_KEY] = src_version
+            # producer 写到独占临时, 不直接写最终路径: 最终路径的字节变更与记录落库之间有窗口,
+            # 直接写入时窗口内夭折会留下「盘上是新字节、记录仍是旧 hash」的失配, 读路径无从自愈.
+            tmp = dest.with_name(f"{dest.stem}{TMP_MARK}derived-{uuid4().hex[:8]}{dest.suffix}")
+            try:
+                ok = await producer(tmp)
+                if not ok or not tmp.exists():
+                    logger.warning("derived producer failed", src=src_url, op=op, args=args)
+                    return None
+
+                size = tmp.stat().st_size
+                mime = detect_media_type(tmp)
+                content_hash = self._hash_file(tmp)
+                meta = {"op": op, "src": src_url, "args": args}
+                if src_version is not None:
+                    meta[SRC_VERSION_KEY] = src_version
+
+                return await self._commit_derived(locator, dest, tmp, existing, content_hash, size, mime, meta)
+            finally:
+                tmp.unlink(missing_ok=True)
+
+    async def _commit_derived(
+        self,
+        locator: str,
+        dest: Path,
+        tmp: Path,
+        existing: Resource | None,
+        content_hash: str,
+        size: int,
+        mime: str | None,
+        meta: dict,
+    ) -> Resource | None:
+        """派生产物的可恢复提交: 挂待提交标记 → 原子移入 → 落库撤标记. 磁盘错误返回 None.
+
+        派生 locator 由 ``(src_url, op, args)`` 决定, 必然存在: 既有记录要覆盖, 首次入库则无记录可标记,
+        记录缺失即无失配可言.
+
+        「挂标记 → 换文件 → 落记录」整段持自愈锁: 读路径的自愈此时排队, 等到时标记已被撤除
+        (或在提交夭折后由自愈接手). 少了这段互斥, 读路径会在「标记在库、盘上仍是旧字节」的窗口撤掉
+        尚未提交的标记, 提交随后夭折就留下永久失配.
+        """
+        async with self._heal_lock:
+            if existing is not None:
+                await self._mark_pending_derived(existing, content_hash, meta, self._relative_path(dest))
+
+            try:
+                tmp.replace(dest)
+            except OSError:
+                if existing is not None:
+                    await self._clear_pending(locator)
+                logger.warning("derived commit failed", locator=locator)
+                return None
 
             async with self._session() as session:
                 if existing is not None:
-                    existing.file_path = self._relative_path(dest)
-                    existing.content_hash = content_hash
-                    existing.size = size
-                    existing.mime_type = mime
-                    existing.meta = meta
-                    session.add(existing)
-                    await session.commit()
-                    return existing
-                record = Resource(
-                    url=locator,
-                    file_path=self._relative_path(dest),
-                    content_hash=content_hash,
-                    size=size,
-                    mime_type=mime,
-                    meta=meta,
-                )
-                session.add(record)
+                    # 重新读行再改: ``existing`` 是落库前的旧副本, 直接改它会把待提交标记一并覆盖回去
+                    # (meta 整列写), 留下「标记还在」的假中间态.
+                    row = await session.get(Resource, existing.id)
+                    if row is None:
+                        row = existing
+                        session.add(row)
+                    row.file_path = self._relative_path(dest)
+                    row.content_hash = content_hash
+                    row.size = size
+                    row.mime_type = mime
+                    row.meta = meta
+                else:
+                    row = Resource(
+                        url=locator,
+                        file_path=self._relative_path(dest),
+                        content_hash=content_hash,
+                        size=size,
+                        mime_type=mime,
+                        meta=meta,
+                    )
+                    session.add(row)
                 await session.commit()
-                return record
+                return row
 
     async def _source_version(self, src_url: str, *, snapshot: SourceSnapshot | None = None) -> str | None:
         """源内容版本: 源文件盘上字节的 hash; 源无记录或文件缺失时返回 None (无从核对).
@@ -826,6 +920,22 @@ class ResourceStore:
             row = await session.get(Resource, record.id)
             if row is not None:
                 row.meta = meta
+                session.add(row)
+                await session.commit()
+
+    async def _mark_pending_derived(self, record: Resource, content_hash: str, meta: dict, path: str) -> None:
+        """派生资源挂待提交标记: 待写入的 content_hash、待写入的 meta 与待写入的路径一并挂上.
+
+        自愈时按标记里的 meta 与路径写回: 源版本标记与盘上字节同批落库, 不会出现「字节已换新、
+        源版本仍是旧值」的失配.
+        """
+        pending_meta = dict(record.meta) if record.meta else {}
+        pending_meta[PENDING_KEY] = {"hash": content_hash, "meta": meta, "path": path}
+        record.meta = pending_meta
+        async with self._session() as session:
+            row = await session.get(Resource, record.id)
+            if row is not None:
+                row.meta = pending_meta
                 session.add(row)
                 await session.commit()
 

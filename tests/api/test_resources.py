@@ -1,5 +1,7 @@
 """测试资源 serve 端点 (哑文件服务 + 外链反代)."""
 
+import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -9,8 +11,6 @@ from PIL import Image
 from amane.media import ResourceStore
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from fastapi import FastAPI
     from httpx2 import AsyncClient
 
@@ -59,6 +59,70 @@ async def test_serve_resource_etag(app: FastAPI, client: AsyncClient):
 async def test_serve_missing_resource_404(client: AsyncClient):
     resp = await client.get("resources/deadbeefdeadbeef")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_serve_derived_after_interrupted_regeneration(app: FastAPI, client: AsyncClient, monkeypatch):
+    """派生重生成中断后读资源: 不得按旧 ETag 返回新内容 (IMPL-10).
+
+    派生重生成在文件移入后、落库前被取消时, 盘上是新字节而记录仍是旧 hash.
+    读路径自愈后, 旧 ETag 不得命中 (否则消费方按 304 处理, 新字节永远取不到).
+    """
+    store = app.state.runtime.resource_store
+    src_url = "https://s/t.jpg"
+
+    # 源缓存条目: 源换新时派生须重生成.
+    src_client = AsyncMock()
+    src_client.resolve_final_url = AsyncMock(return_value=src_url)
+
+    async def download(_url: str, dest: Path, **kwargs: object) -> bool:
+        dest.write_bytes(b"source-v1")
+        return True
+
+    src_client.download = AsyncMock(side_effect=download)
+    src_path = await store.acquire(src_url, src_client)
+    assert src_path is not None
+
+    async def producer(dest: Path) -> bool:
+        Image.new("RGB", (379, 538), "blue").save(dest)
+        return True
+
+    res = await store.acquire_derived(src_url, "crop", "0.7042", producer)
+    assert res is not None
+    old_hash = res.content_hash
+    assert old_hash is not None
+    url_hash = ResourceStore.url_hash(res.url)
+
+    # 源换新 → 派生重生成: 盘上换成新字节, 记录落库前取消.
+    src_path.write_bytes(b"source-v2")
+
+    async def new_producer(dest: Path) -> bool:
+        Image.new("RGB", (379, 538), "red").save(dest)
+        return True
+
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.acquire_derived(src_url, "crop", "0.7042", new_producer)
+
+    monkeypatch.undo()
+
+    # 旧 ETag 不得命中: 记录已按盘上字节自愈, hash 与旧值不同.
+    stale = await client.get(f"resources/{url_hash}", headers={"If-None-Match": f'"{old_hash}"'})
+    assert stale.status_code == 200
+    assert len(stale.content) > 0
+    assert stale.headers["etag"] != f'"{old_hash}"'
+
+    # 新 ETag 命中, 内容与盘上一致.
+    fresh_hash = stale.headers["etag"]
+    cached = await client.get(f"resources/{url_hash}", headers={"If-None-Match": fresh_hash})
+    assert cached.status_code == 304
 
 
 class TestProxyImage:

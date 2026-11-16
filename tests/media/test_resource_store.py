@@ -1429,6 +1429,42 @@ async def test_stale_pending_marker_still_stripped(resource_store: ResourceStore
 
 
 @pytest.mark.asyncio
+async def test_heal_checks_db_state_not_caller_snapshot(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """读路径的快照早于提交挂标记时: 自愈仍须按库态修复记录与盘上字节的失配.
+
+    自愈若按调用方手里的快照判有无标记, 取快照到自愈之间刚挂上的标记会被漏掉, 记录留在旧 hash,
+    盘上却是新字节 —— 旧 ETag 于是按旧记录返回新内容.
+    """
+    url = "https://s/heal-late-pending.jpg"
+    old_bytes = _png(100, 100)
+    cached_path = await _seed_cache(resource_store, url, old_bytes, monkeypatch)
+    new_bytes = _png(200, 150)
+
+    # 读路径先取快照: 此时库中还没有待提交标记.
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        snapshot = Resource.model_validate(row.model_dump())
+    assert snapshot.meta is not None and "pending" not in snapshot.meta
+
+    # 提交挂上标记并换文件, 随后夭折: 盘上是新字节, 记录仍是旧 hash 且带标记.
+    new_hash = hashlib.sha256(new_bytes).hexdigest()
+    async with resource_store._session() as session:
+        result = await session.exec(select(Resource).where(Resource.url == url))
+        row = result.first()
+        assert row is not None
+        await resource_store._mark_pending(row, new_hash)
+    cached_path.write_bytes(new_bytes)
+
+    # 读路径拿着陈旧快照自愈: 须按库态修复, 不按快照.
+    await resource_store._heal_record(snapshot, cached_path)
+
+    assert snapshot.content_hash == ResourceStore._hash_file(cached_path)
+    assert snapshot.meta is not None and "pending" not in snapshot.meta
+
+
+@pytest.mark.asyncio
 async def test_heal_write_does_not_clobber_concurrent_commit(
     resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1658,3 +1694,172 @@ async def test_derived_internal_url_source_reruns_when_source_changed(
     assert second is not None
     assert calls["n"] == 2  # 源已变 → 派生重跑
     assert resource_store.full_path(second).read_bytes() == new_src
+
+
+# --- 派生重生成的中断保护 (IMPL-10) ---
+
+
+@pytest.mark.asyncio
+async def test_derived_regenerate_cancel_heals_record(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """派生重生成在文件移入后、落库前被取消: 再次读取时记录与盘上字节一致 (IMPL-10).
+
+    派生路径原先没有待提交标记: 中途夭折会留下「盘上是新字节、记录仍是旧 hash」的失配,
+    资源接口按旧 ETag 返回 304, 新字节永远取不到.
+    """
+    src_url = "https://s/src-cancel.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    old_bytes = b"old-derived-bytes"
+
+    async def old_producer(dest: Path) -> bool:
+        dest.write_bytes(old_bytes)
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", old_producer)
+    assert first is not None
+    old_hash = first.content_hash
+    derived_path = resource_store.full_path(first)
+
+    # 源换新 → 派生须重生成; producer 写出新字节.
+    src_path.write_bytes(_png(200, 150))
+    new_bytes = b"new-derived-bytes"
+
+    async def new_producer(dest: Path) -> bool:
+        dest.write_bytes(new_bytes)
+        return True
+
+    # 在文件移入之后、记录落库之前取消.
+    original_replace = Path.replace
+
+    def replace_then_cancel(self: Path, target: Path) -> Path:
+        original_replace(self, target)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", replace_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.acquire_derived(src_url, "crop", "0.7", new_producer)
+
+    monkeypatch.undo()
+
+    # 盘上是新字节, 记录尚未更新 —— 失配此刻存在.
+    assert derived_path.read_bytes() == new_bytes
+    assert derived_path.read_bytes() != old_bytes
+
+    # 再次读取: 记录按盘上字节自愈, 失配消失.
+    healed = await resource_store.get_by_url(first.url)
+    assert healed is not None
+    assert healed.content_hash == ResourceStore._hash_file(derived_path)
+    assert healed.content_hash != old_hash
+    assert healed.size == len(new_bytes)
+    assert healed.meta is not None and "pending" not in healed.meta
+
+    # 读路径自愈: 源版本标记随盘上字节一并写回, 不留旧值.
+    assert healed.meta.get("srcv") == ResourceStore._hash_file(src_path)
+
+
+@pytest.mark.asyncio
+async def test_derived_regenerate_cancel_keeps_old_bytes_before_move(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """派生重生成在文件移入前被取消: 盘上仍是旧字节, 记录仍指旧字节, 待提交标记撤除."""
+    src_url = "https://s/src-cancel-early.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    old_bytes = b"old-derived-bytes"
+
+    async def old_producer(dest: Path) -> bool:
+        dest.write_bytes(old_bytes)
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", old_producer)
+    assert first is not None
+    derived_path = resource_store.full_path(first)
+
+    src_path.write_bytes(_png(200, 150))
+
+    async def new_producer(dest: Path) -> bool:
+        dest.write_bytes(b"new-derived-bytes")
+        return True
+
+    def cancel_before_replace(self: Path, target: Path) -> Path:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Path, "replace", cancel_before_replace)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resource_store.acquire_derived(src_url, "crop", "0.7", new_producer)
+
+    monkeypatch.undo()
+
+    assert derived_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(first.url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(derived_path)
+    assert record.meta is not None and "pending" not in record.meta
+
+
+@pytest.mark.asyncio
+async def test_derived_producer_writes_exclusive_temp(resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch):
+    """producer 写到独占临时而非最终路径: 最终路径的字节变更与落库之间不出现窗口.
+
+    派生重生成直接写最终路径时, 「字节已换新、记录未落库」的窗口内夭折会留下永久失配.
+    """
+    src_url = "https://s/src-temp.jpg"
+    await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    seen: list[Path] = []
+
+    async def producer(dest: Path) -> bool:
+        seen.append(dest)
+        dest.write_bytes(b"derived-bytes")
+        return True
+
+    result = await resource_store.acquire_derived(src_url, "crop", "0.7", producer)
+    assert result is not None
+    assert len(seen) == 1
+    final_path = resource_store.full_path(result)
+    assert seen[0] != final_path  # producer 写的是临时
+    assert TMP_MARK in seen[0].name
+    assert final_path.read_bytes() == b"derived-bytes"
+    # 临时在提交后清理.
+    assert not seen[0].exists()
+    assert _tmp_leftovers(resource_store) == []
+
+
+@pytest.mark.asyncio
+async def test_derived_replace_failure_leaves_no_pending(
+    resource_store: ResourceStore, monkeypatch: pytest.MonkeyPatch
+):
+    """派生提交时文件移入失败: 待提交标记撤除, 记录仍指旧字节, 盘上仍是旧字节."""
+    src_url = "https://s/derived-replace-fail.jpg"
+    src_path = await _seed_cache(resource_store, src_url, _png(100, 100), monkeypatch)
+    old_bytes = b"old-derived-bytes"
+
+    async def old_producer(dest: Path) -> bool:
+        dest.write_bytes(old_bytes)
+        return True
+
+    first = await resource_store.acquire_derived(src_url, "crop", "0.7", old_producer)
+    assert first is not None
+    derived_path = resource_store.full_path(first)
+
+    src_path.write_bytes(_png(200, 150))
+
+    async def new_producer(dest: Path) -> bool:
+        dest.write_bytes(b"new-derived-bytes")
+        return True
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    result = await resource_store.acquire_derived(src_url, "crop", "0.7", new_producer)
+
+    monkeypatch.undo()
+
+    assert result is None  # 提交失败按失败处理, 不返回半成品记录
+    assert derived_path.read_bytes() == old_bytes  # 盘上仍是旧字节
+    record = await resource_store.get_by_url(first.url)
+    assert record is not None
+    assert record.content_hash == ResourceStore._hash_file(derived_path)
+    assert record.meta is not None and "pending" not in record.meta
+    assert _tmp_leftovers(resource_store) == []
