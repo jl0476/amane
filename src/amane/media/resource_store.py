@@ -495,15 +495,16 @@ class ResourceStore:
         return _url_hash(url)
 
     @asynccontextmanager
-    async def source_snapshot(self, src_path: Path) -> AsyncGenerator[SourceSnapshot]:
+    async def source_snapshot(self, src_path: Path) -> AsyncGenerator[SourceSnapshot | None]:
         """源内容快照: 源的独占副本, 供检测 / 裁剪 / 版本标记共用同一份字节.
 
         副本与源同目录, 复制是原子的读: 源被改名换新时, 副本要么是换新前的那份, 要么是换新后的
         那份, 不会取到半截内容. 副本在离开上下文时删除; 派生记录只记版本 hash, 不引用副本路径,
         因此不存在「副本已删而记录仍指向它」的悬空引用.
 
-        复制失败时以源路径本身作快照: 快照退化为「直接用源文件」, 版本取当时盘上的字节.
-        此时一致性退化为尽力而为 (源在检测与裁剪之间换新仍会混用), 但流程不中断.
+        复制失败时给出 None: 调用方据此放弃本轮派生. 降级为「直接用源文件」会让检测与裁剪之间
+        源被换新时混用两个版本, 产出「源 A 的检测框套在源 B 上」的错配产物, 而源版本标记记的是
+        当时盘上的那份 —— 错配产物配一个看似自洽的版本标记. 磁盘瞬时错误时宁可这一轮不出派生图.
         """
         tmp = src_path.with_name(f"{src_path.stem}{TMP_MARK}snap-{uuid4().hex[:8]}{src_path.suffix}")
         try:
@@ -511,11 +512,7 @@ class ResourceStore:
         except OSError:
             tmp.unlink(missing_ok=True)
             logger.warning("source snapshot failed", path=str(src_path))
-            try:
-                version = self._hash_file(src_path)
-            except OSError:
-                version = ""
-            yield SourceSnapshot(path=src_path, version=version)
+            yield None
             return
         try:
             yield SourceSnapshot(path=tmp, version=self._hash_file(tmp))
