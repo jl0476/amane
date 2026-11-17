@@ -1,5 +1,6 @@
 """ConfigManager 测试 - ColdSettings, HotSettings, ConfigManager"""
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -25,7 +26,7 @@ from amane.config import (
     WatermarkConfig,
     WorkerConfig,
 )
-from amane.config.manager import LANG_METADATA_FIELD_SET
+from amane.config.manager import LANG_METADATA_FIELD_SET, WatermarkTarget
 from amane.enums import (
     ApiType,
     BrowserBackendName,
@@ -646,6 +647,34 @@ class TestWatermarkConfig:
     def test_invalid_corner_rejected(self) -> None:
         with pytest.raises(ValidationError):
             WatermarkConfig.model_validate({"corners": {"subtitle": "middle"}})
+
+    @pytest.mark.parametrize(
+        ("targets", "expected"),
+        [
+            pytest.param(None, ["poster", "thumb"], id="default_two_targets"),
+            pytest.param(["thumb"], ["thumb"], id="single_target"),
+            pytest.param(["thumb", "poster"], ["poster", "thumb"], id="two_targets_sorted"),
+            pytest.param(["fanart", "thumb", "poster"], ["fanart", "poster", "thumb"], id="all_targets_sorted"),
+            pytest.param([], [], id="empty_targets"),
+        ],
+    )
+    def test_targets_json_form_is_sorted(
+        self, targets: list[WatermarkTarget] | None, expected: list[WatermarkTarget]
+    ) -> None:
+        """JSON 形式按 sorted 输出: frozenset 迭代序随 PYTHONHASHSEED 变化, 序列化不定序会让 openapi.json 不可复现."""
+        cfg = WatermarkConfig() if targets is None else WatermarkConfig(targets=frozenset(targets))
+
+        assert cfg.model_dump(mode="json")["targets"] == expected
+        assert json.loads(cfg.model_dump_json())["targets"] == expected
+
+    def test_targets_python_form_stays_frozenset(self) -> None:
+        """Python 形式仍是集合: field_serializer 只作用于 JSON 形式, 不得改变 Python 侧的集合语义."""
+        cfg = WatermarkConfig(targets=frozenset({"fanart", "thumb"}))
+
+        dumped = cfg.model_dump()
+
+        assert isinstance(dumped["targets"], frozenset)
+        assert dumped["targets"] == frozenset({"fanart", "thumb"})
 
 
 # ---------------------------------------------------------------------------
