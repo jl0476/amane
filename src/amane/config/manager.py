@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_serializer, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -517,6 +517,14 @@ def _reorder_route(eligible: list[Any], order: list[str]) -> list[str]:
     return ordered + leftover
 
 
+WatermarkTarget = Literal["thumb", "poster", "fanart"]
+
+#: `targets` 的缺省集合; json_schema_extra 的 default 取其 sorted 视图, 钉住组件层 schema 的顺序.
+_DEFAULT_TARGETS: frozenset[WatermarkTarget] = frozenset({"thumb", "poster"})
+# json_schema_extra 需要 JsonValue 兼容类型, 使用 list[Any] 避免 pyright invariance 问题
+_DEFAULT_TARGETS_JSON: list[Any] = sorted(_DEFAULT_TARGETS)
+
+
 class WatermarkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -551,8 +559,16 @@ class WatermarkConfig(BaseModel):
     start: int = Field(default=0, ge=0, le=3)
     """clockwise 的起始角序号 (0=左上 1=右上 2=右下 3=左下); stack 忽略."""
 
-    targets: frozenset[Literal["thumb", "poster", "fanart"]] = frozenset({"thumb", "poster"})
+    targets: frozenset[WatermarkTarget] = Field(
+        default=_DEFAULT_TARGETS,
+        json_schema_extra={"default": _DEFAULT_TARGETS_JSON, "uniqueItems": True},
+    )
     """作用目标集合; 集合外的产物不叠水印. fanart 指剧照 (extrafanart) 逐张, 不含 fanart.jpg 副本."""
+
+    @field_serializer("targets", when_used="json")
+    def _serialize_targets(self, value: frozenset[WatermarkTarget]) -> list[WatermarkTarget]:
+        """JSON 形式按 sorted 输出: frozenset 迭代序随 PYTHONHASHSEED 变化, 该值经上级配置的 schema 默认值进入 openapi.json; 组件层顺序由上方 json_schema_extra 钉住, 此处覆盖嵌套实例默认值与 API 响应."""
+        return sorted(value)
 
     style: str = Field(default="default", pattern=r"^[a-z0-9_-]+$")
     """样式名: 非 default 走 `{data_dir}/watermarks/{style}/` 子目录, default 走旧位置 (media/watermarks::load_stamp 查找链)."""
