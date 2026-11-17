@@ -1103,7 +1103,7 @@ export const updatePluginMutation = (options?: Partial<Options<UpdatePluginData>
  * 按库级生效 ``WatermarkConfig`` 对指定源图试算叠印结果.
  *
  * 相位四元组由请求显式给定 (与 FileInfo 同口径), 端点不做资源反查;
- * ``kinds`` 过滤与整理期同一实现 (media/images.py::apply_cover_watermarks).
+ * ``kinds`` 过滤与整理期同一实现 (media/images.py::stamp_cover).
  * 源缺失 404; 源不可读 / 叠印失败 422 带原因.
  */
 export const previewWatermarkMutation = (options?: Partial<Options<PreviewWatermarkData>>): UseMutationOptions<unknown, PreviewWatermarkError, Options<PreviewWatermarkData>> => {

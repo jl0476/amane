@@ -2791,7 +2791,7 @@
           "libraries"
         ],
         "summary": "Preview Watermark",
-        "description": "按库级生效 ``WatermarkConfig`` 对指定源图试算叠印结果.\n\n相位四元组由请求显式给定 (与 FileInfo 同口径), 端点不做资源反查;\n``kinds`` 过滤与整理期同一实现 (media/images.py::apply_cover_watermarks).\n源缺失 404; 源不可读 / 叠印失败 422 带原因.",
+        "description": "按库级生效 ``WatermarkConfig`` 对指定源图试算叠印结果.\n\n相位四元组由请求显式给定 (与 FileInfo 同口径), 端点不做资源反查;\n``kinds`` 过滤与整理期同一实现 (media/images.py::stamp_cover).\n源缺失 404; 源不可读 / 叠印失败 422 带原因.",
         "operationId": "preview_watermark",
         "parameters": [
           {
