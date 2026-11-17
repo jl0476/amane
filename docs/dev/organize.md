@@ -31,7 +31,7 @@ filter 自建 (原生 default 只对 undefined 生效, 覆盖不了空串与 "Un
 分派与协议分离: `execute_file_operations` 的 `OCCUPIED` 预检按 `common.overwrite_video` 分派
 (False 维持现状记 `CONFLICT` 跳过; True 进入 `organize/overwrite.py::overwrite_target`),
 前置检查 (目标在库内、是视频、不同于源) 是该预检的延伸; 覆写与跳过共用同一次预检.
-`common.overwrite_image` 只影响图片写入: False 时目标已有图片跳过并计入结果 `skipped`.
+`common.overwrite_image` 只影响图片写入: False 时目标已有图片跳过并计入结果 `skipped`, 水印随之保持原样 — 叠印只作用于本轮写出的产物 (分派契约见 [task-system.md](task-system.md) 封面角标).
 
 - 提交点 = 目标路径上出现新内容 (`os.replace` 返回成功). 提交点之前失败回滚 (备份还原 + 删
   journal 行); 之后任何失败都不删除目标 —— MOVE 模式下源内容的副本此时只在目标路径上.
