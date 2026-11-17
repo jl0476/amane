@@ -6410,6 +6410,10 @@ export type WatermarkConfig = {
      */
     start?: number;
     /**
+     * Targets
+     */
+    targets?: Array<'thumb' | 'poster' | 'fanart'>;
+    /**
      * Style
      */
     style?: string;
@@ -6432,6 +6436,43 @@ export type WatermarkCorner = 'top_left' | 'top_right' | 'bottom_left' | 'bottom
  * 整理落盘封面角标类别. 分辨率共用 definition, 不论 4K/1080p.
  */
 export type WatermarkKind = 'subtitle' | 'uncensored' | 'cracked' | 'leaked' | 'definition';
+
+/**
+ * WatermarkPreviewPhase
+ *
+ * 水印预览的相位四元组: 与 `FileInfo` 同口径, 调用方显式给定.
+ *
+ * 端点不做资源反查 (预览是配置试算工具, 相位由前端从条目当前信息填充);
+ * 四个字段都必须显式出现在请求体里, 可空字段以 null 表示「无」.
+ */
+export type WatermarkPreviewPhase = {
+    /**
+     * Has Subtitle
+     */
+    has_subtitle: boolean;
+    /**
+     * Uncensored
+     */
+    uncensored: boolean;
+    mosaic: Mosaic | null;
+    /**
+     * Definition
+     */
+    definition: string | null;
+};
+
+/**
+ * WatermarkPreviewRequest
+ *
+ * 水印预览入参 (规格 §3.6): 内部资源 URL + 显式相位.
+ */
+export type WatermarkPreviewRequest = {
+    /**
+     * Url
+     */
+    url: string;
+    phase: WatermarkPreviewPhase;
+};
 
 /**
  * WorkerConfig
@@ -8062,6 +8103,34 @@ export type UpdatePluginResponses = {
 };
 
 export type UpdatePluginResponse = UpdatePluginResponses[keyof UpdatePluginResponses];
+
+export type PreviewWatermarkData = {
+    body: WatermarkPreviewRequest;
+    path: {
+        /**
+         * Library Id
+         */
+        library_id: number;
+    };
+    query?: never;
+    url: '/api/libraries/{library_id}/preview/watermark';
+};
+
+export type PreviewWatermarkErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PreviewWatermarkError = PreviewWatermarkErrors[keyof PreviewWatermarkErrors];
+
+export type PreviewWatermarkResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ListActorsData = {
     body?: never;

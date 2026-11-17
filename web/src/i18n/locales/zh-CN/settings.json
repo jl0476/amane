@@ -867,6 +867,17 @@
         "label": "轮转起始角",
         "description": "clockwise 的起始角序号 (0 左上 / 1 右上 / 2 右下 / 3 左下); stack 忽略"
       },
+      "targets": {
+        "label": "作用目标",
+        "description": "集合内的产物才叠水印",
+        "$": {
+          "options": {
+            "thumb": "封面",
+            "poster": "海报",
+            "fanart": "剧照"
+          }
+        }
+      },
       "style": {
         "label": "样式名",
         "description": "非 default 走水印目录的 {style} 子目录, default 走旧位置"

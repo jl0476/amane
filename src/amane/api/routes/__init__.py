@@ -18,6 +18,7 @@ from .network import router as network_router
 from .parse_rules import router as parse_rules_router
 from .playback import router as playback_router
 from .plugins import router as plugins_router
+from .preview import router as preview_router
 from .resources import router as resources_router
 from .saved_queries import router as saved_queries_router
 from .schedules import router as schedules_router
@@ -42,6 +43,7 @@ router.include_router(network_router)
 router.include_router(parse_rules_router)
 router.include_router(playback_router)
 router.include_router(plugins_router)
+router.include_router(preview_router)
 router.include_router(actors_router)
 router.include_router(facets_router)
 router.include_router(feeds_router)

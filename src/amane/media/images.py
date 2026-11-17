@@ -45,6 +45,20 @@ def _save_jpeg(img: Image.Image, path: Path, quality: int) -> None:
     img.convert("RGB").save(path, format="JPEG", quality=quality)
 
 
+def reencode_jpeg(path: Path, *, quality: int) -> str | None:
+    """原地重编码为 JPEG (水印预览的无章输出与可读性预检共用), 编码与 ``_save_jpeg`` 一致.
+
+    源不可解码返回原因字符串 (预览端点据此 422), 成功返回 None. ``convert`` 先行完整
+    解码, 重编码不会读到被自身覆写中的文件.
+    """
+    try:
+        with Image.open(path) as img:
+            img.convert("RGB").save(path, format="JPEG", quality=quality)
+    except Exception as e:
+        return str(e)
+    return None
+
+
 def format_crop_box_args(left: int, top: int, right: int, bottom: int, *, rotation: CropRotation = 0) -> str:
     """派生键: 像素框 + 非 0 的旋转, 否则换角度会命中同一结果."""
     args = f"{CROP_BOX_ARGS_PREFIX}{left},{top},{right},{bottom}"

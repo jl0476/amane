@@ -102,6 +102,7 @@ from .playback import (
     PlaybackSubtitleItem,
 )
 from .plugins import PluginConfigUpdate, PluginListResponse, PluginResponse
+from .preview import WatermarkPreviewPhase, WatermarkPreviewRequest
 from .schedules import ScheduleCreateRequest, ScheduleListResponse, ScheduleResponse, ScheduleUpdateRequest
 from .semantic import SemanticDiagnosticsResponse, SemanticModelCounts, SemanticStatusResponse
 from .system import DesktopResponse, ReleaseResponse
@@ -261,6 +262,8 @@ __all__ = [
     "UserTagResponse",
     "UserTagsCreateRequest",
     "UserTagsCreateResponse",
+    "WatermarkPreviewPhase",
+    "WatermarkPreviewRequest",
     "normalize_feed_group",
     "path_template_schema",
     "to_media_file_response",

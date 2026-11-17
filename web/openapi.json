@@ -2785,6 +2785,58 @@
         }
       }
     },
+    "/api/libraries/{library_id}/preview/watermark": {
+      "post": {
+        "tags": [
+          "libraries"
+        ],
+        "summary": "Preview Watermark",
+        "description": "按库级生效 ``WatermarkConfig`` 对指定源图试算叠印结果.\n\n相位四元组由请求显式给定 (与 FileInfo 同口径), 端点不做资源反查;\n``kinds`` 过滤与整理期同一实现 (media/images.py::apply_cover_watermarks).\n源缺失 404; 源不可读 / 叠印失败 422 带原因.",
+        "operationId": "preview_watermark",
+        "parameters": [
+          {
+            "name": "library_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Library Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatermarkPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/jpeg": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/actors": {
       "get": {
         "tags": [
@@ -10867,6 +10919,10 @@
               "offset_x": 0,
               "offset_y": 0,
               "start": 0,
+              "targets": [
+                "poster",
+                "thumb"
+              ],
               "style": "default"
             }
           },
@@ -18804,6 +18860,23 @@
             "title": "Start",
             "default": 0
           },
+          "targets": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "thumb",
+                "poster",
+                "fanart"
+              ]
+            },
+            "type": "array",
+            "uniqueItems": true,
+            "title": "Targets",
+            "default": [
+              "poster",
+              "thumb"
+            ]
+          },
           "style": {
             "type": "string",
             "pattern": "^[a-z0-9_-]+$",
@@ -18850,6 +18923,66 @@
         ],
         "title": "WatermarkKind",
         "description": "整理落盘封面角标类别. 分辨率共用 definition, 不论 4K/1080p."
+      },
+      "WatermarkPreviewPhase": {
+        "properties": {
+          "has_subtitle": {
+            "type": "boolean",
+            "title": "Has Subtitle"
+          },
+          "uncensored": {
+            "type": "boolean",
+            "title": "Uncensored"
+          },
+          "mosaic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Mosaic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "has_subtitle",
+          "uncensored",
+          "mosaic",
+          "definition"
+        ],
+        "title": "WatermarkPreviewPhase",
+        "description": "水印预览的相位四元组: 与 `FileInfo` 同口径, 调用方显式给定.\n\n端点不做资源反查 (预览是配置试算工具, 相位由前端从条目当前信息填充);\n四个字段都必须显式出现在请求体里, 可空字段以 null 表示「无」."
+      },
+      "WatermarkPreviewRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/WatermarkPreviewPhase"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "phase"
+        ],
+        "title": "WatermarkPreviewRequest",
+        "description": "水印预览入参 (规格 §3.6): 内部资源 URL + 显式相位."
       },
       "WorkerConfig": {
         "properties": {

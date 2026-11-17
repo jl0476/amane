@@ -3763,6 +3763,10 @@ export const HotSettingsSchema = {
                 offset_x: 0,
                 offset_y: 0,
                 start: 0,
+                targets: [
+                    'poster',
+                    'thumb'
+                ],
                 style: 'default'
             }
         },
@@ -11868,6 +11872,23 @@ export const WatermarkConfigSchema = {
             title: 'Start',
             default: 0
         },
+        targets: {
+            items: {
+                type: 'string',
+                enum: [
+                    'thumb',
+                    'poster',
+                    'fanart'
+                ]
+            },
+            type: 'array',
+            uniqueItems: true,
+            title: 'Targets',
+            default: [
+                'poster',
+                'thumb'
+            ]
+        },
         style: {
             type: 'string',
             pattern: '^[a-z0-9_-]+$',
@@ -11916,6 +11937,68 @@ export const WatermarkKindSchema = {
     ],
     title: 'WatermarkKind',
     description: '整理落盘封面角标类别. 分辨率共用 definition, 不论 4K/1080p.'
+} as const;
+
+export const WatermarkPreviewPhaseSchema = {
+    properties: {
+        has_subtitle: {
+            type: 'boolean',
+            title: 'Has Subtitle'
+        },
+        uncensored: {
+            type: 'boolean',
+            title: 'Uncensored'
+        },
+        mosaic: {
+            anyOf: [
+                {
+                    $ref: '#/components/schemas/Mosaic'
+                },
+                {
+                    type: 'null'
+                }
+            ]
+        },
+        definition: {
+            anyOf: [
+                {
+                    type: 'string'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Definition'
+        }
+    },
+    type: 'object',
+    required: [
+        'has_subtitle',
+        'uncensored',
+        'mosaic',
+        'definition'
+    ],
+    title: 'WatermarkPreviewPhase',
+    description: '水印预览的相位四元组: 与 `FileInfo` 同口径, 调用方显式给定.\n\n端点不做资源反查 (预览是配置试算工具, 相位由前端从条目当前信息填充);\n四个字段都必须显式出现在请求体里, 可空字段以 null 表示「无」.'
+} as const;
+
+export const WatermarkPreviewRequestSchema = {
+    properties: {
+        url: {
+            type: 'string',
+            title: 'Url'
+        },
+        phase: {
+            $ref: '#/components/schemas/WatermarkPreviewPhase'
+        }
+    },
+    type: 'object',
+    required: [
+        'url',
+        'phase'
+    ],
+    title: 'WatermarkPreviewRequest',
+    description: '水印预览入参 (规格 §3.6): 内部资源 URL + 显式相位.'
 } as const;
 
 export const WorkerConfigSchema = {

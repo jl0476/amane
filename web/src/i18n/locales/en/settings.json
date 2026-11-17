@@ -867,6 +867,17 @@
         "label": "Rotation start corner",
         "description": "Start corner index for clockwise (0 top-left / 1 top-right / 2 bottom-right / 3 bottom-left); ignored by stack"
       },
+      "targets": {
+        "label": "Apply targets",
+        "description": "Only products in the set get watermarked",
+        "$": {
+          "options": {
+            "thumb": "Thumb",
+            "poster": "Poster",
+            "fanart": "Fanart"
+          }
+        }
+      },
       "style": {
         "label": "Style name",
         "description": "Non-default styles use the {style} subdirectory of the watermark dir; default uses the legacy location"
