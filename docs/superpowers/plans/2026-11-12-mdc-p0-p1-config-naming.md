@@ -8,7 +8,7 @@
 
 **技术栈：** Python 3.14 / FastAPI / SQLModel + Alembic (SQLite) / pytest；前端 React + Mantine（三处穷尽检查 + i18n）；新增运行时依赖 jinja2、google-re2（RE2 线性时间正则引擎，识别词匹配）。
 
-**规格：** `docs/superpowers/specs/2026-11-12-mdc-p0-p1-config-naming-design.md`（第 7 版，已过六轮复审；计划的全部取值与协议论证来自它，执行者两份都读）
+**规格：** `docs/superpowers/specs/2026-11-12-mdc-p0-p1-config-naming-design.md`（第 10 版，已实现；计划的全部取值与协议论证来自它，执行者两份都读）
 
 ## 全局约束
 
@@ -73,7 +73,7 @@
 - 修改：`src/amane/crawlers/sites/avsox.py`
 - 测试：`tests/crawlers/test_avsox.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_profile_declares_multi_language():
@@ -87,21 +87,21 @@ def test_plot_prefers_language_track_over_cn_fallback(monkeypatch):
     ...
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/crawlers/test_avsox.py -x -q`
 预期：FAIL（`AVSOX not in MULTI_LANGUAGE_SITES`）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `profile()` 补 `traits=frozenset({SourceTrait.MULTI_LANGUAGE})`；`_scrape` 的简介改为按请求语言精确取对应 `_ja`/`_cn` 轨（不再 `_first` 中文优先），标题链已正确的不动。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/crawlers/test_avsox.py tests/crawlers/test_enum_consistency.py -q`
 预期：PASS（含 `test_multi_language_follows_film_trait`）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/crawlers/sites/avsox.py tests/crawlers/test_avsox.py
@@ -114,7 +114,7 @@ git commit -m "fix(crawler): avsox 声明多语言能力并按语言取简介"
 - 修改：`src/amane/crawlers/models.py`
 - 测试：`tests/crawlers/test_models.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_media_metadata_original_fields_default_none():
@@ -127,21 +127,21 @@ def test_stale_raw_snapshot_deserializes():
     assert m.original_title is None
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/crawlers/test_models.py -x -q`
 预期：FAIL（字段不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `MediaMetadata` 加三个带默认值字段（`str | None = None`、`dict[str, str] | None = None`）。缺默认值会让 `aggregate/engine.py::_fetch_one` 的 `MediaMetadata(**cached)` 抛 `ValidationError`（该处只 `except TypeError`）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/crawlers/test_models.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/crawlers/models.py tests/crawlers/test_models.py
@@ -154,7 +154,7 @@ git commit -m "feat(crawler): MediaMetadata 增加原文双轨与逐字段语言
 - 修改：`src/amane/enums.py`、`src/amane/aggregate/engine.py`、`src/amane/aggregate/models.py`
 - 测试：`tests/aggregate/test_engine.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_metadata_field_has_original_members():
@@ -174,21 +174,21 @@ def test_enum_consistency_still_passes():
     ...  # tests/crawlers/test_enum_consistency.py 既有断言不得失败
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/aggregate/test_engine.py -x -q`
 预期：FAIL（枚举成员不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `enums.py::MetadataField` 加 `ORIGINAL_TITLE = "original_title"`、`ORIGINAL_PLOT = "original_plot"`；`engine.py::SCALAR_FIELDS` 加两成员（自动进 `ALL_FIELDS` 与字段链，`compile_priority` 的 defaultdict 自动落到类型路由）；`_fill_scalar` 在记录 `field_sources` 的同时按 `data.field_languages[field]` 写 `result.field_languages[field]`，未声明则跳过原文字段；`aggregate/models.py::AggregatedMetadata` 加 `original_title` / `original_plot` / `website: str | None` / `field_languages: dict[str, str]`。`LANG_METADATA_FIELD_SET` 不加（原文字段不走多语言请求展开）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/aggregate/ tests/crawlers/test_enum_consistency.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/enums.py src/amane/aggregate/ tests/aggregate/
@@ -202,7 +202,7 @@ git commit -m "feat(aggregate): 原文双轨按字段独立聚合并记录逐字
 - 新建：`src/amane/db/migrations/versions/<autogen>_metadata_original_fields.py`
 - 测试：`tests/db/test_metadata_repo.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_update_metadata_accepts_original_fields(session):
@@ -215,12 +215,12 @@ def test_partial_metadata_rejects_website_patch():
     ...  # PartialMetadata 不含 website 字段 (ignore_fields)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/db/test_metadata_repo.py -x -q`
 预期：FAIL（列不存在）
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 `Metadata` 加 `original_title` / `original_plot` / `website` / `field_languages: dict[str,str] = Field(default_factory=dict, sa_column=Column(JSON))`；`MetadataFields` TypedDict 加四键；`update_metadata` 显式加四段 `if "xxx" in updates`（项目禁 setattr）；`_normalize_text_fields` 把 `original_plot` 加入长文本归一；`MetadataResponse` 手加四行；`create_partial_model` 的 `ignore_fields` 加 `"website"`（派生列不接受 PATCH）与 `"field_languages"`。迁移生成：
 
@@ -231,12 +231,12 @@ uv run alembic upgrade head
 
 检查生成文件含 `op.batch_alter_table` 且四个可空列；`field_languages` 默认 `{}`。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/db/ tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/db src/amane/api/models/metadata.py src/amane/db/migrations/versions tests/db
@@ -249,7 +249,7 @@ git commit -m "feat(db): metadata 落原文双轨 website 与逐字段语言"
 - 修改：`src/amane/crawlers/sites/{dmm,mgstage,official,wp_works,javlibrary,jav321,xcity,giga,prestige}.py`、`src/amane/crawlers/sites/avsox.py`、`src/amane/crawlers/r18dev/mapper.py`
 - 测试：对应 `tests/crawlers/` 既有站点测试文件
 
-- [ ] **步骤 1：编写失败的测试**（表驱动，每站一组）
+- [x] **步骤 1：编写失败的测试**（表驱动，每站一组）
 
 ```python
 @pytest.mark.parametrize("crawler,html,expect", [...])
@@ -262,21 +262,21 @@ def test_crawler_emits_original_fields(crawler, html, expect):
 
 取值规则（规格 3.3.4）：日文站组（dmm / mgstage / official / wp_works / javlibrary / jav321 / xcity / giga / prestige）`original_title = title`、`original_plot = plot`、`field_languages = {"original_title": "ja", "original_plot": "ja"}`；avsox `original_title = movie.title_ja`、`original_plot = movie.description_ja`；r18dev `original_title = v.title_ja`、`original_plot = v.comment_ja`。Javdb / Javbus / iqqtv 本阶段不改，不声明语言。
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/crawlers/ -k "original" -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 各 `_scrape` 返回处补三个字段；`field_languages` 只在同时给出原文时声明（宁缺勿猜）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/crawlers/ -q`
 预期：PASS（全部既有站点测试不回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/crawlers tests/crawlers
@@ -289,7 +289,7 @@ git commit -m "feat(crawler): 各源填充原标题原文与逐字段语言声�
 - 修改：`src/amane/aggregate/engine.py`、`src/amane/handlers/scrape.py`（`ScrapeHandler.handle` 的 `upsert_metadata` 调用）
 - 测试：`tests/aggregate/test_engine.py`、`tests/handlers/test_scrape_db_persistence.py`（新建，集成）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_website_from_title_source():
@@ -313,21 +313,21 @@ def test_scrape_persists_original_fields_to_db_and_api(tmp_path, client):
 `original_title=result.metadata.original_title`、`original_plot=result.metadata.original_plot`、
 `website=result.metadata.website`、`field_languages=result.metadata.field_languages`。
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/aggregate/test_engine.py tests/handlers/test_scrape_db_persistence.py -x -q`
 预期：FAIL（website 恒为 None；落库四字段为空）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `_assemble_aggregate_fields` 末尾：`result.website = result.source_urls.get(result.field_sources.get(MetadataField.TITLE, "")) or None`——单值取法，不沿链回退（key 空间同为 cache_key）。`_translate_metadata` 无需改动（现状只碰 title/plot），测试锁死该行为。`ScrapeHandler.handle` 补四个实参。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/aggregate/ tests/handlers/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/aggregate src/amane/handlers/scrape.py tests/aggregate tests/handlers
@@ -340,23 +340,23 @@ git commit -m "feat(scrape): website 派生与原文四字段落库"
 - 测试：`tests/media/test_nfo_baseline.py`（新建）
 - 参照：`src/amane/media/nfo.py` 现有输出
 
-- [ ] **步骤 1：用当前实现生成基准串**
+- [x] **步骤 1：用当前实现生成基准串**
 
 临时脚本调 `write_nfo` 对一份含全部字段的 `Metadata`（number/title/plot/release/runtime/score/actors/directors/series/studio/publisher/tags/poster_url/thumb_url/trailer_url/external_ids 均非空）输出，保存为测试内的常量字符串 `GOLDEN`（含声明行与两空格缩进）。
 
-- [ ] **步骤 2：编写基准测试**
+- [x] **步骤 2：编写基准测试**
 
 ```python
 def test_default_nfo_matches_golden(tmp_path):
     ...  # write_nfo(metadata, path) 后读取全文 == GOLDEN (同平台逐字节)
 ```
 
-- [ ] **步骤 3：运行测试验证通过（当前实现）**
+- [x] **步骤 3：运行测试验证通过（当前实现）**
 
 运行：`uv run pytest tests/media/test_nfo_baseline.py -q`
 预期：PASS —— 此任务是给任务 8/9 的改造立安全网，先绿后改。
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add tests/media/test_nfo_baseline.py
@@ -369,7 +369,7 @@ git commit -m "test(media): NFO 现状输出基准字符串用例"
 - 修改：`src/amane/media/nfo.py`、`src/amane/handlers/file.py`（调用点传 options）
 - 测试：`tests/media/test_nfo_write.py`、`tests/media/test_nfo_baseline.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_every_switch_off_removes_element():
@@ -379,21 +379,21 @@ def test_default_options_match_golden():
     ...  # NfoOptions() 默认值下输出 == 任务 7 的 GOLDEN
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_nfo_write.py -x -q`
 预期：FAIL（NfoOptions 不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `NfoOptions`（`extra="forbid"`）字段与默认值**逐字照抄规格 3.4.3 的模型清单**：`title/originaltitle/sorttitle/plot/outline/outline_summary(False)/originalplot(False)/actor/director/premiered/releasedate/year/num/runtime/votes(False)/score/criticrating/country(False)/mpaa/mpaa_value="JP-18+"/customrating(False)/series/set/tag/genre/studio/maker/publisher/label/poster/cover/trailer/website(False)/external_ids/add_part_to_title(False)/add_translated_by(False)/tagline_format(None)/set_by_actress(False)/set_by_serial_name(False)/set_by_series(False)/additional_tags([])`，另有 `originaltitle_source: Literal["title","original"] = "title"`。`write_nfo(metadata, nfo_path, options: NfoOptions | None = None)`（None = 默认）；输出元素顺序与现实现完全一致（表驱动：开关关→元素整段不出现）。`handlers/file.py::execute_file_operations` 的调用点改传解析后的 `NfoOptions`（本任务先传默认；任务 13 接 resolver）。默认值下 `test_nfo_baseline` 必须仍 PASS。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/ -q`
 预期：PASS（含基准）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/nfo.py src/amane/handlers/file.py tests/media/
@@ -407,7 +407,7 @@ git commit -m "feat(media): write_nfo 按 NfoOptions 开关化且默认输出不
 - 修改：`docs/user/media-server.md`（NFO 字段开关与 plot/outline 语义）
 - 测试：`tests/media/test_nfo_write.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_originaltitle_source_original():
@@ -423,21 +423,21 @@ def test_outline_summary():
     ...  # outline_summary=True: 取第一句; 无分隔符取前 120 字节不断开多字节; 空则不写
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_nfo_write.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `<{site}id>` 元素名把非 XML 名称字符（`:` 等）替换为 `_`；`<outline>` 在 `outline_summary=True` 时按规格摘要规则；`docs/user/media-server.md` 的「NFO 内容固定」段落改写为字段开关说明。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/ -q`
 预期：PASS（基准仍绿——默认值不动输出）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/nfo.py tests/media/ docs/user/media-server.md
@@ -450,7 +450,7 @@ git commit -m "feat(media): NFO 原文轨道 元素名清洗与摘要开关"
 - 修改：`src/amane/config/manager.py`
 - 测试：`tests/config/test_config_manager.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_hot_settings_has_new_sections():
@@ -463,21 +463,21 @@ def test_unknown_section_key_rejected():
     ...  # extra=forbid: 塞未知键抛 ValidationError
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/config/test_config_manager.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `OrganizeCommonConfig` / `NamingConfig` / `NfoConfig` 逐字照抄规格 3.1.2 的字段清单与默认值（`NamingConfig` 15 个模板类字段 + `syntax`；`NfoConfig` 即 `NfoOptions` 的挂载，不含 `enabled`），挂进 `HotSettings`。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/config/ -q`
 预期：PASS（`test_unknown_section_ignored` 等既有用例不回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config/manager.py tests/config/
@@ -492,7 +492,7 @@ git commit -m "feat(config): HotSettings 增加整理 命名 NFO 三节"
 - 新建迁移：`uv run alembic revision --autogenerate -m "config overrides table"`
 - 测试：`tests/config/test_overrides.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_payload_rejects_null_and_unknown_keys():
@@ -506,21 +506,21 @@ def test_four_layer_synthesis():
     ...  # 表驱动: 全局 < 库行(名单内) < 覆盖表 < 任务; dict 深合并, list 整体替换
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/config/test_overrides.py -x -q`
 预期：FAIL（模块不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `config_overrides` 表按规格 3.1.1（UNIQUE(scope_type, scope_id, section)）；`ConfigResolver.resolve[S: BaseModel](section, *, scope=None, library=None, payload=None) -> S` 按四层合成，第 3 层键值先过 `{}`→`None` 映射与 null 拒绝。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/config/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config src/amane/db src/amane/db/migrations/versions tests/config
@@ -534,7 +534,7 @@ git commit -m "feat(config): 覆盖表与四层合成解析器"
 - 新建迁移（含数据迁移：15 个模板字段全量写名单）
 - 测试：`tests/db/test_template_overrides_migration.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_migration_pins_all_template_fields():
@@ -550,21 +550,21 @@ def test_create_request_explicit_field_pins():
     ...  # POST /api/libraries 带 video_template → 名单含它; 不带 → 名单为空
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/db/test_template_overrides_migration.py -x -q`
 预期：FAIL（列不存在）
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 `Library.template_overrides: list[str] = Field(default_factory=list, sa_column=Column(JSON))`；数据迁移把每个既有库的 15 个模板类字段名写入该列（`video_template` / `link_template` / `link_mode` / `strm_content_template` / `thumb_template` / `poster_template` / `fanart_template` / `extrafanart_template` / `extrafanart_name_template` / `nfo_template` / `trailer_template` / `subtitle_template` / `subtitle_extensions` / `write_nfo` / `copy_resources`）；迁移幂等（重跑结果一致）。建库/改库路径用请求模型的 `model_fields_set`（FastAPI 直接构造、无 JSON 往返，可靠）把显式给出的模板字段名加入名单。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/db/ tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/db src/amane/api/routes/libraries.py src/amane/db/repos/libraries.py tests/db
@@ -577,7 +577,7 @@ git commit -m "feat(db): 模板显式名单与历史库全量迁移"
 - 修改：`src/amane/handlers/models.py`、`src/amane/api/models/tasks.py`、`src/amane/handlers/file.py`（`OrganizeHandler` / `apply_file_operations` / `execute_file_operations`）、`src/amane/organize/path_templates.py`（`resolve_paths` / `resolve_sidecar_paths` / `resolve_subtitle_path` 加 `naming` 参数）、`src/amane/organize/subtitles.py`（`place_subtitles` 透传）
 - 测试：`tests/handlers/test_file_ops.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_explicit_fields_survive_json_roundtrip():
@@ -610,21 +610,21 @@ def test_resolve_paths_prefers_naming_over_library_row(tmp_path):
     # 库行 video_template 被忽略; naming=None 时维持现状 (既有用例不回归)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/handlers/test_file_ops.py -x -q`
 预期：FAIL（字段不存在；`resolve_paths` 无 `naming` 参数）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `OrganizePayload.explicit_fields: list[str] = Field(default_factory=list)`；`OrganizeSubmission.resolve` 在 `_apply_library` **之前**记录 `model_fields_set` 与两字段交集并排除 None 值；`parse_payload` 对缺键的旧 payload 按「非 None 即显式」补写；`OrganizeHandler` 用 `ConfigResolver` 解析一次 `common` / `naming` / `nfo`（第 4 层只读 `explicit_fields`），把 `NamingConfig` 作为参数传入 `apply_file_operations` → `resolve_paths` / `resolve_sidecar_paths`，把 `NfoOptions` 与 `overwrite_video` / `overwrite_image` / `copy_resources` 同路传入 `execute_file_operations`。**下层不回读库行覆盖已解析结果**（规格 3.1.3「生效配置的传递接口」）；`resolve_paths(naming=None)` 保持现状取库行。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/handlers/ tests/api/ tests/organize/ -q`
 预期：PASS（`resolve_paths` 既有用例零改动通过 = naming=None 等价）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/handlers src/amane/api/models/tasks.py src/amane/organize/path_templates.py tests/handlers
@@ -638,7 +638,7 @@ git commit -m "feat(handler): 生效配置传递至落盘与任务显式字段"
 - 修改：`docs/dev/config.md`（四层合成、稀疏含义、显式标记）
 - 测试：`tests/api/test_library_overrides.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_overrides_crud_roundtrip(client):
@@ -651,21 +651,21 @@ def test_effective_config_returns_synthesis(client):
     ...  # GET /api/libraries/{id}/effective-config == resolver 结果
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/api/test_library_overrides.py -x -q`
 预期：FAIL（端点不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 按规格 3.1.4 四个端点；section 白名单 `common/naming/nfo`，`scope_type` 只收 `library`，其余 422。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/api/routes/libraries.py tests/api docs/dev/config.md
@@ -681,7 +681,7 @@ git commit -m "feat(api): 库级配置覆盖 CRUD 与生效配置端点"
 - 修改：`docs/dev/parsing.md`（新建：作用域、分桶合成、扁平匹配、RE2 引擎）
 - 测试：`tests/parsing/test_rules.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_rule_set_flat_order_and_first_hit():
@@ -710,21 +710,21 @@ def test_catastrophic_pattern_is_linear():
     # (线性时间保证, 非 Python re 的指数回溯)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/parsing/test_rules.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 `parse_rules` 表按规格 3.1.6（`scope_id` 用 0 表全局）；`ParseRuleSet` 构造时完成桶合成与扁平排序，`apply_rules(path, info, rules)` 只做匹配；`parse_file_info(..., rules=None)` 在 `path` 分支返回前调用。**匹配引擎用 RE2**（`google-re2` 加入 `[project].dependencies`，`uv sync`；规格 3.1.6）：pattern 保存与 `ParseRuleSet` 构造都用 `re2.compile` 校验——RE2 线性时间从引擎层消除灾难回溯，反向引用 / 环视编译即拒（422 提示不支持的构造），Python `re` 不再参与识别词匹配。`google-re2` 为二进制依赖，Windows/macOS/Linux 主流平台 PyPI 有 wheel（已实测 3.14/Windows），打包验证折进任务 32。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/parsing/ -q`
 预期：PASS（`parse_file_info` 既有用例不回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/parsing src/amane/db tests/parsing docs/dev/parsing.md src/amane/db/migrations/versions
@@ -738,7 +738,7 @@ git commit -m "feat(parsing): 识别词表 作用域合成与扁平匹配"
 - 修改：`src/amane/app/runtime.py`（`ParseRuleSet` 提供者）、`src/amane/handlers/refresh.py`、`src/amane/handlers/file.py`、`src/amane/api/models/tasks.py`、`src/amane/library/cleanup/footprint.py`、`src/amane/scheduler/service.py`
 - 测试：`tests/api/test_parse_rules_api.py`（新建）、`tests/handlers/test_refresh.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_parse_rules_crud(client):
@@ -757,21 +757,21 @@ def test_scheduler_and_cleanup_use_rules():
     ...  # scheduler 发现解析与 cleanup 清单解析注入对应库 ParseRuleSet
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/api/test_parse_rules_api.py tests/handlers/test_refresh.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 CRUD 后失效 `ParseRuleSet` 缓存（版本键 `(count, max(updated_at))`）；`Runtime` 提供 `parse_rules_for(library_id) -> ParseRuleSet`（含全局合成）；五个生产入口注入 `rules=`（扫描 `handlers/refresh.py:137`、整理落盘 `handlers/file.py:221`、任务请求解析 `api/models/tasks.py:205`、清理清单 `library/cleanup/footprint.py:201`、调度 `scheduler/service.py:477`）。字幕配对（`organize/subtitles.py`）与 Alembic 重投影不注入（规格 3.1.6 表）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/api/ tests/handlers/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/api/routes/parse_rules.py src/amane/app/runtime.py src/amane/handlers src/amane/api/models/tasks.py src/amane/library src/amane/scheduler tests
@@ -784,7 +784,7 @@ git commit -m "feat(api): 识别词管理端点与生产入口注入"
 - 修改：`src/amane/organize/template.py`
 - 测试：`tests/organize/test_template_syntax.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_filter_chain_with_colon():
@@ -800,21 +800,21 @@ def test_quoted_args_allow_comma():
     ...  # {t:replace("a,b","c")}
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_template_syntax.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `_parse_placeholder` 先按首个 `|` 切出映射，左半再按首个 `:` 切出 filter 链（grammar 见规格 3.2.2）；7 个 filter（default/upper/lower/truncate/split/first/last/replace/trim 中规格所列集合）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ -q`
 预期：PASS（既有路径模板用例不回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize/template.py tests/organize/test_template_syntax.py
@@ -827,28 +827,28 @@ git commit -m "feat(organize): 自研模板 filter 链与降级链"
 - 修改：`src/amane/organize/template.py`
 - 测试：`tests/organize/test_template_syntax.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_if_block_truthiness():
     ...  # {% if a %}…{% endif %}: a 有值才渲染; 多变量 {% if a,b %} 全有值才真; {% else %} 分支
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_template_syntax.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 条件只允许变量名或逗号分隔变量名列表（无 elif、无运算符）；「有值」判定与 filter 一致。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize/template.py tests/organize/test_template_syntax.py
@@ -861,7 +861,7 @@ git commit -m "feat(organize): 模板条件块"
 - 修改：`src/amane/organize/template.py`（`validate`）
 - 测试：`tests/organize/test_template_syntax.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_validate_rejects_unknown_placeholder_and_filter():
@@ -871,21 +871,21 @@ def test_validate_accepts_dir_alias():
     ...  # {dir} 合法 (运行时别名)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_template_syntax.py -x -q`
 预期：FAIL（当前 validate 不查名字）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 白名单 `PLACEHOLDERS ∪ {"dir"}`；只作用于保存/切换路径，已落盘渲染行为不变（未知名仍渲染 `Unknown`）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize/template.py tests/organize/test_template_syntax.py
@@ -899,7 +899,7 @@ git commit -m "feat(organize): 模板保存校验占位符与 filter 名"
 - 新建：`src/amane/organize/backend.py`（`TemplateBackend` Protocol + `NativeTemplateBackend`）、`src/amane/organize/template_jinja.py`
 - 测试：`tests/organize/test_template_jinja.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_jinja_backend_renders_and_rejects_attr():
@@ -916,21 +916,21 @@ def test_two_engines_agree_on_shared_semantics():
     ...  # 分集/中字四种组合下两引擎渲染路径完全相同 (仅排除变量缺失差异)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_template_jinja.py -x -q`
 预期：FAIL（模块不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `uv sync` 装 jinja2；`JinjaTemplateBackend` 用 `SandboxedEnvironment` 注册自建 `default`/`truncate`/`split`（不用原生 default/truncate），渲染前按映射表改写变量键，输出仍过 `PathEngine.clean` 与 `resolve` 逃逸防护。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add pyproject.toml uv.lock src/amane/organize tests/organize
@@ -943,7 +943,7 @@ git commit -m "feat(organize): Jinja2 后端与兼容 filter"
 - 修改：`src/amane/organize/path_templates.py`（双默认 + `resolve_paths` / `resolve_sidecar_paths` / `resolve_subtitle_path` / `render_path_template` / `render_extrafanart_names` 分派）、`src/amane/organize/strm_content.py`（`render_strm_content` 分派）、`src/amane/api/routes/libraries.py`、`src/amane/api/models/libraries.py`
 - 测试：`tests/organize/test_path_templates.py`、`tests/api/test_library_overrides.py`、`tests/handlers/test_file_ops.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_switch_rejected_on_placeholder_residual():
@@ -962,21 +962,21 @@ def test_jinja_syntax_drives_real_organize(tmp_path):
     ...
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_path_templates.py tests/api/test_library_overrides.py tests/handlers/test_file_ops.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 Jinja2 默认视频模板字面量照抄规格 3.2.3（`{{ studio }}/{{ number }}/{{ number }}{% if cd %}-CD{{ cd }}{% endif %}{% if sub %}-{{ sub }}{% endif %}.{{ ext }}`）；切换时对生效链全部模板做渲染探针（样例变量覆盖全部 30 占位符 + `dir`，残留 `{ident}` / `{{` / `{%` 判失败）；`syntaxes` 下发两套默认与各自占位符名（含 Jinja 变量映射）。**运行时分派**：统一分派函数按生效 `NamingConfig.syntax` 选 backend，接入规格 3.2.1 的**六个**真实入口（`resolve_paths` / `resolve_sidecar_paths` / `resolve_subtitle_path` / `render_strm_content` / `render_extrafanart_names` / `render_path_template`）——字幕配对（识别字幕归属哪个视频，`parse_file_info(text=…)`）不渲染模板、不在分派范围；字幕**落盘路径**（`place_subtitles → resolve_subtitle_path`）渲染 `subtitle_template`，必须分派。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ tests/api/ tests/handlers/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize src/amane/api tests
@@ -989,7 +989,7 @@ git commit -m "feat(organize): 语法切换验证与运行时分派"
 - 修改：`src/amane/api/routes/libraries.py`
 - 测试：`tests/api/test_naming_preview.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_preview_renders_all_products(client):
@@ -1000,21 +1000,21 @@ def test_preview_supports_media_file_id_and_global_default(client):
     ...  # {"media_file_id": N} 取真实文件与元数据; 无 library_id 用全局默认
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/api/test_naming_preview.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 走 `resolve_paths` + `TemplateContext`，纯计算不落盘。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/api tests/api
@@ -1027,7 +1027,7 @@ git commit -m "feat(api): 命名模板试算端点"
 - 修改：`src/amane/enums.py`、`src/amane/organize/file.py`、`src/amane/organize/path_templates.py`
 - 测试：`tests/organize/test_file_org.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_inplace_keeps_video_and_writes_sidecars_in_source_dir(tmp_path):
@@ -1037,21 +1037,21 @@ def test_inplace_is_not_silent_noop(monkeypatch):
     ...  # mock move/copy 断言未被调用, 但 outcome == PLACED
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_file_org.py -x -q`
 预期：FAIL（INPLACE 不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `MoveMode.INPLACE = "inplace"`；`execute_organize` 的 `match mode:` **必须加分支**（无兜底分支，漏加会静默落空）；`resolve_paths` 加 inplace 入口：`video = source_path`，跳过「视频模板解析为库根目录」守卫。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ tests/handlers/ -q`
 预期：PASS（`collect_prune` 条件 `is MOVE` 天然排除 inplace）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/enums.py src/amane/organize tests/organize
@@ -1067,7 +1067,7 @@ git commit -m "feat(organize): 原地整理模式"
 - 修改：`docs/dev/organize.md`（新建：覆写协议、提交点、journal、指纹）
 - 测试：`tests/organize/test_overwrite.py`（新建）、`tests/handlers/test_file_ops.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_overwrite_move_backup_replace_and_source_delete(tmp_path):
@@ -1095,23 +1095,23 @@ def test_overwrite_image_false_skips_existing_images(tmp_path):
     ...  # overwrite_image=False → 已有图片不覆盖, skipped 计数; True (默认) 维持覆盖
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_overwrite.py tests/handlers/test_file_ops.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 `organize_journal` 列逐字照抄规格 3.4.2（`mode/source_path/source_file_id/source_oshash/source_size/source_metadata_id/source_number/target_path/target_file_id/backup_path/phase/last_error`，UNIQUE(source_path, target_path)）。协议三阶段（规格 3.4.2）：阶段 A（前置检查 + 现场补算源指纹写入 journal 独立提交 + 备份 rename）；阶段 B（同 FS `os.replace(源,目标)` / EXDEV 走目标目录临时名，`os.replace` 返回成功即提交点）；阶段 C（**目标核验先行** → 接管+committed 同事务 → 删备份 → 删源前再次核验目标与源指纹 → 删源 → 删 journal）。回滚只在提交点之前；之后任何失败不删目标。
 
 **接入现有冲突分支**：`execute_file_operations` 的 `OCCUPIED` 预检按 `common.overwrite_video` 分派（False → 现状 CONFLICT；True → 阶段 A 起，前置检查即该预检的延伸）；`overwrite_image` 传入 `_place_library_images`（False 时目标已有图片跳过并记 `skipped`）。覆写与跳过共用同一次 `target_state` 预检，分派只发生在预检结果之后。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/test_overwrite.py tests/handlers/test_file_ops.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/db src/amane/organize src/amane/handlers/file.py tests/organize tests/handlers docs/dev/organize.md src/amane/db/migrations/versions
@@ -1124,7 +1124,7 @@ git commit -m "feat(organize): 覆写协议 接入冲突分派与操作日志表
 - 修改：`src/amane/handlers/file.py`、`src/amane/db/repos/`（media file repo）
 - 测试：`tests/organize/test_overwrite.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_takeover_overwrites_identity_fields(session):
@@ -1134,21 +1134,21 @@ def test_takeover_target_without_index(session):
     ...  # target_file_id=NULL: 源行 path 改目标路径, 无目标旧行可删
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_overwrite.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 独立于 `commit_organized_media_file` 补空分支的接管路径：删目标旧行 + 源行改 path + 字段更新 + journal `phase=committed` 四步同一 `BEGIN IMMEDIATE` 事务。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ tests/handlers/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/handlers/file.py src/amane/db/repos tests/organize
@@ -1161,7 +1161,7 @@ git commit -m "feat(organize): 覆写索引接管单事务提交"
 - 修改：`src/amane/organize/overwrite.py`（恢复入口）、`src/amane/app/runtime.py`（启动挂钩）
 - 测试：`tests/organize/test_overwrite_recovery.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_recovery_matrix(tmp_path):
@@ -1176,21 +1176,21 @@ def test_cross_fs_source_delete_needs_target_valid(tmp_path):
     ...  # mode=move: 目标核验通过才删源; mode=copy 不删源
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_overwrite_recovery.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 按规格 3.4.2 恢复矩阵：指纹三字段全等（无 NULL 分支）；目标核验用同一指纹（提交点后目标内容即源内容）；接管已完成的后置复验；恢复失败一律保留 journal 写 `last_error`。启动扫描挂在 `AppRuntime` 初始化，另在整理同一目标前就地恢复。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize src/amane/app/runtime.py tests/organize
@@ -1204,7 +1204,7 @@ git commit -m "feat(organize): 覆写中断恢复扫描"
 - 新建迁移
 - 测试：`tests/handlers/test_file_ops.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_link_path_persisted_after_organize(tmp_path):
@@ -1214,21 +1214,21 @@ def test_media_file_response_has_link_path():
     ...  # MediaFileResponse.link_path 存在
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/handlers/test_file_ops.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 `MediaFile.link_path: str | None`；`create_video_link` 返回 PLACED 时落库；`MediaFileResponse` 手加一行。链接文件已不存在时读取侧按无链接处理，不改写该列。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/handlers/ tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/db src/amane/api/models/media.py src/amane/handlers tests/handlers src/amane/db/migrations/versions
@@ -1241,7 +1241,7 @@ git commit -m "feat(db): 媒体文件持久化链接路径"
 - 修改：`src/amane/organize/path_templates.py`
 - 测试：`tests/organize/test_path_templates.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_sidecar_only_renders_selected_artifacts(tmp_path):
@@ -1251,21 +1251,21 @@ def test_sidecar_context_matches_resolve_paths(tmp_path):
     ...  # 含 raw_* 的附属模板: resolve_paths 与 resolve_sidecar_paths(全集) 输出一致 (source_path 传入)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/organize/test_path_templates.py -x -q`
 预期：FAIL（函数不存在）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 签名照抄规格 3.4.4（`consume_path/video_path/source_path/ext/file_info/safe_dirs/actor_genders/artifacts`），并带任务 13 引入的 `naming: NamingConfig | None = None`（与 `artifacts` 正交：naming 决定用哪套模板，artifacts 决定渲染哪些产物）；`resolve_paths` 改为调用它（传全集），签名与返回类型不变。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/organize/ tests/handlers/ -q`
 预期：PASS（既有用例**不得改断言**——等价性由它们锁住）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/organize/path_templates.py tests/organize
@@ -1279,7 +1279,7 @@ git commit -m "refactor(organize): 附属产物按需渲染入口"
 - 修改：`docs/user/media-server.md`（重写端点与配对规则）
 - 测试：`tests/api/test_metadata_nfo_rewrite.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_rewrite_after_template_change_stays_paired(tmp_path, client):
@@ -1296,21 +1296,21 @@ def test_rewrite_multi_file_partial_failure(client):
     ...  # N 个文件独立处理, 失败清单随响应返回, 成功者不回滚
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/api/test_metadata_nfo_rewrite.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `PUT /api/metadata/{id}/nfo`：视频路径取 `MediaFile.path`（缺失 409）；消费路径取 `link_path`（存在且文件在盘）否则视频路径；调 `resolve_sidecar_paths(artifacts=("nfo",), source_path=MediaFile.path)`；校验 `nfo.parent == 消费.parent` 且 `nfo.stem == 消费.stem`，任一不满足 422；覆盖写。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/api tests/api docs/user/media-server.md
@@ -1324,30 +1324,30 @@ git commit -m "feat(api): NFO 单独重写以消费路径为基准"
 - 修改：`web/src/lib/exhaustive-maps.ts`（`METADATA_FIELDS` 加 `original_title` / `original_plot`）、`web/src/lib/media/metadata-fields.ts`（`LOCKABLE_FIELDS` / `FIELD_LABEL_KEY`）、`web/src/components/metadata/merge-dialog.tsx`（`TEXT_FIELDS`）、`web/src/routes/meta.$metadataId.tsx`（展示原标题/原文简介/官网链接）、`web/src/i18n/locales/{zh-CN,en}/metadata.json`
 - 验证：`cd web && pnpm check`
 
-- [ ] **步骤 1：刷新生成的 TS client**
+- [x] **步骤 1：刷新生成的 TS client**
 
 运行：`just generate`
 预期：`web/src/client/types.gen.ts` 的 `MetadataField` 联合类型含 `original_title` / `original_plot`。生成文件随本任务一并提交。
 
-- [ ] **步骤 2：改穷尽清单（此刻 `tsc -b` 报 i18n key 缺失）**
+- [x] **步骤 2：改穷尽清单（此刻 `tsc -b` 报 i18n key 缺失）**
 
 在三处穷尽清单加两个新成员；`website` 不进 `MetadataField`（派生列），只加详情页展示。
 
-- [ ] **步骤 3：运行 `pnpm check` 验证失败**
+- [x] **步骤 3：运行 `pnpm check` 验证失败**
 
 运行：`cd web && pnpm check`
 预期：FAIL（i18n key 缺失）
 
-- [ ] **步骤 4：补 i18n 与详情页展示**
+- [x] **步骤 4：补 i18n 与详情页展示**
 
 `detail.fields.original_title` / `original_plot`（zh-CN：原标题 / 原文简介）；详情页只读展示 `website` 链接。
 
-- [ ] **步骤 5：运行 `pnpm check` 验证通过**
+- [x] **步骤 5：运行 `pnpm check` 验证通过**
 
 运行：`cd web && pnpm check`
 预期：PASS
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add web/src
@@ -1361,20 +1361,20 @@ git commit -m "feat(web): 原文双轨字段展示与锁定"
 - 修改：库详情页新增「配置覆盖」Tab（按 section 稀疏编辑 + 继承开关）、模板编辑器旁「试算」面板（调任务 22 端点；切换语法时未自定义的模板替换为对应默认）
 - 验证：`cd web && pnpm check`
 
-- [ ] **步骤 1：编写组件与 API 调用**
+- [x] **步骤 1：编写组件与 API 调用**
 
 TS client 已在任务 30 步骤 1 由 `just generate` 刷新（含全部新端点类型），本任务直接使用。
 
-- [ ] **步骤 2：实现三块 UI**
+- [x] **步骤 2：实现三块 UI**
 
 覆盖 Tab 按 section 分块编辑稀疏 payload（空对象表示显式取空，无 null 输入）；识别词页表格式管理（全局/库级作用域筛选）；试算面板实时显示渲染结果与 422 错误文本。
 
-- [ ] **步骤 3：运行 `pnpm check` 验证通过**
+- [x] **步骤 3：运行 `pnpm check` 验证通过**
 
 运行：`cd web && pnpm check`
 预期：PASS
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add web/src
@@ -1387,20 +1387,20 @@ git commit -m "feat(web): 覆盖编辑 识别词管理与试算面板"
 - 修改：`docs/dev/config.md`（若任务 14 未覆盖全部合成语义）、`docs/dev/data-model.md`（原文双轨来源与按字段语言、`website` 派生）、`docs/dev/organize.md`（模板双引擎、语法差异、覆写协议与 journal）、`docs/user/organize.md`（用户可见命名/整理行为）、`docs/dev/index.md`（登记 `organize.md` / `parsing.md`）
 - 验证：`just check`；`google-re2` wheel 在桌面打包（PyInstaller）与 Docker 镜像中可用
 
-- [ ] **步骤 1：核对规格 §3.5 表逐项落点，补齐遗漏段落**
+- [x] **步骤 1：核对规格 §3.5 表逐项落点，补齐遗漏段落**
 
 先精简再加：每处并入既有段落，文档只持平或变短除非新增跨模块契约。
 
-- [ ] **步骤 2：验证二进制依赖进包**
+- [x] **步骤 2：验证二进制依赖进包**
 
 `google-re2` 是 C 扩展：PyInstaller 打包后启动一次确认 `import re2` 成功；Docker 镜像构建后同样验证。
 
-- [ ] **步骤 3：全量检查**
+- [x] **步骤 3：全量检查**
 
 运行：`just check`
 预期：PASS（lint + format + typecheck + web check + test 全绿）
 
-- [ ] **步骤 3：Commit**
+- [x] **步骤 3：Commit**
 
 ```bash
 git add docs

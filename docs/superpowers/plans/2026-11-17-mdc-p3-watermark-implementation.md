@@ -8,7 +8,7 @@
 
 **技术栈：** Python 3.14 / Pillow（既有）/ pytest；前端 `just generate` + i18n（新节翻译）。
 
-**规格：** `docs/superpowers/specs/2026-11-17-mdc-p3-watermark-design.md`（第 2 版；计划的全部取值与协议来自它，执行者两份都读）
+**规格：** `docs/superpowers/specs/2026-11-17-mdc-p3-watermark-design.md`（第 2 版，已实现；计划的全部取值与协议来自它，执行者两份都读）
 
 ## 全局约束
 
@@ -56,11 +56,11 @@
 - 新建：`tests/media/fixtures/watermark_golden/`（基线 `c412b72` 采集的字节基准）、`tests/media/test_watermark_kinds.py`
 - 测试：`tests/media/test_watermark_kinds.py`（新建）
 
-- [ ] **步骤 1：采集 golden 基准（在改动产物路径之前）**
+- [x] **步骤 1：采集 golden 基准（在改动产物路径之前）**
 
 在基线 `c412b72` 的隔离检出（git worktree）用 `apply_cover_watermarks` 对固定输入集生成字节基准入库 `tests/media/fixtures/watermark_golden/`：默认 scale、`target_h < 40` 的小图边界（如 200×30）、四角组合、多相位组合。**参照必须产生于任何 P3 产物路径改动之前**（规格 §3.7），后续每任务以「默认配置产物 == golden」为 GREEN 条件。
 
-- [ ] **步骤 2：编写失败的测试**
+- [x] **步骤 2：编写失败的测试**
 
 ```python
 def test_golden_baseline_unchanged(): ...       # 默认配置产物 == golden (含小图)
@@ -71,21 +71,21 @@ def test_kinds_invalid_value_rejected(): ...    # 非 bool 值 → ValidationErr
 def test_unknown_key_rejected(): ...            # 未知键 → ValidationError (extra="forbid" 本期补齐)
 ```
 
-- [ ] **步骤 3：运行测试验证失败**
+- [x] **步骤 3：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_watermark_kinds.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 4：实现**
+- [x] **步骤 4：实现**
 
 `WatermarkConfig` 加 `kinds: dict[WatermarkKind, bool]`（默认 `dict.fromkeys(WatermarkKind, True)`，frozen-keys 补齐校验沿 corners 先例）并补 `extra="forbid"`（现状缺失）；`apply_cover_watermarks` 在 `_stamp_stems` 推导后按 `kinds[_stamp_kind(stem)]` 过滤（None 配置 = 全 true 现状语义）。
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_watermark_kinds.py -q && uv run pytest tests/media/ -q`
 预期：PASS 且 golden 基准通过（默认 kinds 下产物与基线逐字节一致）
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add src/amane/config/manager.py src/amane/media/images.py tests/media/test_watermark_kinds.py tests/media/fixtures/watermark_golden/
@@ -98,7 +98,7 @@ git commit -m "feat(media): 水印逐类开关、相位过滤与字节基准"
 - 修改：`src/amane/enums.py`（`WatermarkCorner.AUTO`）、`src/amane/config/manager.py`（corners 值域）、`src/amane/media/images.py`（AUTO 解析）
 - 测试：`tests/media/test_watermark_corners.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_corners_default_unchanged(): ...      # 默认全 TOP_LEFT (现状值, 逐字节基准)
@@ -108,21 +108,21 @@ def test_mixed_auto_and_explicit(): ...        # 混合配置
 def test_invalid_corner_value_rejected(): ...  # 非枚举/非 AUTO → ValidationError
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_watermark_corners.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `WatermarkCorner` 加 `AUTO = "auto"`；`WatermarkConfig.corners` 值域 `WatermarkCorner | Literal["auto"]`（校验归一化为枚举）；`_corner_for` 返回 AUTO 时由布局层解析（stack → TOP_LEFT，本任务先落 stack 语义）。**基准**：默认配置产物逐字节 == golden（任务 1 采集，含小图）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_watermark_corners.py -q && uv run pytest tests/media/ -q`
 预期：PASS 且逐字节基准通过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/enums.py src/amane/config/manager.py src/amane/media/images.py tests/media/test_watermark_corners.py
@@ -135,7 +135,7 @@ git commit -m "feat(media): 水印角位值域扩展 AUTO 与 stack 显式化"
 - 修改：`src/amane/config/manager.py`（layout/offset_x/offset_y/gap/start）、`src/amane/media/images.py`（布局）
 - 测试：`tests/media/test_watermark_layout.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_clockwise_rotation_table(): ...       # 相位→角位轮转表测试 (相位顺序 × start)
@@ -150,21 +150,21 @@ def test_clockwise_all_corners_pinned_falls_back(): ...  # 四角全钉死 + AUT
 def test_invalid_layout_rejected(): ...        # 非法 layout/gap 负数/start 越界 → 422
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_watermark_layout.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `WatermarkConfig` 加 `layout`/`offset_x`/`offset_y`/`gap`/`start`（默认见规格 §3.1）；`_paste_stamps` 按 `layout` 分派：`stack`（现状路径 + offset/gap 参数化）、`clockwise`（相位顺序顺时针轮转 `TOP_LEFT→TOP_RIGHT→BOTTOM_RIGHT→BOTTOM_LEFT`，起始角 `start`，显式角位占位不轮转，同角第二枚起向内叠）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_watermark_layout.py -q && uv run pytest tests/media/ -q`
 预期：PASS 且逐字节基准通过（gap=None / offset=0 与现状一致）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config/manager.py src/amane/media/images.py tests/media/test_watermark_layout.py
@@ -177,7 +177,7 @@ git commit -m "feat(media): 水印 clockwise 布局与偏移间距起始可配"
 - 修改：`src/amane/config/manager.py`（style/custom_folder）、`src/amane/media/watermarks/__init__.py`（查找链）、`src/amane/media/images.py`（style 传递）
 - 测试：`tests/media/test_watermark_styles.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_lookup_chain_levels(): ...            # 四级链逐级命中表测试 (含 custom_folder+style 组合行, 逐级根路径唯一确定)
@@ -190,21 +190,21 @@ def test_corrupt_user_file_falls_back(): ...   # 损坏回退下一级 (现状�
 def test_invalid_style_rejected(): ...         # style 字符集拒绝 → 422
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_watermark_styles.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `WatermarkConfig` 加 `style`/`custom_folder`；`load_stamp` 改双根签名（data_dir 根 + custom_folder 透传），按规格 §3.2 查找链：custom_folder 非 None 时**完全替代**（data_dir 系各级不参与）；`apply_cover_watermarks` 增加 style 透传；`watermark_dir` 既有单参数链退役（行为函数改双来源）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_watermark_styles.py -q && uv run pytest tests/media/ -q`
 预期：PASS 且既有水印测试零回归（旧位置兼容）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config/manager.py src/amane/media/watermarks/__init__.py src/amane/media/images.py tests/media/test_watermark_styles.py
@@ -217,7 +217,7 @@ git commit -m "feat(media): 水印样式目录化与自定义目录查找链"
 - 修改：`src/amane/config/manager.py`（targets）、`src/amane/handlers/file.py`（分派与 fanart 叠印、库级配置传递）
 - 测试：`tests/handlers/test_file_ops.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_targets_default_thumb_poster(): ...   # 默认 {thumb, poster} (现状)
@@ -230,21 +230,21 @@ def test_watermark_config_dispatch_changes_product(): ...  # 直接构造不同 
 
 **注意（WM-P1）**：库级覆盖端到端测试（PUT 覆盖 → 整理 → 产物变化）**不在本任务** —— 覆盖白名单/`_SECTION_BINDINGS` 注册在任务 6，未注册时 `ConfigResolver.resolve` 对 watermark 节返回全默认（`enabled=False`），本任务提交点的库级覆盖测试必然红灯。本任务的分派逻辑验证用**直接构造的 WatermarkConfig** 传入；端到端库级覆盖测试在任务 6 与覆盖节激活同点验收。
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/handlers/test_file_ops.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `WatermarkConfig` 加 `targets`；`_place_library_images` 水印段按 `targets` 分派（thumb/poster 沿现状判定、fanart 新增分支：extrafanart 复制后逐张 `apply_cover_watermarks_from_info`，单张失败记 warning 不中断）；watermark 配置经 `EffectiveOrganizeConfig` 传递（库级生效）；水印行为函数改双来源后，调用方传入值为「生效配置解析出的 data_dir 根 + custom_folder」（任务 4 的签名变更在此接线）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/handlers/ -q`
 预期：PASS（经真实整理路径，既有水印行为零回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config/manager.py src/amane/handlers/file.py tests/handlers/test_file_ops.py
@@ -257,7 +257,7 @@ git commit -m "feat(handler): 水印作用目标与库级生效配置传递"
 - 修改：`src/amane/config/overrides.py`（白名单）、`src/amane/config/__init__.py`（导出）、`src/amane/api/models/libraries.py`、`src/amane/api/routes/libraries.py`、`web/openapi.json` 与 `web/src/client/…`（`just generate` 产物）、`web/src/i18n/locales/{zh-CN,en}/settings.json`
 - 测试：`tests/config/test_overrides.py`、`tests/api/test_library_overrides.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_watermark_config_defaults(): ...         # 默认值矩阵 (规格 §3.1 表)
@@ -268,12 +268,12 @@ def test_watermark_no_longer_reserved(client): ...  # watermark 不再 422; down
 def test_watermark_library_override_end_to_end(client): ...  # 库级覆盖 PUT → 整理 → 产物变化 (两库不同配置; 自任务 5 移入, 与覆盖节激活同点验收)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/config/test_overrides.py tests/api/test_library_overrides.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `overrides.py` 白名单加入 watermark（预留拒绝列表移除）；`EffectiveConfigResponse` 与 `get_effective_config` 扩展 watermark 节；`config/__init__.py` 导出新模型。随后：
 
@@ -283,12 +283,12 @@ just generate
 
 检查 `web/openapi.json` / `web/src/client/types.gen.ts` 差异并随本任务提交；`web/src/i18n` 补新节翻译。
 
-- [ ] **步骤 4：运行测试与前端检查验证通过**
+- [x] **步骤 4：运行测试与前端检查验证通过**
 
 运行：`uv run pytest tests/config/ tests/api/ -q && cd web && pnpm check`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config src/amane/api tests web/openapi.json web/src/client web/src/i18n
@@ -302,7 +302,7 @@ git commit -m "feat(config): 激活 watermark 覆盖节并联动 API schema 与 
 - 修改：`src/amane/api/routes/__init__.py`（注册）、`src/amane/api/models/`（请求/响应模型）
 - 测试：`tests/api/test_watermark_preview.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_preview_returns_jpeg(client): ...     # 200 image/jpeg, 字节魔数 \xff\xd8 断言, 内容随库级配置与请求相位变化
@@ -313,21 +313,21 @@ def test_preview_failure_422(client): ...      # 叠印失败 → 422 带原因
 def test_preview_does_not_touch_store(client): ...  # 不落库不写 Resource 临时即删
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/api/test_watermark_preview.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `POST /api/libraries/{library_id}/preview/watermark`，请求体 `{url: <内部资源 URL>, phase: {has_subtitle, uncensored, mosaic, definition}}`（**相位四元组必填显式传入**，与 FileInfo 同口径，端点不做资源反查）：库级生效 `WatermarkConfig` → `resolve` 取源 → 临时副本叠印（不落库不写 Resource，临时即删）→ 返回 `image/jpeg`（沿用 `_save_jpeg`，与真实落盘产物同编码）；失败 422 带原因。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/api/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/api tests/api
@@ -340,20 +340,20 @@ git commit -m "feat(api): 水印预览端点按库级生效配置试算"
 - 修改：`docs/dev/config.md`（watermark 节）、`docs/dev/organize.md`、`docs/user/scraping.md`、`docs/user/organize.md`、`docs/dev/index.md`
 - 验证：全量四步
 
-- [ ] **步骤 1：文档同步**
+- [x] **步骤 1：文档同步**
 
 先精简再加：watermark 覆盖节字段与语义、quality 与水印的作用边界（quality 仅图片）、预览端点、`thumb_download_strategy` 命名边界如实标注。
 
-- [ ] **步骤 2：打包冒烟豁免确认**
+- [x] **步骤 2：打包冒烟豁免确认**
 
 样式目录为运行时 `data_dir` 产物（用户创建），无需打包变更；冒烟确认内置 `watermarks/*.png` 包资产在 PyInstaller/Docker 产物中已收集（任务 13 of P2 既有装配，核对即可），结果记入报告。
 
-- [ ] **步骤 3：全量检查**
+- [x] **步骤 3：全量检查**
 
 运行：`just check`（或手动四步）
 预期：PASS
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add docs

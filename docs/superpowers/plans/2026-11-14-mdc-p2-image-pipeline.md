@@ -66,7 +66,7 @@
 - 修改：`pyproject.toml`（`[project.optional-dependencies].opencv = ["opencv-python>=5"]`）
 - 新建：`src/amane/media/models/face_detection_yunet_2023mar.onnx`（YuNet 官方模型，232 KB）、`src/amane/media/models/__init__.py`
 
-- [ ] **步骤 1：两态实测**
+- [x] **步骤 1：两态实测**
 
 ```bash
 uv run python -c "
@@ -86,7 +86,7 @@ print('yunet ok')
 
 预期：先 `degradation path ok`，后 `yunet ok`（模型从 OpenCV 官方 zoo 下载入库）。
 
-- [ ] **步骤 2：Commit**
+- [x] **步骤 2：Commit**
 
 ```bash
 git add pyproject.toml uv.lock src/amane/media/models/
@@ -99,7 +99,7 @@ git commit -m "chore(media): OpenCV 可选依赖与 YuNet 模型入库"
 - 新建：`docs/superpowers/demos/2026-11-14-mdc-p2-crop-demo.html`（静态页，样张 base64 内嵌）
 - 一次性原型脚本放临时目录，不提交
 
-- [ ] **步骤 1：原型脚本生成对比样张**
+- [x] **步骤 1：原型脚本生成对比样张**
 
 用 Pillow 直写三策略原型（None=原图、Right=现有 `crop_poster` 逻辑、Face=YuNet 原型检测对齐）与 aspect 三值，产出对比 HTML（None/Right/Face 并排 + aspect 三值对比 + 择优前后对比；中文无乱码）。原型脚本标注为一次性产物。
 
@@ -107,7 +107,7 @@ git commit -m "chore(media): OpenCV 可选依赖与 YuNet 模型入库"
 
 人工打开页面验收：三策略差异可见、aspect 对比可见、无乱码。**确认结果记录后本任务才关闭**；验收口径变化则回改设计再继续。
 
-- [ ] **步骤 3：Commit**
+- [x] **步骤 3：Commit**
 
 ```bash
 git add docs/superpowers/demos/
@@ -121,7 +121,7 @@ git commit -m "docs(demo): P2 裁剪策略可视对比页 (实施前验收)"
 - 新建：`src/amane/media/optional_cv2.py`、`src/amane/media/crop.py`
 - 测试：`tests/media/test_crop.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_crop_strategy_in_enums_neutral_layer():
@@ -143,21 +143,21 @@ def test_skip_ratio_is_explicit_input():
     ...  # 同一组尺寸, skip_ratio=0.9 → 用候选; skip_ratio=0.95 → 裁剪 (既有可配置值, 非固定 0.9)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_crop.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `enums.py` 加 `CropStrategy(StrEnum)`（none/right/face——**中立层：enums 不依赖 config/media**，两侧均可导入）。`optional_cv2.py`：模块级 `try: import cv2 / except ModuleNotFoundError: cv2 = None`，提供 `available()` / `module()`。`crop.py`（从 `..enums` 导入 CropStrategy）：`CropPlan(requested, executed, ratio, low_res_height)`；`resolve_crop_plan(content_type, *, strategy_map, aspect, low_res_height, poster_ratio, skip_ratio, thumb_size, candidate_size) -> CropPlan` —— **纯输入参数签名，不引用 MetadataConfig**（该模型任务 4 才存在），**`skip_ratio` 显式传入**（R3 PLAN-10：既有可配置值 0.5–1.0，默认模式短路语义的阈值来源，不得固定 0.9）；含 §3.3 默认态算法（skip_ratio 短路）。本任务不含 Face 执行与任何接线。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_crop.py -q && uv run python -c "import amane.config; import amane.media; print('no cycle')"`
 预期：PASS 且双序导入无环
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/enums.py src/amane/media/optional_cv2.py src/amane/media/crop.py tests/media/test_crop.py
@@ -170,7 +170,7 @@ git commit -m "feat(media): CropStrategy 入中立层与裁剪策略中立面"
 - 修改：`src/amane/config/manager.py`、`src/amane/config/overrides.py`、`src/amane/config/__init__.py`（导出）、`src/amane/api/models/libraries.py`（`EffectiveConfigResponse` 加 metadata）、`src/amane/api/routes/libraries.py`（`get_effective_config` 构造扩展）、`web/openapi.json` 与 `web/src/client/…`（`just generate` 产物）、`web/src/i18n/locales/{zh-CN,en}/settings.json`（新节翻译）
 - 测试：`tests/config/test_overrides.py`、`tests/api/test_library_overrides.py`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 # tests/config/test_overrides.py
@@ -188,12 +188,12 @@ def test_reserved_list_no_longer_contains_metadata(client):
     ...  # 预留 section 拒绝列表更新: download/watermark/provider 仍 422; metadata 不再 422
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/config/test_overrides.py tests/api/test_library_overrides.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `MetadataConfig`（`crop_type` 引用 `enums.CropStrategy`）挂进 `HotSettings.metadata` + `_SECTION_BINDINGS`；`EffectiveConfigResponse` 与 `get_effective_config` 扩展 metadata 节；`config/__init__.py` 导出新模型；PUT/DELETE 白名单断言更新。随后：
 
@@ -203,12 +203,12 @@ just generate
 
 检查 `web/openapi.json` / `web/src/client/types.gen.ts` 差异并随本任务提交；`web/src/i18n` 补新节翻译。
 
-- [ ] **步骤 4：运行测试与前端检查验证通过**
+- [x] **步骤 4：运行测试与前端检查验证通过**
 
 运行：`uv run pytest tests/config/ tests/api/ -q && cd web && pnpm check`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/config src/amane/api tests web/openapi.json web/src/client web/src/i18n
@@ -221,7 +221,7 @@ git commit -m "feat(config): 激活 metadata 覆盖节并联动 API schema 与 c
 - 新建：`src/amane/media/candidates.py`
 - 测试：`tests/media/test_candidates.py`（新建）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_rebuild_routes_through_current_field_chain():
@@ -240,21 +240,21 @@ def test_empty_rebuild_falls_back():
     ...  # raw 无候选 → 空候选 + fallback 信号
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_candidates.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `candidates.py`：`rebuild_poster_candidates(...) -> CandidateResult`（候选列表 + user_product 信号 + fallback 信号）。**repo/资源读取由调用方异步完成后以参数注入**（raw、locked_fields、Resource 反解结果）——本模块保持纯函数；`box:` 判定优先于 `locked_fields`（次序：先 user_product 短路，再排除自动派生，再路由）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_candidates.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/candidates.py tests/media/test_candidates.py
@@ -267,7 +267,7 @@ git commit -m "feat(media): 海报候选重建经字段链路由与用户产物�
 - 修改：`src/amane/media/pipeline.py`、`src/amane/media/images.py`（删 `allows_poster_crop`）、`src/amane/media/__init__.py`（导出迁移）、`src/amane/handlers/file.py`（调用者迁移）、`src/amane/handlers/scrape.py`（materialize 新签名调用者）
 - 测试：`tests/media/test_pipeline.py`、`tests/media/test_images.py`（迁移）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_derived_args_encode_executed_strategy():
@@ -284,21 +284,21 @@ def test_custom_skip_ratio_respected_both_entries(tmp_path):
     # 刮削与整理两入口分别验证 (R3 PLAN-10: 既有可配置值不得固定 0.9)
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_pipeline.py tests/media/test_images.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 `materialize_images` 增加 `metadata_cfg: MetadataConfig` 参数（**调用者 `handlers/scrape.py` 同步迁移**，从 `config.hot.metadata` 传入——全局作用域；新参数与调用者同提交）；裁剪判定改走 `resolve_crop_plan`（§3.3 默认态，**`skip_ratio=config.scraping.poster_crop_skip_ratio` 显式传入**）+ `crop.py` Right 执行；派生 args 扩展。**`allows_poster_crop` 删除与 `media/__init__.py` 导出、`handlers/file.py` 导入/调用迁移同一提交**（提交结束可导入）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/ tests/handlers/ -q && uv run python -c "import amane.media, amane.handlers.file, amane.handlers.scrape"`
 预期：PASS 且导入成功
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media src/amane/handlers/file.py src/amane/handlers/scrape.py tests/media
@@ -311,7 +311,7 @@ git commit -m "feat(media): Right 策略双入口接线与派生键扩展"
 - 修改：`src/amane/media/crop.py`
 - 测试：`tests/media/test_crop.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_face_detection_before_key_construction():
@@ -332,21 +332,21 @@ def test_runtime_detection_exception_degrades_right_key():
     ...  # 运行期检测异常 → 降级 Right + warning → Right 键缓存 (设计 §4 口径), 不回退原候选
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_crop.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 **检测先于键构造**（R2 PLAN-05 修订）：Face 请求的流程 = thumb 已在本地（调用方保证）→ 运行检测（`optional_cv2` + 惰性模型加载）→ **按检测结果固化 `executed` 与裁剪信息**（检出 → executed=face + box；无人脸 → executed=right；检测异常 → executed=right + warning）→ 以固化 executed 构造派生键调用 `acquire_derived`（face 检出时 producer 使用**预计算的 box** 闭包裁剪，缓存 miss 重跑同 box 确定性一致）。后端不可用探针（`optional_cv2.available()` + 模型可加载）同样在键构造前执行 → executed=right + warning。**face 键永不存储 Right 降级产物**（无人脸/异常均落 Right 键，对齐设计 §3.2/§4）。不修改 frozen 实例。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_crop.py tests/media/test_resource_store.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/crop.py tests/media/test_crop.py
@@ -359,7 +359,7 @@ git commit -m "feat(media): YuNet 人脸对齐裁剪与检测先于键构造的�
 - 修改：`src/amane/handlers/file.py`
 - 测试：`tests/handlers/test_file_ops.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_reselect_none_uses_uncropped_candidate(tmp_path):
@@ -382,23 +382,23 @@ def test_empty_rebuild_falls_back(tmp_path):
     ...  # raw 无候选 → 回退物化图复制, 记日志
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/handlers/test_file_ops.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现（同步/异步边界，R1 PLAN-02 已闭合项的落实）**
+- [x] **步骤 3：实现（同步/异步边界，R1 PLAN-02 已闭合项的落实）**
 
 **异步协调函数** `handlers/file.py::_prepare_poster_product(...)`（async，`execute_file_operations` 内、`_download_images_via_store` 之前调用）：完成 `rebuild_poster_candidates`（含 repo/raw/locked/Resource 反解等异步读取）、`resolve_crop_plan`（**`skip_ratio=config.scraping.poster_crop_skip_ratio`**）与策略执行——none 用 `store.acquire` 下载选中候选，right/face 经 `acquire_derived`（任务 7 的检测先于键构造流程）——产出 `PreparedPoster(local_path, origin)`。**同步 helper `_place_library_images` 只接收已准备的本地路径**，保持 `@in_thread` 文件复制/水印职责；user_product / fallback 信号决定 poster 来源与 skipped 计数；`overwrite_image=False` 既有跳过语义保留。
 
 **metadata 参数传递路径**（完整链）：`OrganizeHandler.handle → resolve_effective_config（+metadata 节）→ EffectiveOrganizeConfig → apply_file_operations → execute_file_operations → _prepare_poster_product → _download_images_via_store → _place_library_images`。刮削入口：`ScrapeHandler.handle → materialize_images(metadata_cfg=config.hot.metadata)`（全局作用域，任务 6 已接）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/handlers/ -q`
 预期：PASS（经真实异步协调路径，无未等待协程）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/handlers/file.py tests/handlers/test_file_ops.py
@@ -411,7 +411,7 @@ git commit -m "feat(handler): 整理期海报重选异步协调与用户产物�
 - 修改：`src/amane/media/resource_store.py`
 - 测试：`tests/media/test_resource_store.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_acquire_best_picks_largest_area():
@@ -445,21 +445,21 @@ def test_cancel_cleans_temp(monkeypatch):
     ...  # 比较中途异常 → 本轮独占临时全部清理; 共享缓存不动
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_resource_store.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 按规格 §3.4：独占临时（`.amane-tmp-` + task_token，不写记录不进缓存；命中共享缓存复制参与）；比较面积→字节；`commit_temp(url, temp)` 原子提交绑定字节、**并发不同内容纳入比较重选**（既有优返回既有 / 本轮优覆盖并同步记录）、同 hash 幂等；提交失败删临时返 FAILED；清理责任全在本轮。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/ -q`
 预期：PASS（既有用例不回归）
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/resource_store.py tests/media/test_resource_store.py
@@ -472,7 +472,7 @@ git commit -m "feat(media): 独占临时择优 commit_temp 与并发内容冲突
 - 修改：`src/amane/media/pipeline.py`、`src/amane/handlers/file.py`
 - 测试：`tests/handlers/test_file_ops.py`、`tests/media/test_pipeline.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_priority_strategy_matches_current_behavior(tmp_path):
@@ -486,21 +486,21 @@ def test_quality_dispatch_respects_library_scope(tmp_path):
     ...  # 两库不同 thumb_download_strategy → 各自入口按各自生效配置分派
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/handlers/test_file_ops.py tests/media/test_pipeline.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 **双入口分派**（R2 PLAN-09 修订）：thumb 与 poster 候选获取处按生效 `thumb_download_strategy` 分派 `acquire_first` / `acquire_best`——刮削入口在 `materialize_images`（全局配置），整理入口在 `_prepare_poster_product` 的候选获取处（库级配置）；**先择优后裁剪**：quality 胜者即为后续 CropPlan 裁剪/选样的输入，`_prepare_poster_product` 的候选获取先于裁剪决策。`priority` 沿用 `acquire_first` 零改动。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/handlers/ tests/media/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/pipeline.py src/amane/handlers/file.py tests
@@ -513,7 +513,7 @@ git commit -m "feat(media): quality/priority 双入口分派 (先择优后裁剪
 - 修改：`src/amane/media/crop.py`
 - 测试：`tests/media/test_crop.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 @pytest.mark.parametrize("case", [
@@ -533,21 +533,21 @@ def test_low_res_decision_matrix(case):
     ...
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/media/test_crop.py -x -q`
 预期：FAIL（阈值模式未实现）
 
-- [ ] **步骤 3：实现**
+- [x] **步骤 3：实现**
 
 按规格 §3.3 判定顺序实现阈值分支；**可达性断言**：b=500/h=538/s=0.9 下 T=None 与 T=800 选择不同（复审验收）；`thumb_unreadable` 与 `candidate_unreadable` 分列为独立用例（期望不同：前者不裁、后者裁剪）。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/media/test_crop.py -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane/media/crop.py tests/media/test_crop.py
@@ -561,7 +561,7 @@ git commit -m "feat(media): 低清质量底线决策算法全边界"
 - 新建：Alembic 迁移（`Metadata.behind_scenes` JSON 列）
 - 测试：`tests/aggregate/test_engine.py`、`tests/handlers/test_file_ops.py`、`tests/db/test_metadata_repo.py`（扩展）
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```python
 def test_behind_scenes_persisted_regardless_of_toggle():
@@ -583,21 +583,21 @@ def test_metadata_repo_roundtrip_and_patch_excluded():
     ...  # update_metadata 显式写入 behind_scenes; PATCH (PartialMetadata) 不含该字段; 旧 Metadata 行升级后得到空集合
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`uv run pytest tests/aggregate/test_engine.py tests/handlers/test_file_ops.py tests/db/test_metadata_repo.py -x -q`
 预期：FAIL
 
-- [ ] **步骤 3：实现与迁移**
+- [x] **步骤 3：实现与迁移**
 
 三层字段（`MediaMetadata.behind_scenes` → `AggregatedMetadata.behind_scenes` 按来源分组 → `Metadata.behind_scenes` JSON 列 + 迁移，旧行升级为空集合）；`MetadataFields` 加键 + `update_metadata` **显式赋值行** + `PartialMetadata` ignore 加 `"behind_scenes"`（后端写入，PATCH 不可写，沿 `field_sources` 先例）；`ScrapeHandler` 落库透传；**刮削物化消费**：`materialize_images` 全局开关开启时把 behind_scenes 候选并入 extrafanart 物化；**整理消费**：按库开关追加（普通在前、幕后在后、既有键去重、经命名模板）。来源支持度核实结果写入 `docs/dev/data-model.md`。
 
-- [ ] **步骤 4：运行测试验证通过**
+- [x] **步骤 4：运行测试验证通过**
 
 运行：`uv run pytest tests/aggregate/ tests/handlers/ tests/db/ -q`
 预期：PASS
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add src/amane tests src/amane/db/migrations/versions
@@ -610,28 +610,28 @@ git commit -m "feat(media): 剧照幕后场景三层持久 物化与整理双消
 - 修改：`scripts/build_windows_app.ps1`、`scripts/build_macos_app.sh`（`media/models/*.onnx` 数据收集）、`Dockerfile`（`uv sync --extra opencv`）、`docs/dev/config.md`（metadata 节状态）、`docs/dev/data-model.md`、`docs/dev/organize.md`、`docs/user/organize.md`、`docs/dev/index.md`
 - 验证：全量四步 + 打包冒烟
 
-- [ ] **步骤 1：打包脚本与 Docker 装配**
+- [x] **步骤 1：打包脚本与 Docker 装配**
 
 Windows/macOS 脚本补 `media/models/*.onnx` 数据收集；Dockerfile 的 `uv sync` 加 `--extra opencv`。
 
-- [ ] **步骤 2：两态打包冒烟（从独立目录运行，不依赖仓库源码）**
+- [x] **步骤 2：两态打包冒烟（从独立目录运行，不依赖仓库源码）**
 
 带 extra 产物：内置模型存在 + `FaceDetectorYN` 实际完成一次人脸检测；无 extra 产物：`import cv2` 失败走 Right 降级。Docker 对应变体同验。
 
-- [ ] **步骤 3：实现后回归对比页**
+- [x] **步骤 3：实现后回归对比页**
 
 用正式实现重新生成任务 2 的对比页（回归产物，验证实现与原型一致），另存 `docs/superpowers/demos/2026-11-14-mdc-p2-crop-demo-final.html`。
 
-- [ ] **步骤 4：文档同步**
+- [x] **步骤 4：文档同步**
 
 先精简再加：`metadata` 覆盖节字段、降级行为、幕后场景来源支持度、`image_strict_mode` 已知限制如实标注。
 
-- [ ] **步骤 5：全量检查**
+- [x] **步骤 5：全量检查**
 
 运行：`just check`（或手动四步）
 预期：PASS
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```bash
 git add docs scripts Dockerfile src pyproject.toml uv.lock web
