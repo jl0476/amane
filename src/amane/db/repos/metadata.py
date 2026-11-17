@@ -39,7 +39,7 @@ from ..repo_types import (
     _metadata_uncensored_predicate,
     _utcnow,
 )
-from .base import RepositoryMixinBase, acquire_write_lock, chunks
+from .base import RepositoryMixinBase, acquire_write_lock
 from .facet_helpers import (
     apply_facet_rules_to_metadata,
     cascade_delete_metadata,
