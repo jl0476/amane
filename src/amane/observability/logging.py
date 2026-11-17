@@ -143,7 +143,10 @@ def setup_logging(level: str = "INFO", event_bus: EventBus | None = None, log_di
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        # 不缓存首用 logger: 缓存会固定 structlog.configure 时的 processors 列表引用,
+        # structlog.testing.capture_logs (就地改写当前列表) 对已缓存 logger 失效, 测试断言
+        # 顺序敏感地丢失日志事件。本应用日志吞吐不构成瓶颈, 每事件绑定成本可忽略。
+        cache_logger_on_first_use=False,
     )
 
     root.setLevel(level.upper())
