@@ -111,7 +111,8 @@ reportAttributeAccessIssue = "warning"
 src = { include = ["src/amane/", "scripts/"], exclude = ["src/amane/db/migrations/"] }
 
 [[tool.ty.overrides]]
-include = ["src/amane/semantic/onnx.py"]
+# 可选依赖在导入处按存在与否分支, 不论装没装都不得在类型检查报错.
+include = ["src/amane/semantic/onnx.py", "src/amane/media/optional_cv2.py"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
