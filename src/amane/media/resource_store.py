@@ -273,6 +273,22 @@ class ResourceStore:
                 return None
         return full_path
 
+    async def resolve_reference(self, url: str) -> Path | None:
+        """取本地文件: ``url`` 可以是底层 locator, 也可以是内部 URL (``/api/resources/{hash}``).
+
+        内部 URL 不是 locator —— Resource 行的 ``url`` 列存的是底层 locator, 按内部 URL 直查
+        查不到行. 内部 URL 按 hash 定位记录 (派生海报等), 走与 :meth:`get_by_url_hash` 相同的
+        自愈路径: 记录按盘上字节自愈, 盘上文件缺失即返回 None.
+
+        供按「资源引用」寻址的调用方使用 (预览端点等的入参约定是内部资源 URL);
+        按 locator 寻址的既有调用方仍用 :meth:`resolve`.
+        """
+        internal = internal_url_hash(url)
+        if internal is None:
+            return await self.resolve(url)
+        found = await self.get_by_url_hash(internal)
+        return found[1] if found is not None else None
+
     async def _delete_row(self, row_id: int | None) -> None:
         """删除一行: 行不在时无须处理.
 
@@ -993,6 +1009,28 @@ class ResourceStore:
             if paths:
                 return paths
         return []
+
+    async def acquire_extrafanart_with_urls(
+        self,
+        urls_by_site: dict[str, list[str]],
+        priority: list[str],
+        client: WebClient,
+    ) -> tuple[list[Path], list[str]]:
+        """同 :meth:`acquire_extrafanart`, 但同时返回实际落盘的 URL 列表.
+
+        「有结果即停」意味着只有首个成功站点组的图会落盘, 后续站点组的地址一张不出. 调用方
+        按 URL 去重 (如幕后图与普通剧照同址只落一张) 时必须以实际落盘的那批为基准, 否则
+        未落盘的地址会把别处的图挡掉.
+        """
+        for site in priority:
+            if site not in urls_by_site:
+                continue
+            urls = urls_by_site[site]
+            results = await asyncio.gather(*[self.acquire(u, client) for u in urls])
+            landed = [(u, p) for u, p in zip(urls, results, strict=True) if p is not None]
+            if landed:
+                return [p for _, p in landed], [u for u, _ in landed]
+        return [], []
 
     async def invalidate(self, url: str) -> None:
         async with self._session() as session:
