@@ -23,7 +23,7 @@ from ..media import (
     resolve_crop_plan,
 )
 from ..media import write_nfo as write_nfo_file
-from ..media.candidates import rebuild_poster_candidates
+from ..media.candidates import is_user_product, rebuild_poster_candidates
 from ..media.crop import (
     CropAspect,
     CropPlan,
@@ -780,17 +780,28 @@ async def _prepare_poster_product(
 
     用户产物优先 (决策 18, 双路径): poster_urls 含手动派生内部 URL (``box:`` args) 或
     ``poster_urls`` ∈ locked_fields, 命中任一即不重选, 以 poster_urls 首项为本轮产物.
+    用户产物判定**先于**裁剪总开关: 开关只管「是否像素裁剪」, 不管「用哪张图」. 开关关闭
+    时若先返回, 保护整段被跳过, 回退复制路径按 quality 择优会另选一张 (锁定的首项是
+    小图时尤其明显) —— 用户指定的图应当原样沿用, 与裁剪开关无关.
     锁定空列表是病态数据 (R-empty-locked): 视为无可用用户产物, 落入重选 / 回退分支.
     """
     if DownloadableResource.poster not in kinds:
         return None
+
+    # 用户产物判定先于一切配置判定: 只依赖条目自身 (poster_urls + 锁定字段), 与裁剪开关、
+    # 库级策略、配置注入与否都无关. 命中即以 poster_urls 首项为本轮产物.
+    locator_args = await _resolve_locator_args(metadata.poster_urls, store)
+    if metadata.poster_urls and is_user_product(metadata.poster_urls, locator_args, metadata.locked_fields):
+        local = await store.acquire(metadata.poster_urls[0], client)
+        if local is None:
+            logger.warning("poster user product acquire failed", number=metadata.number, url=metadata.poster_urls[0])
+            return None
+        logger.debug("poster product prepared", number=metadata.number, origin="user")
+        return PreparedPoster(local_path=local, origin="user")
+
     if config is None or metadata_cfg is None:
         return None
-    if not config.scraping.crop_poster:
-        logger.info("poster reselect skipped", number=metadata.number, reason="crop_disabled")
-        return None
 
-    locator_args = await _resolve_locator_args(metadata.poster_urls, store)
     rebuilt = rebuild_poster_candidates(
         raw=metadata.raw,
         poster_urls=metadata.poster_urls,
@@ -801,13 +812,9 @@ async def _prepare_poster_product(
         field_blacklist=config.scraping.field_blacklist,
     )
 
-    if rebuilt.user_product and metadata.poster_urls:
-        local = await store.acquire(metadata.poster_urls[0], client)
-        if local is None:
-            logger.warning("poster user product acquire failed", number=metadata.number, url=metadata.poster_urls[0])
-            return None
-        logger.debug("poster product prepared", number=metadata.number, origin="user")
-        return PreparedPoster(local_path=local, origin="user")
+    if not config.scraping.crop_poster:
+        logger.info("poster reselect skipped", number=metadata.number, reason="crop_disabled")
+        return None
 
     if not rebuilt.candidates:
         logger.info("poster reselect fallback", number=metadata.number, reason="no_candidates")
@@ -901,19 +908,23 @@ async def _acquire_crop_product(
 
 def _behind_scenes_candidates(
     metadata: Metadata,
-    extrafanart_by_site: dict[str, list[str]],
+    landed_fanart_urls: set[str],
     config: HotSettings | None,
     metadata_cfg: MetadataConfig | None,
 ) -> list[str]:
     """整理期幕后图候选 (规格 §3.5): 库级生效开关开启时把 ``Metadata.behind_scenes`` 追加到剧照下载集合.
 
-    普通剧照在前、幕后在后; 与普通剧照候选重复的地址跳过 (同一 URL 只落一张, 幕后组内同样去重).
+    普通剧照在前、幕后在后; 与普通剧照**实际落盘**的地址跳过 (同一 URL 只落一张, 幕后组内同样去重).
+    去重基准是已落盘的普通剧照, 不是全部候选: 普通剧照按站点优先级「有结果即停」, 只取首个
+    成功站点组的图. 若按全部候选去重, 未被选中的站点组的地址会把幕后图挡掉 —— 例如普通组 A
+    提供 a.jpg、组 B 提供 b.jpg 而幕后含 b.jpg 时, 实际落盘的只有 a.jpg, 幕后 b.jpg 却被排除,
+    结果幕后图一张不出.
     开关取库级生效 MetadataConfig (任务入口经 resolve_effective_config 解析), 未注入时回全局.
     """
     toggle_cfg = metadata_cfg if metadata_cfg is not None else (config.metadata if config is not None else None)
     if toggle_cfg is None or not toggle_cfg.extra_fanarts_behind_scenes:
         return []
-    seen = {url for urls in extrafanart_by_site.values() for url in urls}
+    seen = set(landed_fanart_urls)
     out: list[str] = []
     for urls in (metadata.behind_scenes or {}).values():
         for url in urls:
@@ -980,10 +991,12 @@ async def _download_images_via_store(
     extrafanart: list[Path] = []
     if DownloadableResource.extrafanart in kinds:
         extrafanart_by_site = metadata.extrafanart_urls
+        landed_fanart_urls: set[str] = set()
         if extrafanart_by_site:
             priority = list(extrafanart_by_site.keys())
-            extrafanart = await store.acquire_extrafanart(extrafanart_by_site, priority, client)
-        behind_urls = _behind_scenes_candidates(metadata, extrafanart_by_site, config, metadata_cfg)
+            extrafanart, landed = await store.acquire_extrafanart_with_urls(extrafanart_by_site, priority, client)
+            landed_fanart_urls.update(landed)
+        behind_urls = _behind_scenes_candidates(metadata, landed_fanart_urls, config, metadata_cfg)
         if behind_urls:
             extrafanart += await store.acquire_extrafanart({"behind_scenes": behind_urls}, ["behind_scenes"], client)
 

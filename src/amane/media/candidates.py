@@ -41,6 +41,21 @@ def _is_manual_crop(url: str, locator_args: Mapping[str, str]) -> bool:
     return args is not None and args.startswith(CROP_BOX_ARGS_PREFIX)
 
 
+def is_user_product(
+    poster_urls: Sequence[str],
+    locator_args: Mapping[str, str],
+    locked_fields: Collection[str],
+) -> bool:
+    """用户指定产物判定 (决策 18 双路径).
+
+    ``box:`` 手动派生内部 URL (手动裁剪) 或 ``poster_urls`` ∈ locked_fields (PATCH 外部 URL
+    经 _merge_auto_locks 自动锁定). ``box:`` 判定优先于锁定.
+
+    判定只依赖条目自身, 不依赖配置: 用户指定什么图与裁剪开关、库级策略无关.
+    """
+    return any(_is_manual_crop(url, locator_args) for url in poster_urls) or (_POSTER_FIELD.value in locked_fields)
+
+
 def _snapshot_poster_urls(snapshot: Mapping[str, Any]) -> list[str]:
     """站点快照的原始 poster_urls; 旧形态单值字符串宽容展开, 其余非法形态视为不提供."""
     value = snapshot.get(_POSTER_FIELD.value)
@@ -71,9 +86,7 @@ def rebuild_poster_candidates(
 
     候选拼接与聚合同口径: 相同地址只保留首次出现.
     """
-    user_product = any(_is_manual_crop(url, locator_args) for url in poster_urls) or (
-        _POSTER_FIELD.value in locked_fields
-    )
+    user_product = is_user_product(poster_urls, locator_args, locked_fields)
     if user_product:
         return CandidateResult(candidates=[], user_product=True, fallback=False)
 
