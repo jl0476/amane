@@ -459,8 +459,11 @@ class _StampImageClient:
         return url
 
 
-def _stamp_red(pixel: tuple[int, ...]) -> bool:
+def _stamp_red(pixel: object) -> bool:
+    """采样点落在红章上 (蓝底图的红章呈高 R 低 B). Pillow getpixel 可能返回 None, 视为不在章上."""
     """采样点落在红章上 (蓝底图的红章呈高 R 低 B)."""
+    if not isinstance(pixel, tuple):
+        return False
     return pixel[0] > 180 and pixel[2] < 80
 
 
