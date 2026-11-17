@@ -1,6 +1,7 @@
 """海报裁剪与封面角标. 尺寸判定在本模块; 内容类型策略由 crop.py 的策略矩阵承担."""
 
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -12,6 +13,18 @@ from ..parsing import ContentType, FileInfo, Mosaic, shows_uncensored
 from .watermarks import DEFAULT_STYLE, load_stamp
 
 logger = structlog.get_logger()
+
+
+class StampOutcome(StrEnum):
+    """叠印结果三态: 叠上 / 无章可叠 / 叠印失败.
+
+    ``NO_STAMP`` 是合法空结果 (该相位无对应章图), ``FAILED`` 是异常 (预览端点据此 422).
+    """
+
+    STAMPED = "stamped"
+    NO_STAMP = "no_stamp"
+    FAILED = "failed"
+
 
 # 标准 DVD 封面约 800x538, 海报为右侧约 379x538 (≈0.704); 默认取 0.7.
 _DEFAULT_POSTER_RATIO = 0.7
@@ -373,6 +386,58 @@ def apply_cover_watermarks(
 ) -> bool:
     """叠到库路径封面/海报. 无标记或无图则不动. 不修改 Resource 原图.
 
+    只报「是否叠上」, 不区分无章可叠与叠印失败 —— 整理期逐张叠印按张成败记录, 不需要区分;
+    需要区分的调用方 (预览端点) 用 :func:`stamp_cover` 的三态结果.
+    """
+    return (
+        stamp_cover(
+            path,
+            has_subtitle=has_subtitle,
+            uncensored=uncensored,
+            mosaic=mosaic,
+            definition=definition,
+            jpeg_quality=jpeg_quality,
+            data_dir=data_dir,
+            custom_folder=custom_folder,
+            style=style,
+            scale=scale,
+            corners=corners,
+            kinds=kinds,
+            layout=layout,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            gap=gap,
+            start=start,
+        )
+        is StampOutcome.STAMPED
+    )
+
+
+def stamp_cover(
+    path: Path,
+    *,
+    has_subtitle: bool,
+    uncensored: bool,
+    mosaic: Mosaic | None,
+    definition: str | None,
+    jpeg_quality: int = _DEFAULT_JPEG_QUALITY,
+    data_dir: Path | None = None,
+    custom_folder: Path | None = None,
+    style: str = DEFAULT_STYLE,
+    scale: float = _DEFAULT_SCALE,
+    corners: Mapping[WatermarkKind, WatermarkCorner] | None = None,
+    kinds: Mapping[WatermarkKind, bool] | None = None,
+    layout: WatermarkLayout = "stack",
+    offset_x: int = 0,
+    offset_y: int = 0,
+    gap: int | None = None,
+    start: int = 0,
+) -> StampOutcome:
+    """叠印三态结果: 叠上 / 无章可叠 / 叠印失败.
+
+    失败与「无章可叠」都曾归入 ``False``: 预览端点据此把「叠印异常」当成「合法空预览」,
+    源图仍可读就返回一张无水印图, 而失败本该 422. 二者必须分开.
+
     章图按 media/watermarks::load_stamp 的查找链解析: ``custom_folder`` 非 None 时完全替代
     data_dir 系各级; ``style`` ≠ default 走样式子目录, default 走旧位置.
     两个路径来源由调用方从生效配置解析: ``data_dir`` 是应用数据目录根, ``custom_folder`` /
@@ -381,13 +446,13 @@ def apply_cover_watermarks(
     stems = _stamp_stems(has_subtitle=has_subtitle, uncensored=uncensored, mosaic=mosaic, definition=definition)
     stems = [stem for stem in stems if kinds is None or kinds.get(_stamp_kind(stem), True)]
     if not stems:
-        return False
+        return StampOutcome.NO_STAMP
     try:
         with Image.open(path) as src:
             img = src.convert("RGBA")
         width, height = img.size
         if width <= 0 or height <= 0:
-            return False
+            return StampOutcome.NO_STAMP
         ratio = min(_SCALE_MAX, max(_SCALE_MIN, scale))
         target_h = max(_STAMP_MIN_HEIGHT, round(height * ratio))
         pad = max(4, target_h // 8)
@@ -402,7 +467,7 @@ def apply_cover_watermarks(
                 continue
             loaded.append((stem, fitted))
         if not loaded:
-            return False
+            return StampOutcome.NO_STAMP
         # AUTO 不是可粘贴角位: 分组前按布局解析为具体角 (stack 下 = TOP_LEFT).
         requested = [_corner_for(stem, corners) for stem, _ in loaded]
         if layout == "clockwise":
@@ -416,10 +481,10 @@ def apply_cover_watermarks(
             grouped[corner].append(stamp)
         _paste_stamps(img, grouped, pad=pad, gap=paste_gap, offset_x=offset_x, offset_y=offset_y)
         _save_jpeg(img, path, jpeg_quality)
-        return True
+        return StampOutcome.STAMPED
     except Exception as e:
         logger.warning("cover watermark failed", path=str(path), error=str(e))
-        return False
+        return StampOutcome.FAILED
 
 
 def apply_cover_watermarks_from_info(

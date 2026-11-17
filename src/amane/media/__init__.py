@@ -1,6 +1,7 @@
 from .crop import resolve_crop_plan
 from .images import (
     CropRotation,
+    StampOutcome,
     apply_cover_watermarks,
     apply_cover_watermarks_from_info,
     crop_box,
@@ -12,6 +13,7 @@ from .images import (
     reencode_jpeg,
     rotated_size,
     should_crop_poster,
+    stamp_cover,
     validate_crop_box,
 )
 from .nfo import NfoOptions, write_nfo
@@ -24,6 +26,7 @@ __all__ = [
     "MaterializedImages",
     "NfoOptions",
     "ResourceStore",
+    "StampOutcome",
     "UpscaleOutcome",
     "apply_cover_watermarks",
     "apply_cover_watermarks_from_info",
@@ -40,6 +43,7 @@ __all__ = [
     "resolve_crop_plan",
     "rotated_size",
     "should_crop_poster",
+    "stamp_cover",
     "validate_crop_box",
     "write_nfo",
 ]
