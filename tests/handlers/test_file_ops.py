@@ -1881,6 +1881,63 @@ async def test_locked_empty_poster_urls_falls_back(
     assert any(e["event"] == "poster reselect fallback" and e.get("reason") == "no_candidates" for e in logs)
 
 
+@pytest.mark.asyncio(loop_scope="function")
+@pytest.mark.parametrize("crop_enabled", [True, False], ids=["reselect_path", "copy_path"])
+async def test_user_product_survives_crop_disabled(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path, crop_enabled: bool
+) -> None:
+    """用户产物保护与裁剪开关无关: 开关关闭 + quality 策略下, 产物仍是锁定的首项.
+
+    开关只管「是否像素裁剪」, 不管「用哪张图」. 开关关闭时若先返回, 保护整段被跳过,
+    回退复制路径按 quality 择优会另选一张更大的 —— 锁定的首项 (小图) 被顶掉.
+    """
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/t.jpg": ((800, 538), "blue"),
+                "https://s/small.jpg": ((300, 400), "purple"),
+                "https://s/big.jpg": ((900, 1200), "green"),
+            }
+        ),
+    )
+    meta = await repo.upsert_metadata(
+        number="MIDV-123",
+        content_type=ContentType.CENSORED,
+        thumb_urls=["https://s/t.jpg"],
+        raw={"dmm": {"poster_urls": ["https://s/orig.jpg"]}},
+    )
+    assert meta.id is not None
+    # 锁定 poster_urls: 首项是用户指定的小图, 后随一张更大的图.
+    patched = await repo.update_metadata(
+        meta.id, mode=WriteMode.MANUAL, poster_urls=["https://s/small.jpg", "https://s/big.jpg"]
+    )
+    assert patched is not None
+    assert "poster_urls" in patched.locked_fields
+
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number="MIDV-123",
+        metadata_override={"thumb_download_strategy": "quality"},
+    )
+    assert lib.id is not None
+
+    config = HotSettings(scraping=ScrapingConfig(crop_poster=crop_enabled))
+    handler = OrganizeHandler(repo, config, resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+    assert result.result is not None and result.result.failed == 0
+
+    # 产物 = 锁定的首项 (300x400 紫), 不是质量更大但用户没选的备用图 (900x1200 绿).
+    poster = root / "MIDV-123" / "poster.jpg"
+    with Image.open(poster) as img:
+        assert img.size == (300, 400)
+    assert _pixel_close(poster, (128, 0, 128))
+
+
 # --- 最终审查修复: 兜底裁剪 face 经检测固化执行策略, 与刮削入口同语义 (规格 §4) ---
 
 
@@ -2251,6 +2308,60 @@ async def test_organize_filters_behind_scenes_by_library(
     # 关: 只有普通剧照, 与库 A 的前两张一致 (普通剧照不受开关影响).
     assert names_b == [f"{_BEHIND_NUMBER}-1.jpg", f"{_BEHIND_NUMBER}-2.jpg"]
     assert _pixel_close(root_b / _BEHIND_NUMBER / "extrafanart" / f"{_BEHIND_NUMBER}-1.jpg", (0, 0, 255))
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_organize_behind_scenes_dedup_against_landed_only(
+    repo: Repository, resource_store: ResourceStore, tmp_path: Path
+) -> None:
+    """幕后图去重只认实际落盘的普通剧照: 未被选中的站点组不挡幕后图.
+
+    普通剧照按站点优先级「有结果即停」, 只取首个成功站点组. 组 A 提供 a.jpg、组 B 提供
+    b.jpg 且幕后含 b.jpg 时, 实际落盘的只有 a.jpg —— b.jpg 不该被去重挡掉, 否则幕后图一张不出.
+    """
+    client = cast(
+        "WebClient",
+        MappedClient(
+            {
+                "https://s/a.jpg": ((640, 480), "blue"),
+                "https://s/b.jpg": ((640, 480), "green"),
+            }
+        ),
+    )
+    meta = await repo.upsert_metadata(
+        number=_BEHIND_NUMBER,
+        content_type=ContentType.CENSORED,
+        extrafanart_urls={"site_a": ["https://s/a.jpg"], "site_b": ["https://s/b.jpg"]},
+        behind_scenes={"javdb": ["https://s/b.jpg"]},
+    )
+    assert meta.id is not None
+    lib, root = await _seed_library(
+        repo,
+        tmp_path,
+        name="a",
+        metadata_id=meta.id,
+        number=_BEHIND_NUMBER,
+        metadata_override={"extra_fanarts_behind_scenes": True},
+    )
+    assert lib.id is not None
+    await repo.upsert_config_override(
+        lib.id,
+        "naming",
+        {
+            "video_template": "{number}/{number}.{ext}",
+            "extrafanart_name_template": "{number}-{index_padded}.jpg",
+        },
+    )
+
+    handler = OrganizeHandler(repo, HotSettings(), resource_store, web_client=client)
+    result = await handler.handle(OrganizePayload(library_id=lib.id, path=str(root)))
+    assert result.success
+
+    # 普通剧照只落组 A 的 a.jpg; 幕后 b.jpg 未与它重复, 应作为第二张落下.
+    names = sorted(p.name for p in (root / _BEHIND_NUMBER / "extrafanart").iterdir())
+    assert names == [f"{_BEHIND_NUMBER}-1.jpg", f"{_BEHIND_NUMBER}-2.jpg"]
+    assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / f"{_BEHIND_NUMBER}-1.jpg", (0, 0, 255))
+    assert _pixel_close(root / _BEHIND_NUMBER / "extrafanart" / f"{_BEHIND_NUMBER}-2.jpg", (0, 128, 0))
 
 
 @pytest.mark.asyncio(loop_scope="function")

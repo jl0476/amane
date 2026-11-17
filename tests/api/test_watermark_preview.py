@@ -1,7 +1,7 @@
 """水印预览端点 (规格 §3.6): 库级生效配置 × 请求相位的只读试算.
 
 验收面: 200 image/jpeg 魔数、相位与 kinds 过滤随请求变化、库级覆盖生效、
-源缺失 404、叠印失败 422 带原因、不落库不写 Resource.
+源缺失 404、叠印失败 422 带原因、不落库不写 Resource、内部资源 URL 可寻址.
 """
 
 import io
@@ -15,6 +15,7 @@ from PIL import Image
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+from amane.media.resource_store import RESOURCE_URL_PREFIX, derived_locator
 
 PREVIEW_URL = "https://s/wm-preview.jpg"
 
@@ -215,3 +216,79 @@ async def test_preview_does_not_touch_store(app: FastAPI, client: AsyncClient, s
     assert resp.content != source_bytes
     assert source.read_bytes() == source_bytes
     assert sorted(r.file_path for r in await store.list_all()) == rows_before
+
+
+def _internal_url(app: FastAPI, locator: str) -> str:
+    """locator 对应的内部资源 URL (整理期落库后前端拿到的形态)."""
+    store = app.state.runtime.resource_store
+    return f"{RESOURCE_URL_PREFIX}/{store.url_hash(locator)}"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_preview_accepts_internal_resource_url(app: FastAPI, client: AsyncClient, safe_path: Path) -> None:
+    """内部资源 URL 可寻址: 普通资源与派生海报都能预览, 不是只有外部 URL 能用.
+
+    入参约定是内部资源 URL (/api/resources/{hash}), 而 resolve 按底层 locator 精确查询 ——
+    内部 URL 查不到行, 有效海报也会 404.
+    """
+    _write_red_stamp(app.state.runtime.config.cold.data_dir.parent)
+    await _seed_resource(app)
+    store = app.state.runtime.resource_store
+
+    # 派生海报: 独立 locator, 走派生记录寻址
+    src_locator = "https://s/poster-src.jpg"
+    await store.acquire(src_locator, _ImageClient())
+    derived_key = derived_locator(src_locator, "crop", "right:0.7")
+    record = await store.acquire_derived(src_locator, "crop", "right:0.7", _crop_producer)
+    assert record is not None
+
+    library_id = await _create_library(client, safe_path, "lib")
+    put = await client.put(f"libraries/{library_id}/overrides/watermark", json={"enabled": True, "scale": 0.2})
+    assert put.status_code == 200
+
+    for locator in (PREVIEW_URL, src_locator, derived_key):
+        resp = await _preview(client, library_id, _internal_url(app, locator), _phase(uncensored=True))
+        assert resp.status_code == 200, locator
+        assert resp.headers["content-type"].startswith("image/jpeg")
+        assert resp.content[:2] == b"\xff\xd8"
+
+
+async def _crop_producer(dest: Path) -> bool:
+    Image.new("RGB", (140, 200), "green").save(dest)
+    return True
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_preview_stamp_failure_422(app: FastAPI, client: AsyncClient, safe_path: Path, monkeypatch) -> None:
+    """源图可读但叠印阶段异常 → 422, 不返回无水印图充当成功.
+
+    叠印失败与「无章可叠」曾同为 False: 端点据 False 走重编码预检, 源图仍可读就回 200,
+    失败被当成合法空预览.
+    """
+    await _seed_resource(app)
+    library_id = await _create_library(client, safe_path, "lib")
+    put = await client.put(f"libraries/{library_id}/overrides/watermark", json={"enabled": True})
+    assert put.status_code == 200
+
+    # 落在 stamp_cover 自身的 try 内: 章图加载后、落盘前抛错 —— 真实叠印异常的形态.
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("stamp exploded")
+
+    monkeypatch.setattr("amane.media.images._save_jpeg", _boom)
+    resp = await _preview(client, library_id, PREVIEW_URL, _phase(uncensored=True))
+    assert resp.status_code == 422
+    assert "水印预览失败" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_preview_no_stamp_is_ok(app: FastAPI, client: AsyncClient, safe_path: Path) -> None:
+    """无章可叠是合法空预览 → 200 (相位无对应章图, 非失败)."""
+    await _seed_resource(app)
+    library_id = await _create_library(client, safe_path, "lib")
+    put = await client.put(f"libraries/{library_id}/overrides/watermark", json={"enabled": True})
+    assert put.status_code == 200
+
+    # 相位无对应章图 (definition=vhs 无内置章)
+    resp = await _preview(client, library_id, PREVIEW_URL, _phase(definition="vhs"))
+    assert resp.status_code == 200
+    assert resp.content[:2] == b"\xff\xd8"
