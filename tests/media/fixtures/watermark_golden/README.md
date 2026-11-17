@@ -46,12 +46,20 @@ FOUR_CORNERS = {
     WatermarkKind.DEFINITION: WatermarkCorner.BOTTOM_LEFT,
 }
 CASES = [
-    ("default-scale-all-phases", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"), None),
+    (
+        "default-scale-all-phases",
+        dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"),
+        None,
+    ),
     ("multi-phase-leaked", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.LEAKED, definition="1080p"), None),
     ("four-corners", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"), FOUR_CORNERS),
     ("sub40-unclamped", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"), None),
     ("small-boundary", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"), None),
-    ("small-four-corners", dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"), FOUR_CORNERS),
+    (
+        "small-four-corners",
+        dict(has_subtitle=True, uncensored=True, mosaic=Mosaic.CRACKED, definition="4K"),
+        FOUR_CORNERS,
+    ),
     ("poster-single-phase", dict(has_subtitle=True, uncensored=False, mosaic=None, definition=None), None),
 ]
 for name, phases, corners in CASES:
